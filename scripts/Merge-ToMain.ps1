@@ -87,7 +87,9 @@ $removeFiles = @(
     'architecture.md',
     'TODO.md',
     'long_term_todo.md',
-    'clippy_output.json'
+    'clippy_output.json',
+    'compat/',
+    'dist/'
 )
 
 # --- Step 1: Checkout target ---

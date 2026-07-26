@@ -54,6 +54,46 @@ pwsh -File scripts/verify.ps1
 | `PgUp` / `PgDn` | Page through lists (20 items) | All lists |
 | `q` / `Q` | Quit application | Home |
 
+## 📦 Packaging & Deployment
+
+The repository supports two release packaging models:
+
+### 1. Modern Release (Windows 10+ / Server 2016+)
+
+```powershell
+make package
+# OR
+pwsh -File scripts/package.ps1 package
+```
+Output: `dist/opc-cli-x64/` and `dist/opc-cli-x64.zip`
+
+### 2. Legacy Release (Windows 7 SP1 / Server 2008 R2 SP1)
+
+For deployment to offline, air-gapped industrial environments running Windows 7 / Server 2008 R2 (NT 6.1):
+
+```powershell
+make package-win7
+# OR
+pwsh -File scripts/package.ps1 package-win7
+```
+Output: `dist/opc-cli-win7-x64/` and `dist/opc-cli-win7-x64.zip`
+
+**Legacy Bundle Contents:**
+- `opc-cli.exe`: PE-patched executable linked with static CRT (`+crt-static`). Replaces missing `GetSystemTimePreciseAsFileTime` imports with native `GetSystemTimeAsFileTime`.
+- `api-ms-win-core-synch-l1-2-0.dll`: `#![no_std]` polyfill for `WaitOnAddress` and `Sleep` re-export.
+- `api-ms-win-core-winrt-error-l1-1-0.dll`: `#![no_std]` no-op stubs for WinRT error APIs.
+- `bcryptprimitives.dll`: `#![no_std]` polyfill routing `ProcessPrng` to `RtlGenRandom` (`advapi32.dll`).
+- `redist/`: Included OPC Core Components redistributable MSI (if placed in `vendor/redist/`).
+
+Simply copy the extracted `dist/opc-cli-win7-x64/` folder to a USB drive and run on the target machine without installing Visual C++ redistributables or Windows updates.
+
+## 🙏 Acknowledgments
+
+- [**rust_opc**](https://github.com/Ronbb/rust_opc) by Wang Ruobiao — original OPC DA Rust bindings and COM interface generation pipeline.
+- [**OPC Foundation**](https://opcfoundation.org/) — OPC Data Access specification and IDL interface definitions.
+- [**windows-rs**](https://github.com/microsoft/windows-rs) by Microsoft — Windows API bindings for Rust.
+- [**ratatui**](https://github.com/ratatui/ratatui) — terminal user interface framework.
+
 ## 📄 License
 
 This project is licensed under the MIT License — see the [LICENSE](LICENSE) file for details.

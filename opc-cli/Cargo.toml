@@ -1,12 +1,12 @@
 [package]
 name = "opc-cli"
-authors = ["Wendell Saligan <saliganw@gmail.com>"]
+authors.workspace = true
 version = "0.1.0"
-edition = "2024"
-rust-version = "1.93.1"
+edition.workspace = true
+rust-version.workspace = true
 description = "Interactive TUI for browsing, reading, and writing OPC DA tags on Windows"
-license = "MIT"
-repository = "https://github.com/wends155/opc-cli"
+license.workspace = true
+repository.workspace = true
 readme = "../README.md"
 keywords = ["opc", "cli", "tui", "windows"]
 categories = ["command-line-utilities", "network-programming"]

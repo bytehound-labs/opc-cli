@@ -3,7 +3,18 @@ members = [
     "opc-cli",
     "opc-da-client",
 ]
+exclude = [
+    "compat/*",
+]
 resolver = "2"
+
+[workspace.package]
+authors = ["Wendell Saligan <saliganw@gmail.com>"]
+license = "MIT"
+repository = "https://github.com/wends155/opc-cli"
+edition = "2024"
+rust-version = "1.93.1"
+
 
 [workspace.dependencies]
 

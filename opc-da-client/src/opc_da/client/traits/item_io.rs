@@ -53,6 +53,7 @@ pub trait ItemIoTrait {
         let mut timestamps = RemoteArray::new(len);
         let mut errors = RemoteArray::new(len);
 
+        // SAFETY: Calling COM interface method Read with valid item string pointers and output arrays.
         unsafe {
             self.interface()?.Read(
                 item_ids.len() as u32,
@@ -97,6 +98,7 @@ pub trait ItemIoTrait {
 
         let mut errors = RemoteArray::new(len);
 
+        // SAFETY: Calling COM interface method WriteVQT with valid item string pointers and VQT structs.
         unsafe {
             self.interface()?.WriteVQT(
                 len,

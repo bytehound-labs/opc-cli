@@ -44,6 +44,7 @@ pub trait ItemDeadbandMgtTrait {
 
         let mut errors = RemoteArray::new(len);
 
+        // SAFETY: Calling COM interface method SetItemDeadband with valid pointers and array lengths.
         unsafe {
             self.interface()?.SetItemDeadband(
                 len,
@@ -74,6 +75,7 @@ pub trait ItemDeadbandMgtTrait {
         let mut errors = RemoteArray::new(len);
         let mut deadbands = RemoteArray::new(len);
 
+        // SAFETY: Calling COM interface method GetItemDeadband with valid pointers and array lengths.
         unsafe {
             self.interface()?.GetItemDeadband(
                 len,
@@ -101,6 +103,7 @@ pub trait ItemDeadbandMgtTrait {
 
         let mut errors = RemoteArray::new(len);
 
+        // SAFETY: Calling COM interface method ClearItemDeadband with valid pointers and array lengths.
         unsafe {
             self.interface()?.ClearItemDeadband(
                 len,

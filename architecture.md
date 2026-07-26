@@ -64,7 +64,7 @@ opc-cli/
 └── scripts/                    # Automation & Quality Gate Pipelines
     ├── package.ps1             # Universal task dispatcher (single source of truth)
     ├── package-win7.ps1        # Standalone NT 6.1 legacy release pipeline & PE patcher
-    ├── verify.ps1              # 5-gate quality pipeline runner
+    ├── verify.ps1              # 8-gate quality pipeline runner
     ├── check-logs.ps1           # Log inspector & statistical analyzer
     ├── commit.ps1             # Quality-gated commit & push pipeline
     └── Merge-ToMain.ps1        # Clean release merger dev -> main
@@ -113,7 +113,7 @@ The project uses a unified dual-interface build system:
    - `make debug`: Fast development build (`cargo build`).
    - `make release` / `make build`: Optimized production build (`cargo build --release`).
    - `make test`: Quick unit test run (`cargo test`).
-   - `make verify`: Executes 5-gate quality pipeline (`pwsh scripts/verify.ps1`).
+   - `make verify`: Executes 8-gate quality pipeline (`pwsh scripts/verify.ps1`).
    - `make package`: Builds modern (Win10+) release bundle into `dist/opc-cli-x64.zip`.
    - `make package-win7`: Builds legacy (Win7/Server 2008 R2) release bundle into `dist/opc-cli-win7-x64.zip`.
    - `make logs`: Runs log inspector (`pwsh scripts/check-logs.ps1`).
@@ -126,7 +126,7 @@ The project uses a unified dual-interface build system:
    - Supported tasks: `debug`, `release`, `build`, `test`, `verify`, `package`, `package-win7`, `logs`, `commit`, `release-merge`.
 
 3. **scripts/package-win7.ps1**: Dedicated legacy packaging pipeline that compiles polyfills, PE-patches the binary, and bundles redistributables.
-4. **scripts/verify.ps1**: Universal 5-gate quality pipeline (formatter, linter, doc-tests, workspace tests, polyfill compilation).
+4. **scripts/verify.ps1**: Universal 8-gate quality pipeline (formatter, linter, doc-tests, workspace tests, polyfill compilation, AST-grep scan, forbidden pattern scanner, PowerShell script syntax & strict mode check).
 5. **scripts/check-logs.ps1**: Log inspector and deep analysis utility.
 6. **scripts/commit.ps1**: Quality-gated commit & push pipeline.
 7. **scripts/Merge-ToMain.ps1**: Automated clean release merge tool.
@@ -151,6 +151,8 @@ The project uses a unified dual-interface build system:
 - **COM Worker Testing**: `ComWorker` unit tests (`opc-da-client/src/com_worker.rs`) use `ConfigurableMockConnector` to test write paths, server connection pooling (`connect_count == 1`), stale connection eviction (`connect_count == 2`), thread panic safety, and worker drop behaviors (37 unit tests in `opc-da-client`).
 - **Doc Testing**: Public API items include runnable doc tests (`cargo test --doc`).
 - **Polyfill Build Gates**: Independent compilation of `compat/*` polyfill crates inside `scripts/verify.ps1`.
+- **AST-Grep Structural Safety Gates**: `sg scan` enforcement of zero unwrap/expect in production library code and mandatory `// SAFETY:` rationale on all unsafe blocks.
+- **Forbidden Macro Scanner**: Automated `rg` scan ensuring zero `println!`, `dbg!`, or `todo!` macros in `opc-da-client/src/`.
 
 ## 11. Documentation Conventions
 

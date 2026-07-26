@@ -1,0 +1,43 @@
+id: require-safety-comment
+message: "Unsafe blocks must have a preceding // SAFETY: comment explaining the safety rationale"
+severity: error
+language: rust
+files:
+  - "opc-da-client/src/**/*.rs"
+  - "opc-cli/src/**/*.rs"
+ignores:
+  - "**/tests/**"
+  - "**/*_test.rs"
+  - "**/*_tests.rs"
+  - "**/bindings/**"
+rule:
+  any:
+    - kind: unsafe_block
+    - pattern: "unsafe { $$$ }"
+  not:
+    any:
+      - inside:
+          stopBy: end
+          follows:
+            any:
+              - kind: line_comment
+                regex: "SAFETY:"
+              - kind: block_comment
+                regex: "SAFETY:"
+      - inside:
+          stopBy: end
+          any:
+            - kind: mod_item
+              follows:
+                stopBy: end
+                any:
+                  - pattern: "#[cfg(test)]"
+                  - pattern: "#[cfg(all(test, $$$))]"
+            - kind: function_item
+              follows:
+                stopBy: end
+                any:
+                  - pattern: "#[test]"
+                  - pattern: "#[tokio::test]"
+                  - pattern: "#[tokio::test($$$)]"
+                  - pattern: "#[core::prelude::v1::test]"

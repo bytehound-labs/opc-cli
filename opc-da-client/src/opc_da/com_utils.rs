@@ -84,7 +84,7 @@ impl<T: Sized> RemoteArray<T> {
 
         let len = usize::try_from(self.len).unwrap_or(0);
 
-        // Pointer and length are guaranteed to be valid
+        // SAFETY: Pointer and length are guaranteed to be valid for slice creation.
         unsafe { core::slice::from_raw_parts(self.pointer.inner, len) }
     }
 
@@ -100,7 +100,7 @@ impl<T: Sized> RemoteArray<T> {
 
         let len = usize::try_from(self.len).unwrap_or(0);
 
-        // Pointer and length are guaranteed to be valid
+        // SAFETY: Pointer and length are guaranteed to be valid for mutable slice creation.
         unsafe { core::slice::from_raw_parts_mut(self.pointer.inner, len) }
     }
 
@@ -181,7 +181,9 @@ impl<T: Sized> RemotePointer<T> {
     }
 
     pub(crate) fn copy_slice(value: &[T]) -> Self {
+        // SAFETY: Allocates memory for slice using COM CoTaskMemAlloc.
         let pointer = unsafe { CoTaskMemAlloc(core::mem::size_of_val(value)) };
+        // SAFETY: Destination buffer was allocated with sufficient capacity and pointers are non-overlapping.
         unsafe {
             core::ptr::copy_nonoverlapping(value.as_ptr(), pointer as _, value.len());
         }
@@ -201,13 +203,13 @@ impl<T: Sized> RemotePointer<T> {
     /// The caller must ensure that the inner pointer is valid for reads.
     #[inline(always)]
     pub fn as_ref(&self) -> Option<&T> {
-        // Pointer is guaranteed to be valid
+        // SAFETY: Converting raw pointer to reference after validating pointer safety.
         unsafe { self.inner.as_ref() }
     }
 
     #[inline(always)]
     pub fn ok(&self) -> windows::core::Result<&T> {
-        // Pointer is guaranteed to be valid
+        // SAFETY: Converting raw pointer to reference after validating pointer safety.
         unsafe { self.inner.as_ref() }.ok_or_else(|| {
             windows::core::Error::new(windows::Win32::Foundation::E_POINTER, "Pointer is null")
         })
@@ -261,7 +263,7 @@ impl TryFrom<RemotePointer<u16>> for String {
             return Err(windows::Win32::Foundation::E_POINTER.into());
         }
 
-        // Has checked for null pointer
+        // SAFETY: Has checked for non-null pointer above.
         Ok(unsafe { PWSTR(value.inner).to_string() }?)
     }
 }
@@ -279,7 +281,7 @@ impl TryFrom<RemotePointer<u16>> for Option<String> {
             return Ok(None);
         }
 
-        // Has checked for null pointer
+        // SAFETY: Has checked for non-null pointer above.
         Ok(Some(unsafe { PWSTR(value.inner).to_string() }?))
     }
 }
@@ -297,6 +299,7 @@ impl<T: Sized> Drop for RemotePointer<T> {
     #[inline(always)]
     fn drop(&mut self) {
         if !self.inner.is_null() {
+            // SAFETY: Memory was allocated via COM CoTaskMemAlloc and pointer is non-null.
             unsafe {
                 CoTaskMemFree(Some(self.inner as _));
             }

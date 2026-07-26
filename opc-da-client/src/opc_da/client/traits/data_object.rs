@@ -16,6 +16,7 @@ pub trait DataObjectTrait {
     /// # Returns
     /// Storage medium containing the requested data
     fn get_data(&self, format: &FORMATETC) -> OpcResult<STGMEDIUM> {
+        // SAFETY: Calling COM method GetData with valid formatetc reference.
         unsafe { Ok(self.interface()?.GetData(format)?) }
     }
 
@@ -28,6 +29,7 @@ pub trait DataObjectTrait {
     /// Storage medium updated with the requested data
     fn get_data_here(&self, format: &FORMATETC) -> OpcResult<STGMEDIUM> {
         let mut output = STGMEDIUM::default();
+        // SAFETY: Calling COM method GetDataHere with output stgmedium reference.
         unsafe { self.interface()?.GetDataHere(format, &mut output)? };
         Ok(output)
     }
@@ -40,6 +42,7 @@ pub trait DataObjectTrait {
     /// # Returns
     /// Ok(()) if the format is supported, error otherwise
     fn query_get_data(&self, format: &FORMATETC) -> OpcResult<()> {
+        // SAFETY: Calling COM method QueryGetData.
         unsafe {
             self.interface()?
                 .QueryGetData(format)
@@ -57,6 +60,7 @@ pub trait DataObjectTrait {
     /// Canonical format specification
     fn get_canonical_format(&self, format_in: &FORMATETC) -> OpcResult<FORMATETC> {
         let mut output = FORMATETC::default();
+        // SAFETY: Calling COM method GetCanonicalFormatEtc.
         unsafe {
             self.interface()?
                 .GetCanonicalFormatEtc(format_in, &mut output)
@@ -76,6 +80,7 @@ pub trait DataObjectTrait {
     /// # Returns
     /// Ok(()) if data was set successfully
     fn set_data(&self, format: &FORMATETC, medium: &STGMEDIUM, release: bool) -> OpcResult<()> {
+        // SAFETY: Calling COM method SetData.
         unsafe { Ok(self.interface()?.SetData(format, medium, release)?) }
     }
 
@@ -90,6 +95,7 @@ pub trait DataObjectTrait {
         &self,
         direction: u32,
     ) -> OpcResult<windows::Win32::System::Com::IEnumFORMATETC> {
+        // SAFETY: Calling COM method EnumFormatEtc.
         unsafe { Ok(self.interface()?.EnumFormatEtc(direction)?) }
     }
 
@@ -108,6 +114,7 @@ pub trait DataObjectTrait {
         advf: u32,
         sink: &windows::Win32::System::Com::IAdviseSink,
     ) -> OpcResult<u32> {
+        // SAFETY: Calling COM method DAdvise.
         unsafe { Ok(self.interface()?.DAdvise(format, advf, sink)?) }
     }
 
@@ -119,6 +126,7 @@ pub trait DataObjectTrait {
     /// # Returns
     /// Ok(()) if connection was terminated successfully
     fn dunadvise(&self, connection: u32) -> OpcResult<()> {
+        // SAFETY: Calling COM method DUnadvise.
         unsafe { Ok(self.interface()?.DUnadvise(connection)?) }
     }
 
@@ -127,6 +135,7 @@ pub trait DataObjectTrait {
     /// # Returns
     /// Enumerator for active advisory connections
     fn enum_dadvise(&self) -> OpcResult<windows::Win32::System::Com::IEnumSTATDATA> {
+        // SAFETY: Calling COM method EnumDAdvise.
         unsafe { Ok(self.interface()?.EnumDAdvise()?) }
     }
 }

@@ -1,0 +1,31 @@
+id: require-safety-comment
+snapshots:
+  ? |
+    fn unsafe_fn_no_comment() {
+        unsafe {
+            let x = 0;
+        }
+    }
+  : labels:
+    - source: |-
+        unsafe {
+                let x = 0;
+            }
+      style: primary
+      start: 32
+      end: 65
+  ? |
+    fn unsafe_fn_wrong_comment() {
+        // Just a normal comment
+        unsafe {
+            let x = 0;
+        }
+    }
+  : labels:
+    - source: |-
+        unsafe {
+                let x = 0;
+            }
+      style: primary
+      start: 64
+      end: 97

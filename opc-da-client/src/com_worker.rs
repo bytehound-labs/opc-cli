@@ -84,6 +84,16 @@ fn is_connection_error(err: &OpcError) -> bool {
 }
 
 impl<C: ServerConnector + 'static> ComWorker<C> {
+    /// Creates a dummy/closed `ComWorker` handle used when background worker initialization fails.
+    pub fn closed() -> Self {
+        let (tx, _rx) = mpsc::channel(1);
+        Self {
+            sender: tx,
+            handle: None,
+            _phantom: std::marker::PhantomData,
+        }
+    }
+
     pub fn start(connector: Arc<C>) -> Result<Self, OpcError> {
         let (tx, mut rx) = mpsc::channel(32);
         let (init_tx, init_rx) = std::sync::mpsc::channel();

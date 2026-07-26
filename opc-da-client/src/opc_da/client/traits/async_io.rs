@@ -42,6 +42,7 @@ pub trait AsyncIoTrait {
         let mut transaction_id = 0;
         let mut errors = RemoteArray::new(len);
 
+        // SAFETY: Calling COM interface method Read with valid array pointers and handles.
         unsafe {
             self.interface()?.Read(
                 connection,
@@ -92,6 +93,7 @@ pub trait AsyncIoTrait {
         let mut transaction_id = 0;
         let mut errors = RemoteArray::new(len);
 
+        // SAFETY: Calling COM interface method Write with valid array pointers and handles.
         unsafe {
             self.interface()?.Write(
                 connection,
@@ -119,6 +121,7 @@ pub trait AsyncIoTrait {
         connection: u32,
         source: crate::bindings::da::tagOPCDATASOURCE,
     ) -> OpcResult<u32> {
+        // SAFETY: Calling COM interface method Refresh.
         unsafe { Ok(self.interface()?.Refresh(connection, source)?) }
     }
 
@@ -130,6 +133,7 @@ pub trait AsyncIoTrait {
     /// # Returns
     /// Result indicating success or failure of cancel request
     fn cancel(&self, transaction_id: u32) -> OpcResult<()> {
+        // SAFETY: Calling COM interface method Cancel.
         unsafe { Ok(self.interface()?.Cancel(transaction_id)?) }
     }
 }

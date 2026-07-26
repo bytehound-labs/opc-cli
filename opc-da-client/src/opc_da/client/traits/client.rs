@@ -19,10 +19,12 @@ pub trait ClientTrait<Server: TryFrom<windows::core::IUnknown, Error = windows::
     /// A `Result` containing a `GuidIterator` over server GUIDs, or an error if the operation fails.
     fn get_servers(&self) -> OpcResult<GuidIterator> {
         tracing::debug!("Enumerating OPC DA Server classes via COM Component Categories Manager");
+        // SAFETY: Calling COM function CLSIDFromProgID with valid ProgID string.
         let id = unsafe {
             windows::Win32::System::Com::CLSIDFromProgID(windows::core::w!("OPC.ServerList.1"))?
         };
 
+        // SAFETY: Calling COM function CoCreateInstance with valid CLSID to instantiate IOPCServerList.
         let servers: crate::bindings::comn::IOPCServerList = unsafe {
             // TODO: Use CoCreateInstanceEx
             windows::Win32::System::Com::CoCreateInstance(
@@ -35,6 +37,7 @@ pub trait ClientTrait<Server: TryFrom<windows::core::IUnknown, Error = windows::
 
         let versions = [Self::CATALOG_ID];
 
+        // SAFETY: Calling COM method EnumClassesOfCategories with valid catalog category GUID slices.
         let iter = unsafe {
             servers
                 .EnumClassesOfCategories(&versions, &versions)
@@ -65,6 +68,7 @@ pub trait ClientTrait<Server: TryFrom<windows::core::IUnknown, Error = windows::
             ?class_context,
             "Creating OPC server instance via COM CoCreateInstance"
         );
+        // SAFETY: Calling COM function CoCreateInstance with valid class_id to instantiate IOPCServer.
         let server: crate::bindings::da::IOPCServer = unsafe {
             windows::Win32::System::Com::CoCreateInstance(
                 &class_id,
@@ -91,6 +95,7 @@ pub trait ClientTrait<Server: TryFrom<windows::core::IUnknown, Error = windows::
             hr: windows::core::HRESULT(0),
         }];
 
+        // SAFETY: Calling COM function CoCreateInstanceEx with valid class_id and MULTI_QI array.
         unsafe {
             windows::Win32::System::Com::CoCreateInstanceEx(
                 &class_id,

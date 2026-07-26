@@ -38,6 +38,7 @@ pub trait BrowseTrait {
 
         let mut results = RemoteArray::new(item_ids.len().try_into()?);
 
+        // SAFETY: Calling COM interface method GetProperties with valid array pointers and handles.
         unsafe {
             self.interface()?.GetProperties(
                 item_ids.len() as u32,
@@ -95,6 +96,7 @@ pub trait BrowseTrait {
         let mut count = 0;
         let mut elements = RemoteArray::empty();
 
+        // SAFETY: Calling COM interface method Browse with valid strings and output pointers.
         unsafe {
             self.interface()?.Browse(
                 item_id.as_pcwstr(),
@@ -113,6 +115,7 @@ pub trait BrowseTrait {
         }
 
         if count > 0 {
+            // SAFETY: Updating array length based on count returned by Browse.
             unsafe { elements.set_len(count) };
         }
 

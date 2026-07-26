@@ -46,9 +46,8 @@ impl ComGuard {
     ///
     /// Returns `Err` if `CoInitializeEx` fails with a fatal HRESULT.
     pub fn new() -> anyhow::Result<Self> {
-        // SAFETY: `CoInitializeEx` is a standard Win32 FFI call.
-        // We pass `COINIT_MULTITHREADED` to join the MTA. The result
-        // is checked below, and `CoUninitialize` is guaranteed via Drop.
+        // SAFETY: CoInitializeEx is a standard Win32 FFI call passing COINIT_MULTITHREADED to join MTA.
+        // SAFETY: Result is checked below, and CoUninitialize is guaranteed via Drop.
         let hr = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) };
 
         if let Err(e) = hr.ok() {
@@ -67,9 +66,8 @@ impl ComGuard {
 impl Drop for ComGuard {
     fn drop(&mut self) {
         tracing::debug!("COM MTA teardown");
-        // SAFETY: Paired with the successful `CoInitializeEx` in `new()`.
-        // Construction guarantees COM was initialized, so this call is
-        // always balanced. Only runs on the creating thread (!Send).
+        // SAFETY: Paired with the successful CoInitializeEx in new().
+        // SAFETY: Construction guarantees COM was initialized, so this call is always balanced. Only runs on the creating thread (!Send).
         unsafe {
             CoUninitialize();
         }

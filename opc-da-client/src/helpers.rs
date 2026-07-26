@@ -27,9 +27,8 @@ const _: () = assert!(
 
 /// Helper to convert GUID to `ProgID` using Windows API
 pub fn guid_to_progid(guid: &windows::core::GUID) -> OpcResult<String> {
-    // SAFETY: `ProgIDFromCLSID` is a Win32 FFI call that allocates a PWSTR
-    // via the COM allocator. We read it and free it with `CoTaskMemFree`
-    // before returning — the pointer is not used after free.
+    // SAFETY: `ProgIDFromCLSID` is a Win32 FFI call that allocates a PWSTR via COM allocator.
+    // SAFETY: We read it and free it with `CoTaskMemFree` before returning.
     unsafe {
         let progid = ProgIDFromCLSID(guid)
             .map_err(|e| OpcError::Internal(format!("Failed to get ProgID from CLSID: {e}")))?;
@@ -53,9 +52,8 @@ pub fn guid_to_progid(guid: &windows::core::GUID) -> OpcResult<String> {
 /// Convert OPC DA VARIANT to a displayable string.
 #[allow(clippy::too_many_lines)]
 pub fn variant_to_string(variant: &VARIANT) -> String {
-    // SAFETY: Accessing the VARIANT union fields. The caller (OpcDaClient)
-    // guarantees the VARIANT was produced by COM (e.g., from `group.read()`),
-    // so the `vt` discriminant correctly identifies which union arm is active.
+    // SAFETY: Accessing the VARIANT union fields. Caller guarantees VARIANT was produced by COM.
+    // SAFETY: The `vt` discriminant correctly identifies which union arm is active.
     unsafe {
         let vt = variant.Anonymous.Anonymous.vt;
         let base_type = vt.0 & 0x0FFF; // strip VT_ARRAY (0x2000) / VT_BYREF (0x4000)
@@ -250,9 +248,8 @@ pub fn filetime_to_string(ft: FILETIME) -> String {
 /// Convert an [`OpcValue`] into a COM [`VARIANT`] for writing.
 pub fn opc_value_to_variant(value: &OpcValue) -> VARIANT {
     let mut variant = VARIANT::default();
-    // SAFETY: We set the `vt` discriminant and the corresponding union
-    // field atomically. The VARIANT is returned by value, so no aliasing.
-    // `ManuallyDrop` on BSTR prevents double-free — COM takes ownership.
+    // SAFETY: We set the `vt` discriminant and the corresponding union field atomically.
+    // SAFETY: The VARIANT is returned by value, so no aliasing. ManuallyDrop on BSTR prevents double-free.
     unsafe {
         match value {
             OpcValue::String(s) => {
@@ -288,8 +285,7 @@ pub fn opc_value_to_variant(value: &OpcValue) -> VARIANT {
 /// Returns `Err` if the `ProgID` cannot be resolved or the server
 /// cannot be instantiated.
 pub fn connect_server(server_name: &str) -> OpcResult<crate::bindings::da::IOPCServer> {
-    // SAFETY: `server_wide` is null-terminated and lives until the end
-    // of this scope, so the PCWSTR pointer is valid for the duration of the call.
+    // SAFETY: `server_wide` is null-terminated and lives until end of scope.
     let clsid_raw = unsafe {
         let server_wide: Vec<u16> = server_name
             .encode_utf16()
@@ -301,8 +297,7 @@ pub fn connect_server(server_name: &str) -> OpcResult<crate::bindings::da::IOPCS
             ))
         })?
     };
-    // SAFETY: `opc_da::GUID` and `windows::core::GUID` are binary compatible
-    // 128-bit structures with identical field layouts (4-2-2-8 byte segments).
+    // SAFETY: `opc_da::GUID` and `windows::core::GUID` are binary compatible.
     let clsid = unsafe { std::mem::transmute_copy(&clsid_raw) };
 
     let client = crate::opc_da::client::v2::Client;

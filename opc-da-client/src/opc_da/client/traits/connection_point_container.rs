@@ -30,6 +30,7 @@ pub trait ConnectionPointContainerTrait {
         &self,
         id: &GUID,
     ) -> OpcResult<windows::Win32::System::Com::IConnectionPoint> {
+        // SAFETY: Calling COM method FindConnectionPoint with valid IID reference.
         unsafe { Ok(self.interface()?.FindConnectionPoint(id)?) }
     }
 
@@ -56,6 +57,7 @@ pub trait ConnectionPointContainerTrait {
     fn enum_connection_points(
         &self,
     ) -> OpcResult<windows::Win32::System::Com::IEnumConnectionPoints> {
+        // SAFETY: Calling COM method EnumConnectionPoints.
         unsafe { Ok(self.interface()?.EnumConnectionPoints()?) }
     }
 }

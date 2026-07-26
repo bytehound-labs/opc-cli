@@ -484,3 +484,17 @@ emove_group errors now logged instead of silently discarded.
 >   - Build legacy releases using `make package-win7` or `pwsh scripts/package-win7.ps1`.
 > * **Pruned:** Manual PE patching and ad-hoc DLL copying.
 
+## 2026-07-26: TARS Summary — Testing Infrastructure Architecture Compliance
+> 📝 **Context Update:**
+> * **Feature:** Remediated 7 qualitative review findings across testing infrastructure and verification pipeline.
+> * **Changes:**
+>   - Added `#[ignore = "TODO: ..."]` attributes to 6 empty test stubs in `opc-da-client/src/com_worker.rs` so `cargo test` honestly reports them as ignored rather than false passes.
+>   - Deleted dead, un-linked legacy test file `opc-da-client/src/opc_da/client/tests.rs` and removed commented `// mod tests;` declaration from `mod.rs`.
+>   - Added Gate 5 (`Polyfill Build: <crate>`) to `scripts/verify.ps1` to independently compile all polyfill crates in `compat/`, preventing silent breakage of `#![no_std]` crates.
+>   - Added PE patch post-validation scan and polyfill DLL minimum file-size sanity check (4KB threshold) to `scripts/package-win7.ps1`.
+>   - Added `make verify` target and clarifying comments to `Makefile`.
+> * **New Constraints:**
+>   - `verify.ps1` now validates both workspace crates and `compat/*` polyfill crates.
+> * **Pruned:** Silent passing of empty test stubs and dead legacy test code.
+
+

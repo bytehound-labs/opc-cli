@@ -889,32 +889,26 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_worker_write_tag_value() {
-        // dummy for now
-    }
+    #[ignore = "TODO: implement write path test using WorkerMockConnector"]
+    async fn test_worker_write_tag_value() {}
 
     #[tokio::test]
-    async fn test_connection_cache_reuse() {
-        // dummy for now
-    }
+    #[ignore = "TODO: implement connection cache reuse verification"]
+    async fn test_connection_cache_reuse() {}
 
     #[tokio::test]
-    async fn test_stale_connection_eviction() {
-        // dummy for now
-    }
+    #[ignore = "TODO: implement stale connection eviction test"]
+    async fn test_stale_connection_eviction() {}
 
     #[tokio::test]
-    async fn test_worker_panic_propagation() {
-        // dummy for now
-    }
+    #[ignore = "TODO: implement panic propagation from worker thread"]
+    async fn test_worker_panic_propagation() {}
 
     #[tokio::test]
-    async fn test_drop_during_active_request() {
-        // dummy for now
-    }
+    #[ignore = "TODO: implement drop-during-active-request test"]
+    async fn test_drop_during_active_request() {}
 
     #[tokio::test]
-    async fn test_worker_init_failure() {
-        // dummy for now
-    }
+    #[ignore = "TODO: implement COM init failure test"]
+    async fn test_worker_init_failure() {}
 }

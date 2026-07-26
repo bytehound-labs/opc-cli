@@ -60,6 +60,17 @@ Invoke-Gate -GateName "Linter Check" -Command "cargo clippy --workspace --all-ta
 Invoke-Gate -GateName "Doc Compilation Check" -Command "cargo test --doc --workspace"
 Invoke-Gate -GateName "Unit & Integration Tests" -Command "cargo test --workspace"
 
+# Polyfill Compilation Gate — compat/ crates excluded from workspace,
+# so they must be compiled independently to catch breakage.
+$compatDir = Join-Path $PSScriptRoot ".." "compat"
+if (Test-Path $compatDir) {
+    $polyfillManifests = @(Get-ChildItem -Path $compatDir -Filter "Cargo.toml" -Recurse -Depth 1)
+    foreach ($manifest in $polyfillManifests) {
+        $crateName = (Split-Path -Parent $manifest.FullName | Split-Path -Leaf)
+        Invoke-Gate -GateName "Polyfill Build: $crateName" -Command "cargo build --manifest-path `"$($manifest.FullName)`" --release"
+    }
+}
+
 # Cleanup temp log
 if (Test-Path $script:LogFile) { Remove-Item $script:LogFile -ErrorAction SilentlyContinue }
 

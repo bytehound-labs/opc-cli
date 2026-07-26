@@ -56,6 +56,11 @@ foreach ($p in $polyfills) {
     if (-not (Test-Path $p.Src)) {
         Write-Error "Failed to build polyfill DLL: $($p.Src)"
     }
+    $dllSize = (Get-Item $p.Src).Length
+    if ($dllSize -lt 4096) {
+        Write-Error "Polyfill DLL '$($p.Src)' is suspiciously small ($dllSize bytes). Build may have failed silently."
+    }
+    Write-Host "    Size: $([math]::Round($dllSize / 1024, 1)) KB" -ForegroundColor DarkGray
 }
 
 # Step 3: PE Import Table Binary Patching
@@ -90,6 +95,27 @@ if ($patchedCount -eq 0) {
     Write-Host "  [OK] Patched $patchedCount import table occurrence(s)." -ForegroundColor Green
     [System.IO.File]::WriteAllBytes($ExePath, $bytes)
 }
+
+# Post-patch validation: ensure no stale import remains
+$patchedBytes = [System.IO.File]::ReadAllBytes($ExePath)
+$staleFound = $false
+for ($i = 0; $i -le ($patchedBytes.Length - $search.Length); $i++) {
+    $match = $true
+    for ($j = 0; $j -lt $search.Length; $j++) {
+        if ($patchedBytes[$i + $j] -ne $search[$j]) {
+            $match = $false
+            break
+        }
+    }
+    if ($match) {
+        $staleFound = $true
+        break
+    }
+}
+if ($staleFound) {
+    Write-Error "PE patch validation FAILED: 'GetSystemTimePreciseAsFileTime' still present in binary after patching."
+}
+Write-Host "  [OK] Post-patch validation passed — no stale imports remain." -ForegroundColor Green
 
 # Step 4: Assemble Dist Directory
 Write-Host "`n[4/6] Assembling dist/opc-cli-win7-x64 directory..." -ForegroundColor Yellow

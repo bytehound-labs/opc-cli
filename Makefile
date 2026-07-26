@@ -1,4 +1,4 @@
-.PHONY: all debug release build test package package-win7 clean
+.PHONY: all debug release build test verify package package-win7 clean
 
 all: debug
 
@@ -10,8 +10,12 @@ release:
 
 build: release
 
+# Quick test — for full quality gate use 'make verify'
 test:
 	cargo test
+
+verify:
+	pwsh -File scripts/verify.ps1
 
 # Creates a modern (Win10+) deployment zip
 package: release

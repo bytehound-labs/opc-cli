@@ -1,5 +1,0 @@
-C:\Users\WSALIGAN\code\opc-cli\compat\winrt-error-polyfill\target\release\deps\api_ms_win_core_winrt_error_l1_1_0.d: src\lib.rs
-
-C:\Users\WSALIGAN\code\opc-cli\compat\winrt-error-polyfill\target\release\deps\api_ms_win_core_winrt_error_l1_1_0.dll: src\lib.rs
-
-src\lib.rs:

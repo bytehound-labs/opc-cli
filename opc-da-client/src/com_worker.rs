@@ -14,33 +14,58 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use tokio::sync::{mpsc, oneshot};
 
+/// Represents a asynchronous request dispatched to the COM worker thread.
 pub enum ComRequest {
+    /// Request to enumerate available OPC DA servers on a host.
     ListServers {
+        /// Hostname or IP address to target.
         host: String,
+        /// One-shot channel to send back the server enumeration result.
         reply: oneshot::Sender<OpcResult<Vec<String>>>,
     },
+    /// Request to read current values, quality, and timestamps for tag IDs.
     ReadTagValues {
+        /// OPC server ProgID.
         server: String,
+        /// List of fully qualified tag identifiers to read.
         tag_ids: Vec<String>,
+        /// One-shot channel to send back the tag values result.
         reply: oneshot::Sender<OpcResult<Vec<TagValue>>>,
     },
+    /// Request to write a typed value to a single tag.
     WriteTagValue {
+        /// OPC server ProgID.
         server: String,
+        /// Tag identifier to write.
         tag_id: String,
+        /// Typed value to write.
         value: OpcValue,
+        /// One-shot channel to send back the write operation result.
         reply: oneshot::Sender<OpcResult<WriteResult>>,
     },
+    /// Request to recursively browse available tags on a server.
     BrowseTags {
+        /// OPC server ProgID.
         server: String,
+        /// Maximum number of tags to discover before stopping.
         max_tags: usize,
+        /// Atomic counter tracking total tags discovered.
         progress: Arc<AtomicUsize>,
+        /// Shared mutex-protected vector storing discovered tag names incrementally.
         tags_sink: Arc<std::sync::Mutex<Vec<String>>>,
+        /// One-shot channel to send back the complete tag discovery list.
         reply: oneshot::Sender<OpcResult<Vec<String>>>,
     },
 }
 
+/// Dedicated background worker thread manager handling COM MTA apartment thread affinity.
+///
+/// Dispatches requests received over an `mpsc` channel to Windows COM interfaces while maintaining
+/// a persistent connection pool and transparently evicting stale connection handles on RPC errors.
 pub struct ComWorker<C: ServerConnector + 'static> {
+    /// Channel sender for dispatching requests to the worker loop.
     pub sender: mpsc::Sender<ComRequest>,
+    /// Thread join handle for clean worker thread teardown.
     pub handle: Option<std::thread::JoinHandle<()>>,
     _phantom: std::marker::PhantomData<C>,
 }

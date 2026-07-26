@@ -3,7 +3,7 @@
 > **Behavioral Source of Truth** for the `opc-da-client` library crate.
 > Defines *what* each module should do — independent of current implementation.
 >
-> Last verified against: 91632d6
+> Last verified against: e74ee22
 
 ---
 
@@ -341,7 +341,7 @@ Defined in § 1.1. See table above.
 
 ## 4. Required Test Coverage
 
-### Unit Tests (existing in `helpers.rs`)
+### Unit Tests (in `helpers.rs`)
 
 - [x] `friendly_com_hint` returns correct hint for known HRESULT codes.
 - [x] `friendly_com_hint` returns `None` for unknown errors.
@@ -357,13 +357,21 @@ Defined in § 1.1. See table above.
 - [x] `variant_to_string` handles `VT_CY` (currency).
 - [x] `variant_to_string` handles `VT_ERROR` with known and unknown HRESULTs.
 - [x] `variant_to_string` returns `(VT ...)` for unknown variant types.
+- [x] `quality_to_string` returns `"Good"` for `0xC0`.
+- [x] `quality_to_string` returns `"Bad"` for `0x00`.
+- [x] `quality_to_string` returns `"Uncertain"` for `0x40`.
+- [x] `quality_to_string` returns `"Unknown(…)"` for unrecognized bitmask.
 
-### Unit Tests (recommended additions)
+### ComWorker Thread Dispatch Unit Tests (in `com_worker.rs`)
 
-- [ ] `quality_to_string` returns `"Good"` for `0xC0`.
-- [ ] `quality_to_string` returns `"Bad"` for `0x00`.
-- [ ] `quality_to_string` returns `"Uncertain"` for `0x40`.
-- [ ] `quality_to_string` returns `"Unknown(…)"` for unrecognized bitmask.
+- [x] `test_worker_starts_and_stops` — worker thread start & stop.
+- [x] `test_worker_list_servers` — server listing dispatch.
+- [x] `test_worker_write_tag_value` — write path dispatch & `WriteResult`.
+- [x] `test_connection_cache_reuse` — server connection pooling across requests (`connect_count == 1`).
+- [x] `test_stale_connection_eviction` — auto-eviction & transparent reconnect on COM/RPC error (`connect_count == 2`).
+- [x] `test_worker_panic_propagation` — worker thread panic safety & error propagation to caller.
+- [x] `test_drop_during_active_request` — graceful worker thread shutdown.
+- [x] `test_worker_init_failure` — initialization error handling.
 
 ### Mock-Backend Integration Tests (in `opc_da.rs`)
 

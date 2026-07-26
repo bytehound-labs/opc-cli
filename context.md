@@ -577,6 +577,23 @@ emove_group errors now logged instead of silently discarded.
 >   - Root `THIRD_PARTY_LICENSES.md` is the sole source of third-party notice data.
 > * **Pruned:** `vendor/NOTICE` file.
 
+## 2026-07-26: TARS Summary — Mechanical Verification Hardening (`/review` + `/plan-making` + `/build` + `/audit`)
+> 📝 **Context Update:**
+> * **Feature:** Hardened mechanical quality checks (`ast-grep` rules, 8-gate `verify.ps1` pipeline, safety rationale comments, and test suites).
+> * **Changes:**
+>   - Fixed `require-safety-comment.yml` `stopBy` semantics (`expression_statement`, `let_declaration`, `return_expression`) to eliminate distant `// SAFETY:` comment false negatives.
+>   - Added `two_unsafe_blocks` invalid test case to `require-safety-comment-test.yml` proving distant comments are rejected.
+>   - Extended `verify.ps1` Gate 7 ripgrep scan to iterate both `opc-da-client/src/` and `opc-cli/src/`.
+>   - Added `sg test` execution to `verify.ps1` Gate 6 prior to `sg scan`.
+>   - Added `unimplemented!` to `no-panic-or-unwrap.yml` AST rule, Gate 7 ripgrep pattern, and test suites.
+>   - Refactored `verify.ps1` `Invoke-Gate` to use `[scriptblock]$Command` and `& $Command`, eliminating `Invoke-Expression` (PSScriptAnalyzer anti-pattern).
+>   - Updated all `verify.ps1` call sites to pass script blocks.
+> * **New Constraints:**
+>   - `verify.ps1` Gate 6 automatically verifies AST rule unit tests before scanning code.
+>   - `verify.ps1` Gate 7 checks both workspace member `src/` directories for forbidden macros (`println!`, `dbg!`, `todo!`, `unimplemented!`).
+> * **Pruned:** `Invoke-Expression` string-eval in `verify.ps1`.
+
+
 
 
 

@@ -1,4 +1,9 @@
-This project includes files from the OPC Foundation:
+This project includes code derived from the following sources:
 
-- opc_da_bindings/.metadata/OPCComn.idl, opc_da_bindings/.metadata/opcda.idl
-  These files are subject to the OPC Foundation's license terms.
+1. Ronbb/rust_opc (https://github.com/Ronbb/rust_opc)
+   - Files: opc-da-client/src/bindings/da/bindings.rs
+   - Files: opc-da-client/src/bindings/comn/bindings.rs
+   - License: MIT (© 2025 Wang Ruobiao)
+   - Generated from OPC Foundation IDL files (opcda.idl, OPCComn.idl)
+
+See THIRD_PARTY_LICENSES.md for full license text.

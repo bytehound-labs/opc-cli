@@ -87,6 +87,13 @@ Output: `dist/opc-cli-win7-x64/` and `dist/opc-cli-win7-x64.zip`
 
 Simply copy the extracted `dist/opc-cli-win7-x64/` folder to a USB drive and run on the target machine without installing Visual C++ redistributables or Windows updates.
 
+## 🙏 Acknowledgments
+
+- [**rust_opc**](https://github.com/Ronbb/rust_opc) by Wang Ruobiao — original OPC DA Rust bindings and COM interface generation pipeline.
+- [**OPC Foundation**](https://opcfoundation.org/) — OPC Data Access specification and IDL interface definitions.
+- [**windows-rs**](https://github.com/microsoft/windows-rs) by Microsoft — Windows API bindings for Rust.
+- [**ratatui**](https://github.com/ratatui/ratatui) — terminal user interface framework.
+
 ## 📄 License
 
 This project is licensed under the MIT License — see the [LICENSE](LICENSE) file for details.

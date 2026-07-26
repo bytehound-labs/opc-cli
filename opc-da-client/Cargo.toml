@@ -1,12 +1,12 @@
 [package]
 name = "opc-da-client"
-authors = ["Wendell Saligan <saliganw@gmail.com>"]
+authors.workspace = true
 version = "0.2.0"
-edition = "2024"
-rust-version = "1.93.1"
+edition.workspace = true
+rust-version.workspace = true
 description = "Backend-agnostic OPC DA client library for Rust — async, trait-based, with transparent COM management"
-license = "MIT"
-repository = "https://github.com/wends155/opc-cli"
+license.workspace = true
+repository.workspace = true
 readme = "README.md"
 keywords = ["opc", "opc-da", "windows", "automation", "scada"]
 categories = ["api-bindings", "network-programming"]

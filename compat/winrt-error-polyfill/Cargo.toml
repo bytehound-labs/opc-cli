@@ -3,6 +3,9 @@ name = "winrt-error-polyfill"
 version = "0.1.0"
 edition = "2021"
 publish = false
+authors = ["Wendell Saligan <saliganw@gmail.com>"]
+license = "MIT"
+repository = "https://github.com/wends155/opc-cli"
 description = "WinRT error API stubs for Windows 7 / Server 2008 R2"
 
 [lib]

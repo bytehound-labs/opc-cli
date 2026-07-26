@@ -128,6 +128,8 @@ New-Item -ItemType Directory -Force -Path $DistDir | Out-Null
 Copy-Item $ExePath "$DistDir/"
 Copy-Item -ErrorAction SilentlyContinue "target/release/opc-cli.pdb" "$DistDir/"
 Copy-Item "README.md" "$DistDir/"
+Copy-Item "LICENSE" "$DistDir/"
+Copy-Item "THIRD_PARTY_LICENSES.md" "$DistDir/"
 
 foreach ($p in $polyfills) {
     Copy-Item $p.Src "$DistDir/$($p.Dst)"

@@ -47,6 +47,8 @@ switch ($Task) {
         Copy-Item target/release/opc-cli.exe "$distDir/"
         Copy-Item -ErrorAction SilentlyContinue target/release/opc-cli.pdb "$distDir/"
         Copy-Item README.md "$distDir/"
+        Copy-Item LICENSE "$distDir/"
+        Copy-Item THIRD_PARTY_LICENSES.md "$distDir/"
         $zipPath = "dist/opc-cli-x64.zip"
         if (Test-Path $zipPath) { Remove-Item $zipPath }
         Compress-Archive -Path "$distDir/*" -DestinationPath $zipPath -Force

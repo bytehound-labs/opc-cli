@@ -551,6 +551,22 @@ emove_group errors now logged instead of silently discarded.
 >   - `architecture.md` fully satisfies all 16 governance section requirements.
 > * **Pruned:** Informal module boundary descriptions in `architecture.md`.
 
+## 2026-07-26: TARS Summary — License & Attribution Hygiene (`/review` + `/plan-making`)
+> 📝 **Context Update:**
+> * **Feature:** Established complete license compliance, upstream attribution, and package bundle license distribution across all crates.
+> * **Changes:**
+>   - Added provenance comment headers to `opc-da-client/src/bindings/da/mod.rs` and `comn/mod.rs` documenting origin from `Ronbb/rust_opc` (MIT, © 2025 Wang Ruobiao) and OPC Foundation IDLs.
+>   - Created root-level `THIRD_PARTY_LICENSES.md` consolidating upstream MIT license text, OPC Foundation IDL credits, and dependency license references.
+>   - Pruned stale `vendor/opc_classic_utils/` crate and `vendor/LICENSE`, updated `vendor/NOTICE` with correct frozen binding paths.
+>   - Added `authors`, `license = "MIT"`, and `repository` metadata to all 3 polyfill `Cargo.toml` files in `compat/`.
+>   - Added `[workspace.package]` to root `Cargo.toml` and inherited metadata in `opc-cli` and `opc-da-client` package declarations.
+>   - Added `## 🙏 Acknowledgments` section to `README.md`.
+>   - Updated `scripts/package.ps1` and `scripts/package-win7.ps1` to copy `LICENSE` and `THIRD_PARTY_LICENSES.md` into release ZIP bundles.
+> * **New Constraints:**
+>   - Release packages now automatically include `LICENSE` and `THIRD_PARTY_LICENSES.md`.
+> * **Pruned:** Stale `vendor/opc_classic_utils/` directory and outdated `vendor/NOTICE` paths.
+
+
 
 
 

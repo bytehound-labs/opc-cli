@@ -1,5 +1,5 @@
 id: no-panic-or-unwrap
-message: Prohibit unwrap, expect, panic, and todo in non-test library code
+message: Prohibit unwrap, expect, panic, todo, and unimplemented in non-test library code
 severity: error
 language: rust
 files:
@@ -16,6 +16,7 @@ rule:
     - pattern: $X.expect($$$ARGS)
     - pattern: panic!($$$ARGS)
     - pattern: todo!($$$ARGS)
+    - pattern: unimplemented!($$$ARGS)
   not:
     inside:
       stopBy: end

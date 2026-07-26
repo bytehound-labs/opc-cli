@@ -39,6 +39,15 @@ snapshots:
       start: 26
       end: 45
   ? |
+    fn unsafe_fn_unimplemented() {
+        unimplemented!("not yet");
+    }
+  : labels:
+    - source: unimplemented!("not yet")
+      style: primary
+      start: 35
+      end: 60
+  ? |
     fn unsafe_fn_unwrap() {
         let x: Option<i32> = None;
         let y = x.unwrap();

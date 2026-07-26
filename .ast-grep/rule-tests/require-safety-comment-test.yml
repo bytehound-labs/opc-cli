@@ -45,6 +45,17 @@ valid:
             }
         }
     }
+  - |
+    fn two_safe_blocks() {
+        // SAFETY: First block rationale
+        unsafe {
+            let x = 0;
+        }
+        // SAFETY: Second block rationale
+        unsafe {
+            let y = 1;
+        }
+    }
 invalid:
   - |
     fn unsafe_fn_no_comment() {
@@ -57,5 +68,16 @@ invalid:
         // Just a normal comment
         unsafe {
             let x = 0;
+        }
+    }
+  - |
+    fn two_unsafe_blocks() {
+        // SAFETY: This explains the first unsafe block
+        unsafe {
+            let x = 0;
+        }
+        let y = 1;
+        unsafe {
+            let z = 2;
         }
     }

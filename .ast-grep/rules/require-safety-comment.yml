@@ -17,7 +17,11 @@ rule:
   not:
     any:
       - inside:
-          stopBy: end
+          stopBy:
+            any:
+              - kind: expression_statement
+              - kind: let_declaration
+              - kind: return_expression
           follows:
             any:
               - kind: line_comment

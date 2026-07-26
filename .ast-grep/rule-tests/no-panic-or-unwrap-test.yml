@@ -53,6 +53,11 @@ valid:
             let _ = x.unwrap();
         }
     }
+  - |
+    #[test]
+    fn test_unimplemented() {
+        unimplemented!("not yet");
+    }
 invalid:
   - |
     fn unsafe_fn_unwrap() {
@@ -71,4 +76,8 @@ invalid:
   - |
     fn unsafe_fn_todo() {
         todo!("impl later");
+    }
+  - |
+    fn unsafe_fn_unimplemented() {
+        unimplemented!("not yet");
     }

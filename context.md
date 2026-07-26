@@ -566,6 +566,18 @@ emove_group errors now logged instead of silently discarded.
 >   - Release packages now automatically include `LICENSE` and `THIRD_PARTY_LICENSES.md`.
 > * **Pruned:** Stale `vendor/opc_classic_utils/` directory and outdated `vendor/NOTICE` paths.
 
+## 2026-07-26: TARS Summary — Unused Vendor Cleanup (`/plan-making`)
+> 📝 **Context Update:**
+> * **Feature:** Confirmed removal of all legacy vendored packages (`opc_da`, `opc_da_bindings`, `opc_comn_bindings`, `opc_classic_utils`), deleted obsolete `vendor/NOTICE`, and cleaned up `.gitignore`.
+> * **Changes:**
+>   - Deleted redundant `vendor/NOTICE` (superseded by `THIRD_PARTY_LICENSES.md` at root).
+>   - Cleaned up duplicate typo rule `!.vendor/redist/*.msi` from `.gitignore`.
+>   - Verified `vendor/redist/` remains active as the dedicated drop folder for Win7 redistributable MSIs.
+> * **New Constraints:**
+>   - Root `THIRD_PARTY_LICENSES.md` is the sole source of third-party notice data.
+> * **Pruned:** `vendor/NOTICE` file.
+
+
 
 
 

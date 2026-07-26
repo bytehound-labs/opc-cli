@@ -13,7 +13,6 @@ target/
 *.exe
 *.pdb
 *.msi
-!.vendor/redist/*.msi
 !vendor/redist/*.msi
 *.msm
 *.msp

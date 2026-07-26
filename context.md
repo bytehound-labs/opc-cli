@@ -524,6 +524,35 @@ emove_group errors now logged instead of silently discarded.
 >   - `scripts/package.ps1` is the single source of truth for task dispatching. `Makefile` delegates to it.
 > * **Pruned:** Divergent POSIX `cp`/`tar` inline commands in `Makefile`.
 
+## 2026-07-26: TARS Summary — Documentation Sync (`/update-doc`)
+> 📝 **Context Update:**
+> * **Feature:** Synchronized code documentation, rustdoc comments, and `spec.md` behavioral contracts.
+> * **Changes:**
+>   - Added rustdoc comments for `ComRequest` enum, `ComWorker` struct, and `ComWorker::start` method in `opc-da-client/src/com_worker.rs`.
+>   - Updated verification hash in `opc-da-client/spec.md` to `e74ee22`.
+>   - Updated test status for `quality_to_string` helper tests to `[x]` and added `ComWorker` thread dispatch unit test checklist entries to `opc-da-client/spec.md`.
+>   - Verified alignment between `Cargo.toml` description, `lib.rs` / `main.rs` crate-level comments, and `README.md` files.
+> * **New Constraints:**
+>   - `opc-da-client/spec.md` verification hash recorded at commit `e74ee22`.
+> * **Pruned:** Outdated verification hash and pending test checklist items in `spec.md`.
+
+## 2026-07-26: TARS Summary — Architecture Specification Alignment (`/architecture`)
+> 📝 **Context Update:**
+> * **Feature:** Refactored `architecture.md` to achieve 100% compliance with `.agents/rules/architecture-rules.md`.
+> * **Changes:**
+>   - Restructured `Project Objectives & Key Features` into explicit `Primary Objectives`, `Key Features`, `Target Users / Audience`, and `Non-Goals` subsections.
+>   - Added `Project Layout` directory tree mapping `opc-cli/`, `opc-da-client/`, `compat/`, `scripts/`, `.agents/`.
+>   - Restructured `Module Boundaries` into explicit `Owns`, `Does NOT own`, `Trait Interfaces`, and `Mock Availability` declarations for all 4 key components (`opc-cli`, `opc-da-client`, `ComWorker`, `compat/*`).
+>   - Added `Dependency Direction Rules` matrix table (§4).
+>   - Added Mermaid `Error Propagation Flow` sequence diagram (§5).
+>   - Added `Documentation Conventions` section (§1.11).
+>   - Verified all 16 required sections are present and fully populated.
+> * **New Constraints:**
+>   - `architecture.md` fully satisfies all 16 governance section requirements.
+> * **Pruned:** Informal module boundary descriptions in `architecture.md`.
+
+
+
 
 
 

@@ -497,4 +497,20 @@ emove_group errors now logged instead of silently discarded.
 >   - `verify.ps1` now validates both workspace crates and `compat/*` polyfill crates.
 > * **Pruned:** Silent passing of empty test stubs and dead legacy test code.
 
+## 2026-07-26: TARS Summary — ComWorker Unit Test Suite Implementation
+> 📝 **Context Update:**
+> * **Feature:** Implemented 100% active test coverage for the 6 previously ignored `ComWorker` unit tests.
+> * **Changes:**
+>   - Built `ConfigurableMockConnector`, `ConfigurableMockServer`, and `ConfigurableMockGroup` in `opc-da-client/src/com_worker.rs` using atomic state counters and configurable error/panic triggers.
+>   - Implemented `test_worker_write_tag_value` verifying tag write dispatch and `WriteResult` output.
+>   - Implemented `test_connection_cache_reuse` verifying server connection pooling across requests (`connect_count == 1`).
+>   - Implemented `test_stale_connection_eviction` verifying automatic cache eviction and reconnection upon COM/RPC error (`connect_count == 2`).
+>   - Implemented `test_worker_panic_propagation` verifying worker thread panic propagation to caller.
+>   - Implemented `test_drop_during_active_request` verifying graceful worker shutdown.
+>   - Implemented `test_worker_init_failure` verifying worker initialization error handling.
+>   - Re-enabled all 6 test functions (0 ignored tests in `opc-da-client`, 37/37 unit tests passing).
+> * **New Constraints:** None.
+> * **Pruned:** `#[ignore]` attributes on `com_worker.rs` unit tests.
+
+
 

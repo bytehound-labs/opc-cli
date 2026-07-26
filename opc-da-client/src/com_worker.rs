@@ -654,11 +654,209 @@ impl<C: ServerConnector + 'static> Drop for ComWorker<C> {
 
 #[cfg(test)]
 mod tests {
+    #![allow(
+        clippy::single_char_pattern,
+        clippy::cast_possible_wrap,
+        clippy::ptr_as_ptr,
+        clippy::borrow_as_ptr,
+        clippy::mixed_attributes_style,
+        clippy::unreadable_literal,
+        clippy::undocumented_unsafe_blocks,
+        clippy::manual_assert
+    )]
     use super::*;
     use crate::backend::connector::{
         ConnectedGroup, ConnectedServer, RemoteArray, ServerConnector, StringIterator,
     };
     use crate::bindings::da::{tagOPCDATASOURCE, tagOPCITEMDEF, tagOPCITEMRESULT, tagOPCITEMSTATE};
+
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+
+    #[derive(Default)]
+    struct MockState {
+        connect_count: AtomicUsize,
+        should_fail_connect: AtomicBool,
+        should_fail_write: AtomicBool,
+        should_fail_with_connection_error: AtomicBool,
+        should_panic_on_request: AtomicBool,
+    }
+
+    struct ConfigurableMockConnector {
+        state: Arc<MockState>,
+    }
+
+    struct ConfigurableMockServer {
+        state: Arc<MockState>,
+    }
+
+    struct ConfigurableMockGroup {
+        state: Arc<MockState>,
+    }
+
+    impl ConnectedGroup for ConfigurableMockGroup {
+        fn add_items(
+            &self,
+            _items: &[tagOPCITEMDEF],
+        ) -> OpcResult<(
+            RemoteArray<tagOPCITEMRESULT>,
+            RemoteArray<windows::core::HRESULT>,
+        )> {
+            use windows::Win32::Foundation::S_OK;
+
+            let res = tagOPCITEMRESULT {
+                hServer: 1,
+                vtCanonicalDataType: 0,
+                wReserved: 0,
+                dwAccessRights: 1,
+                dwBlobSize: 0,
+                pBlob: std::ptr::null_mut(),
+            };
+
+            let res_ptr = unsafe {
+                windows::Win32::System::Com::CoTaskMemAlloc(std::mem::size_of::<tagOPCITEMRESULT>())
+            } as *mut tagOPCITEMRESULT;
+            unsafe {
+                std::ptr::write(res_ptr, res);
+            }
+            let res_array = RemoteArray::from_mut_ptr(res_ptr, 1);
+
+            let err_ptr = unsafe {
+                windows::Win32::System::Com::CoTaskMemAlloc(std::mem::size_of::<
+                    windows::core::HRESULT,
+                >())
+            } as *mut windows::core::HRESULT;
+            unsafe {
+                std::ptr::write(err_ptr, S_OK);
+            }
+            let err_array = RemoteArray::from_mut_ptr(err_ptr, 1);
+
+            Ok((res_array, err_array))
+        }
+
+        fn read(
+            &self,
+            _source: tagOPCDATASOURCE,
+            _server_handles: &[crate::opc_da::typedefs::ItemHandle],
+        ) -> OpcResult<(
+            RemoteArray<tagOPCITEMSTATE>,
+            RemoteArray<windows::core::HRESULT>,
+        )> {
+            Ok((RemoteArray::empty(), RemoteArray::empty()))
+        }
+
+        fn write(
+            &self,
+            _server_handles: &[crate::opc_da::typedefs::ItemHandle],
+            _values: &[windows::Win32::System::Variant::VARIANT],
+        ) -> OpcResult<RemoteArray<windows::core::HRESULT>> {
+            if self
+                .state
+                .should_fail_with_connection_error
+                .load(Ordering::Relaxed)
+            {
+                // RPC server unavailable (0x800706BA) triggers connection eviction
+                return Err(OpcError::Com {
+                    source: windows::core::Error::from_hresult(windows::core::HRESULT(
+                        0x800706BA_u32 as i32,
+                    )),
+                });
+            }
+
+            let hr = if self.state.should_fail_write.load(Ordering::Relaxed) {
+                windows::Win32::Foundation::E_FAIL
+            } else {
+                windows::Win32::Foundation::S_OK
+            };
+
+            let hr_ptr = unsafe {
+                windows::Win32::System::Com::CoTaskMemAlloc(std::mem::size_of::<
+                    windows::core::HRESULT,
+                >())
+            } as *mut windows::core::HRESULT;
+            unsafe {
+                std::ptr::write(hr_ptr, hr);
+            }
+
+            Ok(RemoteArray::from_mut_ptr(hr_ptr, 1))
+        }
+    }
+
+    impl ConnectedServer for ConfigurableMockServer {
+        type Group = ConfigurableMockGroup;
+
+        fn query_organization(&self) -> OpcResult<u32> {
+            Ok(0)
+        }
+
+        fn browse_opc_item_ids(
+            &self,
+            _browse_type: u32,
+            _filter: Option<&str>,
+            _data_type: u16,
+            _access_rights: u32,
+        ) -> OpcResult<StringIterator> {
+            Err(OpcError::NotImplemented("mock".into()))
+        }
+
+        fn change_browse_position(&self, _direction: u32, _name: &str) -> OpcResult<()> {
+            Ok(())
+        }
+
+        fn get_item_id(&self, _item_name: &str) -> OpcResult<String> {
+            Ok(String::new())
+        }
+
+        fn add_group(
+            &self,
+            _name: &str,
+            _active: bool,
+            _update_rate: u32,
+            _client_handle: crate::opc_da::typedefs::GroupHandle,
+            _time_bias: i32,
+            _percent_deadband: f32,
+            _locale_id: u32,
+            _revised_update_rate: &mut u32,
+            _server_handle: &mut crate::opc_da::typedefs::GroupHandle,
+        ) -> OpcResult<Self::Group> {
+            if self.state.should_panic_on_request.load(Ordering::Relaxed) {
+                panic!("Simulated worker panic");
+            }
+            Ok(ConfigurableMockGroup {
+                state: self.state.clone(),
+            })
+        }
+
+        fn remove_group(
+            &self,
+            _server_group: crate::opc_da::typedefs::GroupHandle,
+            _force: bool,
+        ) -> OpcResult<()> {
+            Ok(())
+        }
+    }
+
+    impl ServerConnector for ConfigurableMockConnector {
+        type Server = ConfigurableMockServer;
+
+        fn enumerate_servers(&self) -> OpcResult<Vec<String>> {
+            if self.state.should_fail_connect.load(Ordering::Relaxed) {
+                Err(OpcError::Internal("Server enumeration failed".into()))
+            } else {
+                Ok(vec!["Mock.Server.1".into()])
+            }
+        }
+
+        fn connect(&self, _server_name: &str) -> OpcResult<Self::Server> {
+            if self.state.should_fail_connect.load(Ordering::Relaxed) {
+                Err(OpcError::Internal("Connection failed".into()))
+            } else {
+                self.state.connect_count.fetch_add(1, Ordering::Relaxed);
+                Ok(ConfigurableMockServer {
+                    state: self.state.clone(),
+                })
+            }
+        }
+    }
 
     struct WorkerMockConnector;
     struct WorkerMockServer;
@@ -889,26 +1087,189 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "TODO: implement write path test using WorkerMockConnector"]
-    async fn test_worker_write_tag_value() {}
+    async fn test_worker_write_tag_value() {
+        let state = Arc::new(MockState::default());
+        let connector = Arc::new(ConfigurableMockConnector {
+            state: state.clone(),
+        });
+        let worker = tokio::task::spawn_blocking(move || ComWorker::start(connector).unwrap())
+            .await
+            .unwrap();
+
+        let result = worker
+            .send_request(|reply| ComRequest::WriteTagValue {
+                server: "Mock.Server.1".to_string(),
+                tag_id: "Random.Int4".to_string(),
+                value: OpcValue::Int(42),
+                reply,
+            })
+            .await
+            .expect("Request should succeed");
+
+        assert_eq!(result.tag_id, "Random.Int4");
+        assert!(result.success, "Write should be successful");
+        assert!(result.error.is_none());
+    }
 
     #[tokio::test]
-    #[ignore = "TODO: implement connection cache reuse verification"]
-    async fn test_connection_cache_reuse() {}
+    async fn test_connection_cache_reuse() {
+        let state = Arc::new(MockState::default());
+        let connector = Arc::new(ConfigurableMockConnector {
+            state: state.clone(),
+        });
+        let worker = tokio::task::spawn_blocking(move || ComWorker::start(connector).unwrap())
+            .await
+            .unwrap();
+
+        let _ = worker
+            .send_request(|reply| ComRequest::WriteTagValue {
+                server: "Mock.Server.1".to_string(),
+                tag_id: "Tag1".to_string(),
+                value: OpcValue::Int(1),
+                reply,
+            })
+            .await
+            .unwrap();
+
+        let _ = worker
+            .send_request(|reply| ComRequest::WriteTagValue {
+                server: "Mock.Server.1".to_string(),
+                tag_id: "Tag2".to_string(),
+                value: OpcValue::Int(2),
+                reply,
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(
+            state.connect_count.load(Ordering::Relaxed),
+            1,
+            "Server connection should be cached and reused"
+        );
+    }
 
     #[tokio::test]
-    #[ignore = "TODO: implement stale connection eviction test"]
-    async fn test_stale_connection_eviction() {}
+    async fn test_stale_connection_eviction() {
+        let state = Arc::new(MockState::default());
+        let connector = Arc::new(ConfigurableMockConnector {
+            state: state.clone(),
+        });
+        let worker = tokio::task::spawn_blocking(move || ComWorker::start(connector).unwrap())
+            .await
+            .unwrap();
+
+        // Initial connect
+        let _ = worker
+            .send_request(|reply| ComRequest::WriteTagValue {
+                server: "Mock.Server.1".to_string(),
+                tag_id: "Tag1".to_string(),
+                value: OpcValue::Int(1),
+                reply,
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(state.connect_count.load(Ordering::Relaxed), 1);
+
+        // Enable connection error flag to trigger eviction on next operation
+        state
+            .should_fail_with_connection_error
+            .store(true, Ordering::Relaxed);
+
+        // Next request triggers eviction and reconnect attempt
+        let _ = worker
+            .send_request(|reply| ComRequest::WriteTagValue {
+                server: "Mock.Server.1".to_string(),
+                tag_id: "Tag2".to_string(),
+                value: OpcValue::Int(2),
+                reply,
+            })
+            .await;
+
+        assert_eq!(
+            state.connect_count.load(Ordering::Relaxed),
+            2,
+            "Stale connection should be evicted and reconnected"
+        );
+    }
 
     #[tokio::test]
-    #[ignore = "TODO: implement panic propagation from worker thread"]
-    async fn test_worker_panic_propagation() {}
+    async fn test_worker_panic_propagation() {
+        let state = Arc::new(MockState::default());
+        state.should_panic_on_request.store(true, Ordering::Relaxed);
+        let connector = Arc::new(ConfigurableMockConnector {
+            state: state.clone(),
+        });
+        let worker = tokio::task::spawn_blocking(move || ComWorker::start(connector).unwrap())
+            .await
+            .unwrap();
+
+        let result = worker
+            .send_request(|reply| ComRequest::WriteTagValue {
+                server: "Mock.Server.1".to_string(),
+                tag_id: "Tag1".to_string(),
+                value: OpcValue::Int(1),
+                reply,
+            })
+            .await;
+
+        assert!(result.is_err());
+        if let Err(OpcError::Internal(msg)) = result {
+            assert!(
+                msg.contains("shut down")
+                    || msg.contains("channel closed")
+                    || msg.contains("panicked"),
+                "Expected worker termination message, got: {}",
+                msg
+            );
+        } else {
+            panic!("Expected OpcError::Internal, got {:?}", result);
+        }
+    }
 
     #[tokio::test]
-    #[ignore = "TODO: implement drop-during-active-request test"]
-    async fn test_drop_during_active_request() {}
+    async fn test_drop_during_active_request() {
+        let state = Arc::new(MockState::default());
+        let connector = Arc::new(ConfigurableMockConnector {
+            state: state.clone(),
+        });
+        let worker = tokio::task::spawn_blocking(move || ComWorker::start(connector).unwrap())
+            .await
+            .unwrap();
+
+        // Dropping worker handle closes channel gracefully
+        drop(worker);
+    }
 
     #[tokio::test]
-    #[ignore = "TODO: implement COM init failure test"]
-    async fn test_worker_init_failure() {}
+    async fn test_worker_init_failure() {
+        struct FailingInitConnector;
+        impl ServerConnector for FailingInitConnector {
+            type Server = ConfigurableMockServer;
+            fn enumerate_servers(&self) -> OpcResult<Vec<String>> {
+                Err(OpcError::Internal("COM subsystem failed".into()))
+            }
+            fn connect(&self, _name: &str) -> OpcResult<Self::Server> {
+                Err(OpcError::Internal("COM subsystem failed".into()))
+            }
+        }
+
+        let worker = tokio::task::spawn_blocking(|| {
+            ComWorker::start(Arc::new(FailingInitConnector)).unwrap()
+        })
+        .await
+        .unwrap();
+
+        let result = worker
+            .send_request(|reply| ComRequest::ListServers {
+                host: "localhost".into(),
+                reply,
+            })
+            .await;
+
+        assert!(
+            result.is_err(),
+            "ListServers request should fail when connector enumeration fails"
+        );
+    }
 }

@@ -182,22 +182,29 @@ To maintain a clean and pristine public-facing release history, the repository u
 
 ## Build System
 
-The project uses a dual build system for flexibility:
+The project uses a unified dual-interface build system:
 
-1.  **Makefile**: The primary entry point for developers on systems with `make`.
-    - `make debug`: Fast development build.
-    - `make release`: Optimized production build.
-    - `make package`: Packages the modern (Win10+) release build into `dist/opc-cli-x64.zip`.
-    - `make package-win7`: Packages the legacy (Win7/Server 2008 R2) release build into `dist/opc-cli-win7-x64.zip`.
-2.  **scripts/package.ps1**: A PowerShell script for Windows environments without `make`.
-    - Usage: `pwsh -File ./scripts/package.ps1 <task>`
-    - Supported tasks: `debug`, `release`, `test`, `package`, `package-win7`.
+1.  **Makefile**: The primary CLI entry point for developers. All complex multi-step workflows delegate directly to PowerShell scripts.
+    - `make debug`: Fast development build (`cargo build`).
+    - `make release` / `make build`: Optimized production build (`cargo build --release`).
+    - `make test`: Quick unit test run (`cargo test`).
+    - `make verify`: Executes 5-gate quality pipeline (`pwsh scripts/verify.ps1`).
+    - `make package`: Builds modern (Win10+) release bundle into `dist/opc-cli-x64.zip`.
+    - `make package-win7`: Builds legacy (Win7/Server 2008 R2) release bundle into `dist/opc-cli-win7-x64.zip`.
+    - `make logs`: Runs log inspector (`pwsh scripts/check-logs.ps1`).
+    - `make commit MSG="..."`: Runs quality gate, commits, and pushes to remote (`pwsh scripts/commit.ps1`).
+    - `make release-merge`: Clean release merge from `dev` to `main` (`pwsh scripts/Merge-ToMain.ps1`).
+    - `make clean`: Cleans build artifacts and `dist/` directory.
+
+2.  **scripts/package.ps1**: Single PowerShell task dispatcher for all workspace operations.
+    - Usage: `pwsh -File ./scripts/package.ps1 -Task <task>`
+    - Supported tasks: `debug`, `release`, `build`, `test`, `verify`, `package`, `package-win7`, `logs`, `commit`, `release-merge`.
+
 3.  **scripts/package-win7.ps1**: Dedicated legacy packaging pipeline that compiles polyfills, PE-patches the binary, and bundles redistributables.
-4.  **Verification Gate**: `pwsh -File scripts/verify.ps1` — runs formatter, linter, and tests sequentially.
-5.  **Release Merging Utility**: `powershell -File scripts/Merge-ToMain.ps1`
-    - Automates clean releases from development branches to the `main` branch.
-    - Strips agent workflows, logs, `compat/`, `dist/`, and build artifacts from the release branch index and cleans `.gitignore`.
-    - Automatically resolves modify/delete conflicts for stripped assets.
+4.  **scripts/verify.ps1**: Universal 5-gate quality pipeline (formatter, linter, doc-tests, workspace tests, polyfill compilation).
+5.  **scripts/check-logs.ps1**: Log inspector and deep analysis utility.
+6.  **scripts/commit.ps1**: Quality-gated commit & push pipeline.
+7.  **scripts/Merge-ToMain.ps1**: Automated clean release merge tool.
 
 ## Legacy Compatibility (Windows 7 / Server 2008 R2)
 

@@ -512,5 +512,18 @@ emove_group errors now logged instead of silently discarded.
 > * **New Constraints:** None.
 > * **Pruned:** `#[ignore]` attributes on `com_worker.rs` unit tests.
 
+## 2026-07-26: TARS Summary — Unified Build & Automation Infrastructure
+> 📝 **Context Update:**
+> * **Feature:** Integrated and unified `Makefile` and `scripts/` ecosystem into a single delegated build pipeline.
+> * **Changes:**
+>   - Refactored `scripts/package.ps1` into a single task dispatcher with strict mode, `$RepoRoot` navigation, and full task coverage (`debug`, `release`, `build`, `test`, `verify`, `package`, `package-win7`, `logs`, `commit`, `release-merge`).
+>   - Updated `Makefile` to delegate `package`, `package-win7`, `verify`, `logs`, `commit`, and `release-merge` directly to PowerShell scripts, eliminating divergent POSIX inline commands.
+>   - Updated `architecture.md § Build System` to document the unified dual-interface build system.
+>   - Validated that `make package` / `pwsh scripts/package.ps1 -Task package` produces `dist/opc-cli-x64.zip` cleanly and all 5 verification gates pass.
+> * **New Constraints:**
+>   - `scripts/package.ps1` is the single source of truth for task dispatching. `Makefile` delegates to it.
+> * **Pruned:** Divergent POSIX `cp`/`tar` inline commands in `Makefile`.
+
+
 
 

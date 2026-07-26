@@ -1,4 +1,4 @@
-.PHONY: all debug release build test verify package package-win7 clean
+.PHONY: all debug release build test verify package package-win7 logs commit release-merge clean
 
 all: debug
 
@@ -17,17 +17,25 @@ test:
 verify:
 	pwsh -File scripts/verify.ps1
 
-# Creates a modern (Win10+) deployment zip
-package: release
-	mkdir -p dist/opc-cli-x64
-	cp target/release/opc-cli.exe dist/opc-cli-x64/
-	cp target/release/opc-cli.pdb dist/opc-cli-x64/ || true
-	cp README.md dist/opc-cli-x64/
-	tar -a -c -f dist/opc-cli-x64.zip dist/opc-cli-x64/*
+# Creates a modern (Win10+) deployment zip via PowerShell single source of truth
+package:
+	pwsh -File scripts/package.ps1 -Task package
 
 # Creates a Win7 / Server 2008 R2 legacy deployment zip
 package-win7:
 	pwsh -File scripts/package-win7.ps1
+
+# Inspects application log file
+logs:
+	pwsh -File scripts/check-logs.ps1
+
+# Runs quality gate, stages, commits, and pushes to remote
+commit:
+	pwsh -File scripts/commit.ps1 -Message "$(MSG)"
+
+# Clean release merge from dev to main
+release-merge:
+	pwsh -File scripts/Merge-ToMain.ps1
 
 clean:
 	cargo clean

@@ -1,0 +1,18 @@
+[package]
+name = "winrt-error-polyfill"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "WinRT error API stubs for Windows 7 / Server 2008 R2"
+
+[lib]
+name = "api_ms_win_core_winrt_error_l1_1_0"
+crate-type = ["cdylib"]
+
+[workspace]
+
+[profile.dev]
+panic = "abort"
+
+[profile.release]
+panic = "abort"

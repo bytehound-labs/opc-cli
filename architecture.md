@@ -187,15 +187,31 @@ The project uses a dual build system for flexibility:
 1.  **Makefile**: The primary entry point for developers on systems with `make`.
     - `make debug`: Fast development build.
     - `make release`: Optimized production build.
-    - `make package`: Packages the release build into a ZIP.
+    - `make package`: Packages the modern (Win10+) release build into `dist/opc-cli-x64.zip`.
+    - `make package-win7`: Packages the legacy (Win7/Server 2008 R2) release build into `dist/opc-cli-win7-x64.zip`.
 2.  **scripts/package.ps1**: A PowerShell script for Windows environments without `make`.
     - Usage: `pwsh -File ./scripts/package.ps1 <task>`
-    - Supported tasks: `debug`, `release`, `test`, `package`.
-3.  **Verification Gate**: `pwsh -File scripts/verify.ps1` — runs formatter, linter, and tests sequentially.
-4.  **Release Merging Utility**: `powershell -File scripts/Merge-ToMain.ps1`
+    - Supported tasks: `debug`, `release`, `test`, `package`, `package-win7`.
+3.  **scripts/package-win7.ps1**: Dedicated legacy packaging pipeline that compiles polyfills, PE-patches the binary, and bundles redistributables.
+4.  **Verification Gate**: `pwsh -File scripts/verify.ps1` — runs formatter, linter, and tests sequentially.
+5.  **Release Merging Utility**: `powershell -File scripts/Merge-ToMain.ps1`
     - Automates clean releases from development branches to the `main` branch.
-    - Strips agent workflows, logs, and build artifacts from the release branch index and cleans `.gitignore`.
+    - Strips agent workflows, logs, `compat/`, `dist/`, and build artifacts from the release branch index and cleans `.gitignore`.
     - Automatically resolves modify/delete conflicts for stripped assets.
+
+## Legacy Compatibility (Windows 7 / Server 2008 R2)
+
+Modern Rust binaries target Windows 8+ APIs by default. To support legacy NT 6.1 industrial environments (Windows 7 SP1 / Server 2008 R2 SP1), the repository implements a polyfill and binary-patching pipeline:
+
+| Missing API on NT 6.1 | Polyfill / Patch Mechanism | Crate Source |
+| :--- | :--- | :--- |
+| `WaitOnAddress` / `WakeByAddressSingle` / `WakeByAddressAll` | 1ms polling `Sleep()` loop | `compat/synch-polyfill` (`api-ms-win-core-synch-l1-2-0.dll`) |
+| `RoOriginateError` / WinRT Error APIs | No-op stub returning `S_OK`/`S_FALSE` | `compat/winrt-error-polyfill` (`api-ms-win-core-winrt-error-l1-1-0.dll`) |
+| `ProcessPrng` | Routes to `RtlGenRandom` (`advapi32.dll`) | `compat/bcrypt-polyfill` (`bcryptprimitives.dll`) |
+| `GetSystemTimePreciseAsFileTime` | Binary PE patch -> `GetSystemTimeAsFileTime` | `scripts/package-win7.ps1` inline byte replace |
+
+### Standalone Crate Isolation
+The polyfill crates in `compat/` are `#![no_std]` + `panic = "abort"` DLL projects. To avoid interfering with workspace quality gates (`cargo test --workspace`), these crates are **excluded** from the main Cargo workspace (`workspace.exclude = ["compat/*"]`). They are compiled independently by `scripts/package-win7.ps1` via `--manifest-path`.
 
 ## Testing Strategy
 
@@ -219,3 +235,4 @@ The project prioritizes a **Test-Driven Architecture** where the UI and business
 1.  **Testability First**: The UI should be verifiable without a running OPC server via mocks.
 2.  **Robustness**: The app must not panic on missing COM servers; it should show error states in the UI.
 3.  **Observability**: Since we cannot view stdout, file logging is mandatory for debugging.
+

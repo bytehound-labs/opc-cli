@@ -1,0 +1,19 @@
+[package]
+name = "synch-polyfill"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "WaitOnAddress polyfill for Windows 7 / Server 2008 R2"
+
+[lib]
+name = "api_ms_win_core_synch_l1_2_0"
+crate-type = ["cdylib"]
+
+[workspace]
+
+[profile.dev]
+panic = "abort"
+
+[profile.release]
+panic = "abort"
+

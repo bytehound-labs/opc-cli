@@ -1,4 +1,4 @@
-.PHONY: all debug release build test package clean
+.PHONY: all debug release build test package package-win7 clean
 
 all: debug
 
@@ -13,13 +13,17 @@ build: release
 test:
 	cargo test
 
-# Creates a deployment zip with EXE and debug symbols
+# Creates a modern (Win10+) deployment zip
 package: release
-	mkdir -p dist
-	cp target/release/opc-cli.exe dist/
-	cp target/release/opc-cli.pdb dist/ || true
-	cp README.md dist/
-	tar -a -c -f opc-cli-dist.zip dist/*
+	mkdir -p dist/opc-cli-x64
+	cp target/release/opc-cli.exe dist/opc-cli-x64/
+	cp target/release/opc-cli.pdb dist/opc-cli-x64/ || true
+	cp README.md dist/opc-cli-x64/
+	tar -a -c -f dist/opc-cli-x64.zip dist/opc-cli-x64/*
+
+# Creates a Win7 / Server 2008 R2 legacy deployment zip
+package-win7:
+	pwsh -File scripts/package-win7.ps1
 
 clean:
 	cargo clean

@@ -1,0 +1,18 @@
+[package]
+name = "bcrypt-polyfill"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "ProcessPrng polyfill for Windows 7 / Server 2008 R2"
+
+[lib]
+name = "bcryptprimitives"
+crate-type = ["cdylib"]
+
+[workspace]
+
+[profile.dev]
+panic = "abort"
+
+[profile.release]
+panic = "abort"

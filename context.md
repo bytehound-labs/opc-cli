@@ -468,3 +468,19 @@ emove_group errors now logged instead of silently discarded.
 >   - Validated that all library doc-tests compile and pass successfully under the `verify.ps1` pipeline.
 > * **New Constraints:** None.
 > * **Pruned:** Outdated/incomplete API usage patterns in library documentation examples.
+
+## 2026-07-26: TARS Summary — Win7 / Server 2008 R2 Compatibility Layer
+> 📝 **Context Update:**
+> * **Feature:** Windows 7 / Server 2008 R2 (NT 6.1) Compatibility Build & Packaging Layer
+> * **Changes:**
+>   - Implemented 3 `#![no_std]` standalone polyfill crates under `compat/`: `synch-polyfill` (`api-ms-win-core-synch-l1-2-0.dll`), `winrt-error-polyfill` (`api-ms-win-core-winrt-error-l1-1-0.dll`), and `bcrypt-polyfill` (`bcryptprimitives.dll`).
+>   - Excluded `compat/*` from root `Cargo.toml` workspace members (`workspace.exclude = ["compat/*"]`) to prevent breaking `verify.ps1`/`commit.ps1` quality gates which invoke `--workspace`.
+>   - Created `scripts/package-win7.ps1` automated legacy release pipeline (static CRT linking `+crt-static`, polyfill compilation via `--manifest-path`, PE binary patching `GetSystemTimePreciseAsFileTime` -> `GetSystemTimeAsFileTime`, redistributables bundling, and zip archiving).
+>   - Upgraded `scripts/package.ps1` and `Makefile` with modern (`dist/opc-cli-x64.zip`) vs legacy (`dist/opc-cli-win7-x64.zip`) symmetric packaging targets.
+>   - Updated `.gitignore` to allow tracking distribution outputs in `dist/` while adding `compat/` and `dist/` to `scripts/Merge-ToMain.ps1` strip list for clean production releases.
+>   - Added `vendor/redist/README.md`, updated root `README.md` and `architecture.md` with legacy deployment guidance and system specifications.
+> * **New Constraints:**
+>   - Polyfill crates in `compat/` must remain standalone (`[workspace]` header in their `Cargo.toml` and listed in parent `workspace.exclude`) so they do not link into workspace `--workspace` test runs.
+>   - Build legacy releases using `make package-win7` or `pwsh scripts/package-win7.ps1`.
+> * **Pruned:** Manual PE patching and ad-hoc DLL copying.
+

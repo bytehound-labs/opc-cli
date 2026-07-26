@@ -5,14 +5,16 @@
 /logs/
 *.log
 
-# Distribution
-/dist/
-*.zip
+# Distribution (tracked for offline deployment)
+!dist/
+!dist/**
 
 # Windows / MSVC
 *.exe
 *.pdb
 *.msi
+!.vendor/redist/*.msi
+!vendor/redist/*.msi
 *.msm
 *.msp
 *.lib

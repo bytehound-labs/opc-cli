@@ -314,8 +314,56 @@ if ($DeepAnalysis) {
         }
     }
 
+    # --- §E. HRESULT Aggregation ---
+    Write-Host "`n  §E. HRESULT Aggregation:" -ForegroundColor White
+    $hresultMatches = $deepContent | Select-String -Pattern 'hresult=([0-9a-fA-Fx]+)'
+    if ($hresultMatches.Count -eq 0) {
+        Write-Host "      No HRESULT codes found." -ForegroundColor DarkGray
+    } else {
+        $hrCounts = $hresultMatches | ForEach-Object { $_.Matches[0].Groups[1].Value } |
+            Group-Object |
+            Sort-Object Count -Descending |
+            Select-Object -First 10
+        foreach ($hr in $hrCounts) {
+            Write-Host "      $($hr.Count.ToString().PadLeft(5))x  $($hr.Name)" -ForegroundColor Yellow
+        }
+    }
+
+    # --- §F. State Transition Validation ---
+    Write-Host "`n  §F. State Transition Validation:" -ForegroundColor White
+    $transMatches = $deepContent | Select-String -Pattern 'from=(\w+)\s+to=(\w+)\s+trigger=(\S+)\s+screen_transition'
+    if ($transMatches.Count -eq 0) {
+        Write-Host "      No screen transitions found." -ForegroundColor DarkGray
+    } else {
+        $validTransitions = @(
+            "Home->Loading", "Loading->ServerList", "Loading->Home",
+            "ServerList->Loading", "ServerList->Home",
+            "Loading->TagList", "Loading->ServerList",
+            "TagList->Loading", "TagList->ServerList",
+            "Loading->TagValues", "Loading->TagList",
+            "TagValues->WriteInput", "TagValues->TagList", "TagValues->Exiting",
+            "WriteInput->Loading", "WriteInput->TagValues",
+            "Home->Exiting", "ServerList->Exiting", "TagList->Exiting"
+        )
+        $invalidCount = 0
+        foreach ($tm in $transMatches) {
+            $fromState = $tm.Matches[0].Groups[1].Value
+            $toState = $tm.Matches[0].Groups[2].Value
+            $trig = $tm.Matches[0].Groups[3].Value
+            $pair = "${fromState}->${toState}"
+            if ($pair -notin $validTransitions) {
+                Write-Host "      ANOMALY: $pair (trigger: $trig)" -ForegroundColor Red
+                $invalidCount++
+            }
+        }
+        if ($invalidCount -eq 0) {
+            Write-Host "      All $($transMatches.Count) transition(s) valid." -ForegroundColor Green
+        }
+    }
+
     Write-Host "`n========================================`n" -ForegroundColor Blue
 }
+
 
 if ($hasErrors) {
     Write-Host "`nErrors detected." -ForegroundColor Red

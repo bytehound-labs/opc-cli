@@ -29,6 +29,7 @@ workspace = true
 default = ["opc-da-backend"]
 opc-da-backend = []
 test-support = ["dep:mockall"]
+dev-diagnostics = []
 
 [dependencies]
 # Core (always included)

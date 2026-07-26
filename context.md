@@ -593,6 +593,23 @@ emove_group errors now logged instead of silently discarded.
 >   - `verify.ps1` Gate 7 checks both workspace member `src/` directories for forbidden macros (`println!`, `dbg!`, `todo!`, `unimplemented!`).
 > * **Pruned:** `Invoke-Expression` string-eval in `verify.ps1`.
 
+## 2026-07-26: TARS Summary — Fine-Grained Dev-Build Logging (`/brainstorm` + `/grill-me` + `/plan-making` + `/build`)
+> 📝 **Context Update:**
+> * **Feature:** Fine-grained dev-build logging with two-tier diagnostics (dev & field), compile-time `dev-diagnostics` feature flag, CLI `--verbose`/`-v`/`-vv` verbosity flag, structured error forensics, centralized state transition audit trail, `#[instrument]` adoption, and `check-logs.ps1` deep analysis modes.
+> * **Changes:**
+>   - Added `dev-diagnostics` feature to `opc-da-client/Cargo.toml` and passthrough to `opc-cli/Cargo.toml`.
+>   - Added `log_opc_error(error, operation)` in `opc_da/errors.rs` emitting structured `tracing::error!` with named fields (`operation`, `hresult`, `hint`, `chain`). Re-exported in `lib.rs` and `helpers.rs`.
+>   - Decorated `ComWorker::start()` and `send_request()` with `#[tracing::instrument]`.
+>   - Added `#[cfg(feature = "dev-diagnostics")]` TRACE-level operation argument dumps to `com_worker.rs` handlers.
+>   - Implemented `Display` for `CurrentScreen` enum in `app.rs`.
+>   - Added centralized `log_transition(to, trigger)` helper on `App` and instrumented all 20 screen transition sites across `app.rs` and `main.rs`.
+>   - Added `clap`-derived `Args` struct with `--verbose`/`-v` count flag in `main.rs`, mapping verbosity to `EnvFilter` levels (`info` -> `debug` -> `trace`).
+>   - Enhanced `scripts/check-logs.ps1` with §E (HRESULT aggregation top 10) and §F (State Transition sequence anomaly detector).
+> * **New Constraints:**
+>   - Release builds default to `INFO` level logging unless activated via `-v`/`-vv` CLI flag or `RUST_LOG`.
+>   - Screen transitions must go through `app.log_transition()` to ensure auditability.
+>   - `check-logs.ps1` validates state transition sequence integrity during deep analysis.
+
 
 
 

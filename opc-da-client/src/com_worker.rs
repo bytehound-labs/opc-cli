@@ -94,6 +94,8 @@ impl<C: ServerConnector + 'static> ComWorker<C> {
         }
     }
 
+    #[allow(clippy::too_many_lines)]
+    #[tracing::instrument(skip(connector))]
     pub fn start(connector: Arc<C>) -> Result<Self, OpcError> {
         let (tx, mut rx) = mpsc::channel(32);
         let (init_tx, init_rx) = std::sync::mpsc::channel();
@@ -121,6 +123,8 @@ impl<C: ServerConnector + 'static> ComWorker<C> {
                     ComRequest::ListServers { host, reply } => {
                         let span = tracing::info_span!("opc.list_servers", host = %host);
                         let _enter = span.enter();
+                        #[cfg(feature = "dev-diagnostics")]
+                        tracing::trace!(host = %host, "list_servers: starting operation");
                         let start = std::time::Instant::now();
                         let servers = connector.enumerate_servers();
                         if let Ok(s) = &servers {
@@ -131,6 +135,7 @@ impl<C: ServerConnector + 'static> ComWorker<C> {
                                 "list_servers completed"
                             );
                         } else if let Err(e) = &servers {
+                            crate::opc_da::errors::log_opc_error(e, "list_servers");
                             tracing::error!(
                                 error = ?e,
                                 elapsed_ms = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX),
@@ -139,6 +144,7 @@ impl<C: ServerConnector + 'static> ComWorker<C> {
                         }
                         let _ = reply.send(servers);
                     }
+
                     ComRequest::ReadTagValues {
                         server,
                         tag_ids,
@@ -204,6 +210,7 @@ impl<C: ServerConnector + 'static> ComWorker<C> {
         })
     }
 
+    #[tracing::instrument(skip(self, req_builder))]
     pub async fn send_request<F, R>(&self, req_builder: F) -> OpcResult<R>
     where
         F: FnOnce(oneshot::Sender<OpcResult<R>>) -> ComRequest,
@@ -282,6 +289,13 @@ impl<C: ServerConnector + 'static> ComWorker<C> {
             tag_count = tag_ids.len()
         );
         let _enter = span.enter();
+        #[cfg(feature = "dev-diagnostics")]
+        tracing::trace!(
+            server = %server_name,
+            tag_count = tag_ids.len(),
+            sample_tags = ?tag_ids.iter().take(5).collect::<Vec<_>>(),
+            "read_tag_values: starting operation"
+        );
         let start = std::time::Instant::now();
 
         let mut revised_update_rate = 0u32;
@@ -427,6 +441,13 @@ impl<C: ServerConnector + 'static> ComWorker<C> {
             tag = %tag_id
         );
         let _enter = span.enter();
+        #[cfg(feature = "dev-diagnostics")]
+        tracing::trace!(
+            server = %server_name,
+            tag = %tag_id,
+            value = ?value,
+            "write_tag_value: starting operation"
+        );
         let start = std::time::Instant::now();
 
         let mut revised_update_rate = 0u32;
@@ -525,6 +546,12 @@ impl<C: ServerConnector + 'static> ComWorker<C> {
     ) -> OpcResult<Vec<String>> {
         let span = tracing::info_span!("opc.browse_tags", server = %server_name, max_tags);
         let _enter = span.enter();
+        #[cfg(feature = "dev-diagnostics")]
+        tracing::trace!(
+            server = %server_name,
+            max_tags,
+            "browse_tags: starting operation"
+        );
         let start = std::time::Instant::now();
 
         let org = opc_server.query_organization()?;

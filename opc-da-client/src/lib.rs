@@ -48,7 +48,7 @@ mod opc_da;
 mod backend;
 
 // Stable public API
-pub use helpers::{format_hresult, friendly_com_hint};
+pub use helpers::{format_hresult, friendly_com_hint, log_opc_error};
 pub use provider::{OpcProvider, OpcValue, TagValue, WriteResult};
 
 #[cfg(feature = "opc-da-backend")]

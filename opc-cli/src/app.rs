@@ -31,6 +31,20 @@ pub enum CurrentScreen {
     Exiting,
 }
 
+impl std::fmt::Display for CurrentScreen {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Home => write!(f, "Home"),
+            Self::Loading => write!(f, "Loading"),
+            Self::ServerList => write!(f, "ServerList"),
+            Self::TagList => write!(f, "TagList"),
+            Self::TagValues => write!(f, "TagValues"),
+            Self::WriteInput => write!(f, "WriteInput"),
+            Self::Exiting => write!(f, "Exiting"),
+        }
+    }
+}
+
 /// Main application state for the OPC DA Client TUI.
 ///
 /// Manages the current screen, loaded servers and tags, search state,
@@ -77,6 +91,18 @@ pub struct App {
 }
 
 impl App {
+    /// Logs a screen transition event for diagnostics and field support.
+    pub fn log_transition(&mut self, to: CurrentScreen, trigger: &str) {
+        let from = self.current_screen;
+        tracing::info!(
+            from = %from,
+            to = %to,
+            trigger = %trigger,
+            "screen_transition"
+        );
+        self.current_screen = to;
+    }
+
     /// Create a new `App` instance with the given OPC provider.
     pub fn new(opc_provider: Arc<dyn OpcProvider>) -> Self {
         Self {
@@ -120,7 +146,7 @@ impl App {
     // Actions
     pub fn start_fetch_servers(&mut self) {
         let host = self.host_input.clone();
-        self.current_screen = CurrentScreen::Loading;
+        self.log_transition(CurrentScreen::Loading, "start_fetch_servers");
         self.add_message(format!("Connecting to {host}..."));
 
         let provider = Arc::clone(&self.opc_provider);
@@ -151,7 +177,7 @@ impl App {
             match rx.try_recv() {
                 Ok(Ok(servers)) => {
                     self.servers = servers;
-                    self.current_screen = CurrentScreen::ServerList;
+                    self.log_transition(CurrentScreen::ServerList, "fetch_result_success");
                     if self.servers.is_empty() {
                         self.selected_index = None;
                         self.list_state.select(None);
@@ -167,22 +193,20 @@ impl App {
                     self.fetch_result_rx = None;
                 }
                 Ok(Err(e)) => {
-                    self.current_screen = CurrentScreen::Home;
+                    self.log_transition(CurrentScreen::Home, "fetch_result_error");
                     tracing::error!(error = %e, "Failed to fetch servers");
                     self.add_message(format!("Error fetching servers: {e}"));
                     self.fetch_result_rx = None;
                 }
-                Err(oneshot::error::TryRecvError::Empty) => {
-                    // Still running
-                }
                 Err(oneshot::error::TryRecvError::Closed) => {
-                    self.current_screen = CurrentScreen::Home;
+                    self.log_transition(CurrentScreen::Home, "fetch_result_closed");
                     tracing::error!(
                         "Server listing background task terminated unexpectedly (sender dropped)"
                     );
                     self.add_message("Server listing task terminated unexpectedly".into());
                     self.fetch_result_rx = None;
                 }
+                Err(oneshot::error::TryRecvError::Empty) => {}
             }
         }
     }
@@ -292,7 +316,7 @@ impl App {
 
         self.browsed_server = Some(server.clone());
 
-        self.current_screen = CurrentScreen::Loading;
+        self.log_transition(CurrentScreen::Loading, "start_browse_tags");
         self.browse_progress = Arc::new(AtomicUsize::new(0));
         self.add_message(format!("Browsing tags on {server}..."));
 
@@ -354,7 +378,7 @@ impl App {
                 Ok(Ok(tags)) => {
                     self.tags = tags;
                     self.selected_tags = vec![false; self.tags.len()];
-                    self.current_screen = CurrentScreen::TagList;
+                    self.log_transition(CurrentScreen::TagList, "browse_result_success");
                     if self.tags.is_empty() {
                         self.selected_index = None;
                         self.list_state.select(None);
@@ -366,7 +390,7 @@ impl App {
                     self.browse_result_rx = None;
                 }
                 Ok(Err(e)) => {
-                    self.current_screen = CurrentScreen::ServerList;
+                    self.log_transition(CurrentScreen::ServerList, "browse_result_error");
                     tracing::error!(error = %e, error_chain = ?e, "Browse tags failed");
                     let hint = friendly_com_hint(&e);
                     let msg = match hint {
@@ -380,9 +404,9 @@ impl App {
                     // Still running
                 }
                 Err(oneshot::error::TryRecvError::Closed) => {
-                    self.current_screen = CurrentScreen::ServerList;
+                    self.log_transition(CurrentScreen::ServerList, "browse_result_closed");
                     tracing::error!(
-                        "Browse background task terminated unexpectedly (sender dropped)"
+                        "Browse tags background task terminated unexpectedly (sender dropped)"
                     );
                     self.add_message("Browse task terminated unexpectedly".into());
                     self.browse_result_rx = None;
@@ -453,7 +477,7 @@ impl App {
             tags = ?selected_tag_ids,
             "start_read_values: sending tags to backend"
         );
-        self.current_screen = CurrentScreen::Loading;
+        self.log_transition(CurrentScreen::Loading, "start_read_values");
         self.add_message(format!("Reading {} tag values...", selected_tag_ids.len()));
 
         let provider = Arc::clone(&self.opc_provider);
@@ -487,7 +511,7 @@ impl App {
             match rx.try_recv() {
                 Ok(Ok(values)) => {
                     self.tag_values = values;
-                    self.current_screen = CurrentScreen::TagValues;
+                    self.log_transition(CurrentScreen::TagValues, "read_result_success");
                     if self.tag_values.is_empty() {
                         self.selected_index = None;
                         self.table_state.select(None);
@@ -522,7 +546,7 @@ impl App {
                     self.read_result_rx = None;
                 }
                 Ok(Err(e)) => {
-                    self.current_screen = CurrentScreen::TagList;
+                    self.log_transition(CurrentScreen::TagList, "read_result_error");
                     tracing::error!(error = %e, error_chain = ?e, "Read tag values failed");
                     let hint = friendly_com_hint(&e);
                     let msg = match hint {
@@ -536,7 +560,7 @@ impl App {
                     // Still running
                 }
                 Err(oneshot::error::TryRecvError::Closed) => {
-                    self.current_screen = CurrentScreen::TagList;
+                    self.log_transition(CurrentScreen::TagList, "read_result_closed");
                     tracing::error!(
                         "Read values background task terminated unexpectedly (sender dropped)"
                     );
@@ -570,7 +594,7 @@ impl App {
             tracing::debug!(tag_id = %id, "enter_write_mode: entering write mode for tag");
             self.write_tag_id = Some(id);
             self.write_value_input.clear();
-            self.current_screen = CurrentScreen::WriteInput;
+            self.log_transition(CurrentScreen::WriteInput, "enter_write_mode");
         } else {
             tracing::debug!("enter_write_mode: no tag selected");
             self.add_message("No tag selected to write.".into());
@@ -602,7 +626,7 @@ impl App {
             }
         };
 
-        self.current_screen = CurrentScreen::Loading;
+        self.log_transition(CurrentScreen::Loading, "start_write_value");
         self.add_message(format!("Writing '{value_str}' to {tag_id}..."));
 
         let provider = Arc::clone(&self.opc_provider);
@@ -648,7 +672,7 @@ impl App {
                             result.tag_id, err_msg
                         ));
                     }
-                    self.current_screen = CurrentScreen::TagValues;
+                    self.log_transition(CurrentScreen::TagValues, "write_result_success");
                     self.write_result_rx = None;
                     // Trigger a refresh to show the new value
                     self.start_read_values();
@@ -656,12 +680,12 @@ impl App {
                 Ok(Err(e)) => {
                     tracing::error!(error = %e, "Write tag values failed");
                     self.add_message(format!("Browse error: {e:#}"));
-                    self.current_screen = CurrentScreen::TagValues;
+                    self.log_transition(CurrentScreen::TagValues, "write_result_error");
                     self.write_result_rx = None;
                 }
                 Err(oneshot::error::TryRecvError::Empty) => {}
                 Err(oneshot::error::TryRecvError::Closed) => {
-                    self.current_screen = CurrentScreen::TagValues;
+                    self.log_transition(CurrentScreen::TagValues, "write_result_closed");
                     tracing::error!("Write background task terminated unexpectedly");
                     self.add_message("Write task terminated unexpectedly".into());
                     self.write_result_rx = None;
@@ -804,13 +828,13 @@ impl App {
     pub fn go_back(&mut self) {
         match self.current_screen {
             CurrentScreen::ServerList => {
-                self.current_screen = CurrentScreen::Home;
+                self.log_transition(CurrentScreen::Home, "go_back");
                 self.servers.clear();
                 self.selected_index = None;
                 self.list_state.select(None);
             }
             CurrentScreen::TagList => {
-                self.current_screen = CurrentScreen::ServerList;
+                self.log_transition(CurrentScreen::ServerList, "go_back");
                 self.tags.clear();
                 // Restore selection to the previous server if possible
                 if !self.servers.is_empty() {
@@ -819,7 +843,7 @@ impl App {
                 }
             }
             CurrentScreen::TagValues => {
-                self.current_screen = CurrentScreen::TagList;
+                self.log_transition(CurrentScreen::TagList, "go_back");
                 self.tag_values.clear();
                 self.refresh_server = None;
                 self.refresh_tag_ids.clear();
@@ -834,7 +858,7 @@ impl App {
                 }
             }
             CurrentScreen::WriteInput => {
-                self.current_screen = CurrentScreen::TagValues;
+                self.log_transition(CurrentScreen::TagValues, "go_back");
                 self.write_tag_id = None;
                 self.write_value_input.clear();
             }

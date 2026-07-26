@@ -13,6 +13,7 @@ use windows::core::{BSTR, PCWSTR};
 
 pub use crate::opc_da::errors::{
     format_hresult, friendly_com_hint, friendly_hresult_hint as friendly_com_hresult_hint,
+    log_opc_error,
 };
 
 // Verify GUID memory layout assumption for FFI (Workstream C#3)

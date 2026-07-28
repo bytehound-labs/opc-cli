@@ -35,6 +35,7 @@ pub trait AsyncIo2Trait {
         let mut cancel_id = 0;
         let mut errors = RemoteArray::new(len);
 
+        // SAFETY: Calling COM interface method Read with valid handles and array pointers.
         unsafe {
             self.interface()?.Read(
                 len,
@@ -73,6 +74,7 @@ pub trait AsyncIo2Trait {
         let mut cancel_id = 0;
         let mut errors = RemoteArray::new(len);
 
+        // SAFETY: Calling COM interface method Write with valid handles, values, and array pointers.
         unsafe {
             self.interface()?.Write(
                 len,
@@ -100,6 +102,7 @@ pub trait AsyncIo2Trait {
         source: crate::bindings::da::tagOPCDATASOURCE,
         transaction_id: u32,
     ) -> OpcResult<u32> {
+        // SAFETY: Calling COM interface method Refresh2.
         unsafe {
             self.interface()?
                 .Refresh2(source, transaction_id)
@@ -115,6 +118,7 @@ pub trait AsyncIo2Trait {
     /// # Returns
     /// `Ok(())` if the operation was successfully canceled
     fn cancel2(&self, cancel_id: u32) -> OpcResult<()> {
+        // SAFETY: Calling COM interface method Cancel2.
         unsafe { self.interface()?.Cancel2(cancel_id).map_err(OpcError::from) }
     }
 
@@ -126,6 +130,7 @@ pub trait AsyncIo2Trait {
     /// # Returns
     /// `Ok(())` if the enable state was successfully changed
     fn set_enable(&self, enable: bool) -> OpcResult<()> {
+        // SAFETY: Calling COM interface method SetEnable.
         unsafe { self.interface()?.SetEnable(enable).map_err(OpcError::from) }
     }
 
@@ -134,6 +139,7 @@ pub trait AsyncIo2Trait {
     /// # Returns
     /// `true` if async operations are enabled, `false` otherwise
     fn get_enable(&self) -> OpcResult<bool> {
+        // SAFETY: Calling COM interface method GetEnable.
         unsafe {
             self.interface()?
                 .GetEnable()

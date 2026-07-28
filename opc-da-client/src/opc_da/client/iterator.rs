@@ -41,6 +41,7 @@ impl Iterator for GuidIterator {
         }
 
         if self.index >= self.count {
+            // SAFETY: Calling IEnumGUID::Next COM interface method with valid mutable cache slice and count pointer.
             let code = unsafe {
                 self.inner
                     .Next(self.cache.as_mut_slice(), Some(&mut self.count))
@@ -102,6 +103,7 @@ impl Iterator for StringIterator {
                 // Zero the cache to prevent stale freed pointers (OPC-BUG-001)
                 self.cache.fill(windows::core::PWSTR::null());
 
+                // SAFETY: Calling IEnumString::Next COM interface method with valid mutable cache slice and count pointer.
                 let code = unsafe {
                     self.inner
                         .Next(self.cache.as_mut_slice(), Some(&mut self.count))
@@ -196,6 +198,7 @@ impl<Group: TryFrom<windows::core::IUnknown, Error = windows::core::Error>> Iter
         }
 
         if self.index >= self.count {
+            // SAFETY: Calling IEnumUnknown::Next COM interface method with valid mutable cache slice and count pointer.
             let code = unsafe {
                 self.inner
                     .Next(self.cache.as_mut_slice(), Some(&mut self.count))
@@ -261,6 +264,7 @@ impl Iterator for ItemAttributeIterator {
         if self.index >= self.cache.len() {
             let mut attrs = RemoteArray::new(MAX_CACHE_SIZE as u32);
 
+            // SAFETY: Calling IEnumOPCItemAttributes::Next COM interface method with valid output array pointers.
             let result = unsafe {
                 self.inner.Next(
                     MAX_CACHE_SIZE as u32,

@@ -19,6 +19,7 @@ pub trait BrowseServerAddressSpaceTrait {
     /// # Returns
     /// The namespace type (hierarchical or flat)
     fn query_organization(&self) -> OpcResult<tagOPCNAMESPACETYPE> {
+        // SAFETY: Calling COM interface method QueryOrganization.
         unsafe { Ok(self.interface()?.QueryOrganization()?) }
     }
 
@@ -37,6 +38,7 @@ pub trait BrowseServerAddressSpaceTrait {
     ) -> OpcResult<()> {
         let position = LocalPointer::from(position);
 
+        // SAFETY: Calling COM interface method ChangeBrowsePosition with valid position string.
         unsafe {
             Ok(self
                 .interface()?
@@ -66,6 +68,7 @@ pub trait BrowseServerAddressSpaceTrait {
     {
         let filter_criteria = LocalPointer::from_option(filter_criteria);
 
+        // SAFETY: Calling COM interface method BrowseOPCItemIDs with valid filter string.
         unsafe {
             let iter = self.interface()?.BrowseOPCItemIDs(
                 browse_type,
@@ -87,6 +90,7 @@ pub trait BrowseServerAddressSpaceTrait {
     fn get_item_id(&self, item_data_id: &str) -> OpcResult<String> {
         let item_data_id = LocalPointer::from(item_data_id);
 
+        // SAFETY: Calling COM interface method GetItemID with valid item_data_id string.
         let output = unsafe { self.interface()?.GetItemID(item_data_id.as_pwstr())? };
 
         let ptr = RemotePointer::from(output);
@@ -102,6 +106,7 @@ pub trait BrowseServerAddressSpaceTrait {
     /// Enumerator for available access paths
     fn browse_access_paths(&self, item_id: &str) -> OpcResult<StringIterator> {
         let item_id = LocalPointer::from(item_id);
+        // SAFETY: Calling COM interface method BrowseAccessPaths with valid item_id string.
         unsafe {
             let iter = self.interface()?.BrowseAccessPaths(item_id.as_pwstr())?;
             Ok(StringIterator::new(iter))

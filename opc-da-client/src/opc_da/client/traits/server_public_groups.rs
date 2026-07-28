@@ -22,6 +22,7 @@ pub trait ServerPublicGroupsTrait {
     ) -> OpcResult<windows::core::IUnknown> {
         let name = LocalPointer::from(name);
 
+        // SAFETY: Calling COM interface method GetPublicGroupByName with valid name string pointer.
         unsafe {
             Ok(self
                 .interface()?
@@ -38,6 +39,7 @@ pub trait ServerPublicGroupsTrait {
     /// # Returns
     /// Ok(()) if the group was successfully removed
     fn remove_public_group(&self, server_group: u32, force: bool) -> OpcResult<()> {
+        // SAFETY: Calling COM interface method RemovePublicGroup with server_group handle.
         unsafe { Ok(self.interface()?.RemovePublicGroup(server_group, force)?) }
     }
 }

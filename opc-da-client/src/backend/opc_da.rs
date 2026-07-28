@@ -22,7 +22,15 @@ pub struct OpcDaClient<C: ServerConnector + 'static = ComConnector> {
 /// Use [`OpcDaClient::new`] for fallible construction.
 impl Default for OpcDaClient<ComConnector> {
     fn default() -> Self {
-        Self::new(ComConnector).expect("Failed to initialize OpcDaClient")
+        match Self::new(ComConnector) {
+            Ok(client) => client,
+            Err(err) => {
+                tracing::error!(error = ?err, "Failed to initialize default OpcDaClient");
+                Self {
+                    worker: ComWorker::closed(),
+                }
+            }
+        }
     }
 }
 

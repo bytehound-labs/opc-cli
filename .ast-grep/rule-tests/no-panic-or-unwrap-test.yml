@@ -1,0 +1,83 @@
+id: no-panic-or-unwrap
+valid:
+  - |
+    fn safe_fn() -> u32 {
+        42
+    }
+  - |
+    #[test]
+    fn test_fn() {
+        let x: Option<i32> = None;
+        let y = x.unwrap();
+    }
+  - |
+    #[test]
+    #[should_panic]
+    fn multi_attr_test_fn_1() {
+        let x: Option<i32> = None;
+        let y = x.unwrap();
+    }
+  - |
+    #[should_panic]
+    #[test]
+    fn multi_attr_test_fn_2() {
+        let x: Option<i32> = None;
+        let y = x.expect("failed");
+    }
+  - |
+    #[tokio::test]
+    async fn tokio_test_fn() {
+        let x: Option<i32> = None;
+        let y = x.unwrap();
+    }
+  - |
+    #[tokio::test(flavor = "multi_thread")]
+    async fn tokio_test_args_fn() {
+        let x: Option<i32> = None;
+        let y = panic!("error");
+    }
+  - |
+    #[cfg(test)]
+    mod test_mod {
+        fn helper() {
+            let x: Option<i32> = None;
+            let _ = x.unwrap();
+        }
+    }
+  - |
+    #[cfg(test)]
+    #[allow(dead_code)]
+    mod multi_attr_test_mod {
+        fn helper() {
+            let x: Option<i32> = None;
+            let _ = x.unwrap();
+        }
+    }
+  - |
+    #[test]
+    fn test_unimplemented() {
+        unimplemented!("not yet");
+    }
+invalid:
+  - |
+    fn unsafe_fn_unwrap() {
+        let x: Option<i32> = None;
+        let y = x.unwrap();
+    }
+  - |
+    fn unsafe_fn_expect() {
+        let x: Option<i32> = None;
+        let y = x.expect("error");
+    }
+  - |
+    fn unsafe_fn_panic() {
+        panic!("error");
+    }
+  - |
+    fn unsafe_fn_todo() {
+        todo!("impl later");
+    }
+  - |
+    fn unsafe_fn_unimplemented() {
+        unimplemented!("not yet");
+    }

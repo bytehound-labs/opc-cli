@@ -44,6 +44,7 @@ pub trait ItemPropertiesTrait {
         let mut descriptions = RemoteArray::new(0);
         let mut datatypes = RemoteArray::new(0);
 
+        // SAFETY: Calling COM interface method QueryAvailableProperties with valid item_id pointer.
         unsafe {
             self.interface()?.QueryAvailableProperties(
                 item_id.as_pcwstr(),
@@ -55,6 +56,7 @@ pub trait ItemPropertiesTrait {
         }
 
         if count > 0 {
+            // SAFETY: Updating array lengths based on count returned by QueryAvailableProperties.
             unsafe {
                 property_ids.set_len(count);
                 descriptions.set_len(count);
@@ -95,6 +97,7 @@ pub trait ItemPropertiesTrait {
         let mut values = RemoteArray::new(property_ids.len().try_into()?);
         let mut errors = RemoteArray::new(property_ids.len().try_into()?);
 
+        // SAFETY: Calling COM interface method GetItemProperties with valid item_id pointer and property IDs.
         unsafe {
             self.interface()?.GetItemProperties(
                 item_id.as_pcwstr(),
@@ -138,6 +141,7 @@ pub trait ItemPropertiesTrait {
         let mut new_item_ids = RemoteArray::new(property_ids.len().try_into()?);
         let mut errors = RemoteArray::new(property_ids.len().try_into()?);
 
+        // SAFETY: Calling COM interface method LookupItemIDs with valid item_id pointer and property IDs.
         unsafe {
             self.interface()?.LookupItemIDs(
                 item_id.as_pcwstr(),

@@ -1,0 +1,37 @@
+id: no-panic-or-unwrap
+message: Prohibit unwrap, expect, panic, todo, and unimplemented in non-test library code
+severity: error
+language: rust
+files:
+  - "opc-da-client/src/**/*.rs"
+  - "opc-cli/src/**/*.rs"
+ignores:
+  - "**/tests/**"
+  - "**/*_test.rs"
+  - "**/*_tests.rs"
+  - "**/bindings/**"
+rule:
+  any:
+    - pattern: $X.unwrap()
+    - pattern: $X.expect($$$ARGS)
+    - pattern: panic!($$$ARGS)
+    - pattern: todo!($$$ARGS)
+    - pattern: unimplemented!($$$ARGS)
+  not:
+    inside:
+      stopBy: end
+      any:
+        - kind: mod_item
+          follows:
+            stopBy: end
+            any:
+              - pattern: "#[cfg(test)]"
+              - pattern: "#[cfg(all(test, $$$))]"
+        - kind: function_item
+          follows:
+            stopBy: end
+            any:
+              - pattern: "#[test]"
+              - pattern: "#[tokio::test]"
+              - pattern: "#[tokio::test($$$)]"
+              - pattern: "#[core::prelude::v1::test]"

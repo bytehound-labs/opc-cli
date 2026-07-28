@@ -1,0 +1,83 @@
+id: require-safety-comment
+valid:
+  - |
+    fn safe_fn() {
+        // SAFETY: null pointer is guaranteed valid here
+        unsafe {
+            let x = 0;
+        }
+    }
+  - |
+    fn safe_block_comment_fn() {
+        /* SAFETY: valid memory region */
+        unsafe {
+            let x = 0;
+        }
+    }
+  - |
+    #[test]
+    fn test_fn() {
+        unsafe {
+            let x = 0;
+        }
+    }
+  - |
+    #[test]
+    #[should_panic]
+    fn multi_attr_test_fn() {
+        unsafe {
+            let x = 0;
+        }
+    }
+  - |
+    #[tokio::test]
+    async fn tokio_test_fn() {
+        unsafe {
+            let x = 0;
+        }
+    }
+  - |
+    #[cfg(test)]
+    mod test_mod {
+        fn helper() {
+            unsafe {
+                let x = 0;
+            }
+        }
+    }
+  - |
+    fn two_safe_blocks() {
+        // SAFETY: First block rationale
+        unsafe {
+            let x = 0;
+        }
+        // SAFETY: Second block rationale
+        unsafe {
+            let y = 1;
+        }
+    }
+invalid:
+  - |
+    fn unsafe_fn_no_comment() {
+        unsafe {
+            let x = 0;
+        }
+    }
+  - |
+    fn unsafe_fn_wrong_comment() {
+        // Just a normal comment
+        unsafe {
+            let x = 0;
+        }
+    }
+  - |
+    fn two_unsafe_blocks() {
+        // SAFETY: This explains the first unsafe block
+        unsafe {
+            let x = 0;
+        }
+        let y = 1;
+        unsafe {
+            let z = 2;
+        }
+    }

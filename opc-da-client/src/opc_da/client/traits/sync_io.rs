@@ -44,6 +44,7 @@ pub trait SyncIoTrait {
         let mut item_values = RemoteArray::new(len);
         let mut errors = RemoteArray::new(len);
 
+        // SAFETY: Calling COM interface method Read with valid server handle and output array pointers.
         unsafe {
             self.interface()?.Read(
                 source,
@@ -89,6 +90,7 @@ pub trait SyncIoTrait {
 
         let mut errors = RemoteArray::new(len);
 
+        // SAFETY: Calling COM interface method Write with valid server handle and value array pointers.
         unsafe {
             self.interface()?.Write(
                 len,

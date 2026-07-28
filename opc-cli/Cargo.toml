@@ -14,6 +14,9 @@ categories = ["command-line-utilities", "network-programming"]
 [lints]
 workspace = true
 
+[features]
+dev-diagnostics = ["opc-da-client/dev-diagnostics"]
+
 [dependencies]
 opc-da-client = { path = "../opc-da-client" }
 ratatui = "0.29.0"

@@ -15,6 +15,7 @@ mod ui;
 
 use crate::app::{App, CurrentScreen};
 use anyhow::Result;
+use clap::Parser;
 use crossterm::{
     event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode},
     execute,
@@ -25,13 +26,28 @@ use ratatui::{Terminal, backend::CrosstermBackend};
 use std::{io, sync::Arc, time::Duration};
 use tracing_subscriber::{EnvFilter, fmt, prelude::*};
 
+/// OPC DA Client — Interactive TUI for OPC DA server diagnostics.
+#[derive(Parser, Debug)]
+#[command(version, about)]
+struct Args {
+    /// Increase logging verbosity (-v = debug, -vv = trace).
+    #[arg(short, long, action = clap::ArgAction::Count)]
+    verbose: u8,
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
+    let args = Args::parse();
+
     // Initialize logging
     let file_appender = tracing_appender_localtime::rolling::daily("logs", "opc-cli.log");
     let (non_blocking, _guard) = tracing_appender_localtime::non_blocking(file_appender);
 
-    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("debug"));
+    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| match args.verbose {
+        0 => EnvFilter::new("info"),
+        1 => EnvFilter::new("debug"),
+        _ => EnvFilter::new("trace"),
+    });
 
     tracing_subscriber::registry()
         .with(
@@ -123,7 +139,7 @@ fn handle_key_event(app: &mut App, key: event::KeyEvent) {
                 app.host_input.pop();
             }
             KeyCode::Esc => {
-                app.current_screen = CurrentScreen::Exiting;
+                app.log_transition(CurrentScreen::Exiting, "user_quit");
             }
             _ => {}
         },
@@ -137,7 +153,7 @@ fn handle_key_event(app: &mut App, key: event::KeyEvent) {
                 app.start_browse_tags();
             }
             KeyCode::Char('q' | 'Q') => {
-                app.current_screen = CurrentScreen::Exiting;
+                app.log_transition(CurrentScreen::Exiting, "user_quit");
             }
             _ => {}
         },
@@ -167,7 +183,7 @@ fn handle_key_event(app: &mut App, key: event::KeyEvent) {
                     KeyCode::Char('s' | 'S') => app.enter_search_mode(),
                     KeyCode::Enter => app.start_read_values(),
                     KeyCode::Char('q' | 'Q') => {
-                        app.current_screen = CurrentScreen::Exiting;
+                        app.log_transition(CurrentScreen::Exiting, "user_quit");
                     }
                     _ => {}
                 }
@@ -181,7 +197,7 @@ fn handle_key_event(app: &mut App, key: event::KeyEvent) {
             KeyCode::Up => app.select_prev(),
             KeyCode::Char('w' | 'W') => app.enter_write_mode(),
             KeyCode::Char('q' | 'Q') => {
-                app.current_screen = CurrentScreen::Exiting;
+                app.log_transition(CurrentScreen::Exiting, "user_quit");
             }
             _ => {}
         },

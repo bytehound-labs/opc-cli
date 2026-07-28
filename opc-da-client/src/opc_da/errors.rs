@@ -101,3 +101,28 @@ pub fn friendly_com_hint(error: &OpcError) -> Option<&'static str> {
         _ => None,
     }
 }
+
+/// Emits a structured `tracing::error!` event with machine-parseable fields.
+///
+/// Extracts the HRESULT code and friendly hint from an [`OpcError`],
+/// and logs them as named fields for aggregation by log analysis tools.
+///
+/// # Arguments
+/// * `error` - The OPC error to log
+/// * `operation` - Name of the operation that failed (e.g., "read_tag_values")
+pub fn log_opc_error(error: &OpcError, operation: &str) {
+    let hresult = match error {
+        OpcError::Com { source: e } => Some(format!("0x{:08X}", e.code().0 as u32)),
+        _ => None,
+    };
+    let hint = friendly_com_hint(error);
+    let chain = format!("{error:#}");
+
+    tracing::error!(
+        operation = %operation,
+        hresult = hresult.as_deref().unwrap_or("N/A"),
+        hint = hint.unwrap_or("none"),
+        chain = %chain,
+        "OPC operation failed"
+    );
+}

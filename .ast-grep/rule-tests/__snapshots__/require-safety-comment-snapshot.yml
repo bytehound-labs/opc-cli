@@ -1,0 +1,50 @@
+id: require-safety-comment
+snapshots:
+  ? |
+    fn two_unsafe_blocks() {
+        // SAFETY: This explains the first unsafe block
+        unsafe {
+            let x = 0;
+        }
+        let y = 1;
+        unsafe {
+            let z = 2;
+        }
+    }
+  : labels:
+    - source: |-
+        unsafe {
+                let z = 2;
+            }
+      style: primary
+      start: 134
+      end: 167
+  ? |
+    fn unsafe_fn_no_comment() {
+        unsafe {
+            let x = 0;
+        }
+    }
+  : labels:
+    - source: |-
+        unsafe {
+                let x = 0;
+            }
+      style: primary
+      start: 32
+      end: 65
+  ? |
+    fn unsafe_fn_wrong_comment() {
+        // Just a normal comment
+        unsafe {
+            let x = 0;
+        }
+    }
+  : labels:
+    - source: |-
+        unsafe {
+                let x = 0;
+            }
+      style: primary
+      start: 64
+      end: 97

@@ -1,0 +1,59 @@
+id: no-panic-or-unwrap
+snapshots:
+  ? |
+    fn unsafe_fn() {
+        let x: Option<i32> = None;
+        let y = x.unwrap();
+    }
+  : labels:
+    - source: x.unwrap()
+      style: primary
+      start: 60
+      end: 70
+  ? |
+    fn unsafe_fn_expect() {
+        let x: Option<i32> = None;
+        let y = x.expect("error");
+    }
+  : labels:
+    - source: x.expect("error")
+      style: primary
+      start: 67
+      end: 84
+  ? |
+    fn unsafe_fn_panic() {
+        panic!("error");
+    }
+  : labels:
+    - source: panic!("error")
+      style: primary
+      start: 27
+      end: 42
+  ? |
+    fn unsafe_fn_todo() {
+        todo!("impl later");
+    }
+  : labels:
+    - source: todo!("impl later")
+      style: primary
+      start: 26
+      end: 45
+  ? |
+    fn unsafe_fn_unimplemented() {
+        unimplemented!("not yet");
+    }
+  : labels:
+    - source: unimplemented!("not yet")
+      style: primary
+      start: 35
+      end: 60
+  ? |
+    fn unsafe_fn_unwrap() {
+        let x: Option<i32> = None;
+        let y = x.unwrap();
+    }
+  : labels:
+    - source: x.unwrap()
+      style: primary
+      start: 67
+      end: 77

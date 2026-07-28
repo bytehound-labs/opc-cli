@@ -178,10 +178,8 @@ impl ServerConnector for ComConnector {
 
         let mut servers = Vec::new();
         for guid in guid_iter.flatten() {
-            // SAFETY: `crate::opc_da::GUID` and `windows::core::GUID` are both
-            // `#[repr(C)]` structs with identical layout (4-byte, 2-byte, 2-byte,
-            // 8-byte array). This is validated by a `const_assert_eq!` in
-            // `opc_da/client/iterator.rs`.
+            // SAFETY: `crate::opc_da::GUID` and `windows::core::GUID` are both `#[repr(C)]` structs with identical layout.
+            // SAFETY: Validated by a `const_assert_eq!` in `opc_da/client/iterator.rs`.
             let win_guid: windows::core::GUID = unsafe { std::mem::transmute_copy(&guid) };
             if win_guid == windows::core::GUID::zeroed() {
                 continue;

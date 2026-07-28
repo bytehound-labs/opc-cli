@@ -40,6 +40,7 @@ pub trait ItemSamplingMgtTrait {
         let mut revised_rates = RemoteArray::new(len);
         let mut errors = RemoteArray::new(len);
 
+        // SAFETY: Calling COM interface method SetItemSamplingRate with valid pointers and array lengths.
         unsafe {
             self.interface()?.SetItemSamplingRate(
                 len,
@@ -71,6 +72,7 @@ pub trait ItemSamplingMgtTrait {
         let mut sampling_rates = RemoteArray::new(len);
         let mut errors = RemoteArray::new(len);
 
+        // SAFETY: Calling COM interface method GetItemSamplingRate with valid pointers and array lengths.
         unsafe {
             self.interface()?.GetItemSamplingRate(
                 len,
@@ -98,6 +100,7 @@ pub trait ItemSamplingMgtTrait {
 
         let mut errors = RemoteArray::new(len);
 
+        // SAFETY: Calling COM interface method ClearItemSamplingRate with valid pointers and array lengths.
         unsafe {
             self.interface()?.ClearItemSamplingRate(
                 len,
@@ -136,6 +139,7 @@ pub trait ItemSamplingMgtTrait {
         let mut errors = RemoteArray::new(len);
         let enable_bool: Vec<BOOL> = enable.iter().map(|&v| BOOL::from(v)).collect();
 
+        // SAFETY: Calling COM interface method SetItemBufferEnable with valid pointers and array lengths.
         unsafe {
             self.interface()?.SetItemBufferEnable(
                 len,
@@ -169,6 +173,7 @@ pub trait ItemSamplingMgtTrait {
         let mut enable = RemoteArray::new(len);
         let mut errors = RemoteArray::new(len);
 
+        // SAFETY: Calling COM interface method GetItemBufferEnable with valid pointers and array lengths.
         unsafe {
             self.interface()?.GetItemBufferEnable(
                 len,

@@ -45,6 +45,7 @@ pub trait ItemMgtTrait {
         let mut results = RemoteArray::new(len);
         let mut errors = RemoteArray::new(len);
 
+        // SAFETY: Calling COM interface method AddItems with valid item definition pointers and output arrays.
         unsafe {
             self.interface()?.AddItems(
                 len,
@@ -83,6 +84,7 @@ pub trait ItemMgtTrait {
         let mut results = RemoteArray::new(len);
         let mut errors = RemoteArray::new(len);
 
+        // SAFETY: Calling COM interface method ValidateItems with valid item definition pointers and output arrays.
         unsafe {
             self.interface()?.ValidateItems(
                 len,
@@ -123,6 +125,7 @@ pub trait ItemMgtTrait {
         );
         let mut errors = RemoteArray::new(len);
 
+        // SAFETY: Calling COM interface method RemoveItems with valid server handles pointer.
         unsafe {
             self.interface()?.RemoveItems(
                 len,
@@ -159,6 +162,7 @@ pub trait ItemMgtTrait {
         let len = server_handles.len().try_into()?;
         let mut errors = RemoteArray::new(len);
 
+        // SAFETY: Calling COM interface method SetActiveState with valid server handles pointer.
         unsafe {
             self.interface()?.SetActiveState(
                 len,
@@ -202,6 +206,7 @@ pub trait ItemMgtTrait {
         let len = server_handles.len().try_into()?;
         let mut errors = RemoteArray::new(len);
 
+        // SAFETY: Calling COM interface method SetClientHandles with valid handle pointers.
         unsafe {
             self.interface()?.SetClientHandles(
                 len,
@@ -245,6 +250,7 @@ pub trait ItemMgtTrait {
         let len = server_handles.len().try_into()?;
         let mut errors = RemoteArray::new(len);
 
+        // SAFETY: Calling COM interface method SetDatatypes with valid datatype array pointer.
         unsafe {
             self.interface()?.SetDatatypes(
                 len,
@@ -265,6 +271,7 @@ pub trait ItemMgtTrait {
     /// # Returns
     /// Enumerator interface for iterating through items
     fn create_enumerator(&self) -> OpcResult<ItemAttributeIterator> {
+        // SAFETY: Calling COM interface method CreateEnumerator.
         let enumerator = unsafe {
             self.interface()?.CreateEnumerator(
                 &<crate::bindings::da::IEnumOPCItemAttributes as windows_core::Interface>::IID,

@@ -26,6 +26,7 @@ pub trait GroupStateMgtTrait {
         let mut server_handle = 0u32;
         let name = {
             let mut name = RemotePointer::null();
+            // SAFETY: Calling COM interface method GetState with pointers to output buffers.
             unsafe {
                 self.interface()?.GetState(
                     &mut state.update_rate,
@@ -79,6 +80,7 @@ pub trait GroupStateMgtTrait {
         let locale_id = LocalPointer::new(locale_id);
         let client_handle = LocalPointer::new(client_handle.map(|h| h.0));
 
+        // SAFETY: Calling COM interface method SetState with optional pointer arguments.
         unsafe {
             self.interface()?.SetState(
                 requested_update_rate.as_ptr(),
@@ -98,6 +100,7 @@ pub trait GroupStateMgtTrait {
     fn set_name(&self, name: &str) -> OpcResult<()> {
         let name = LocalPointer::from(name);
 
+        // SAFETY: Calling COM interface method SetName with valid name string pointer.
         unsafe { Ok(self.interface()?.SetName(name.as_pwstr())?) }
     }
 
@@ -113,6 +116,7 @@ pub trait GroupStateMgtTrait {
     ) -> OpcResult<windows::core::IUnknown> {
         let name = LocalPointer::from(name);
 
+        // SAFETY: Calling COM interface method CloneGroup with valid name and GUID reference.
         unsafe { Ok(self.interface()?.CloneGroup(name.as_pwstr(), id)?) }
     }
 }

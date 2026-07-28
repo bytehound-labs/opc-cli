@@ -57,6 +57,7 @@ pub trait SyncIo2Trait {
         let mut timestamps = RemoteArray::new(len);
         let mut errors = RemoteArray::new(len);
 
+        // SAFETY: Calling COM interface method ReadMaxAge with valid pointers and output arrays.
         unsafe {
             self.interface()?.ReadMaxAge(
                 len,
@@ -104,6 +105,7 @@ pub trait SyncIo2Trait {
 
         let mut errors = RemoteArray::new(len);
 
+        // SAFETY: Calling COM interface method WriteVQT with valid handle and VQT array pointers.
         unsafe {
             self.interface()?.WriteVQT(
                 len,

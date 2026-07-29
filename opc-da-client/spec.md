@@ -3,7 +3,7 @@
 > **Behavioral Source of Truth** for the `opc-da-client` library crate.
 > Defines *what* each module should do — independent of current implementation.
 >
-> Last verified against: e74ee22
+> Last verified against: 586a9d2
 
 ---
 
@@ -158,7 +158,20 @@ All methods use `#[async_trait]`.
 
 ---
 
+##### `fn log_opc_error(error: &OpcError, operation: &str)`
+
+**Description:** Emits a structured `tracing::error!` event with machine-parseable fields for Windows COM/OPC errors.
+
+**Inputs:** An `OpcError` reference, and the operation name slice (`operation`).
+
+**Invariants:**
+*   Purely side-effecting (writes to logs).
+*   Extracts raw HRESULT code and friendly hint if available, logging them as structured named fields.
+
+---
+
 #### Internal API (crate-visible only, documented for completeness)
+
 
 | Function | Signature | Purpose |
 | :--- | :--- | :--- |
@@ -299,6 +312,7 @@ Defined in § 1.1. See table above.
 | :--- | :--- | :--- |
 | `opc-da-backend` | ✅ Yes | Compiles the `backend::opc_da` module and exports `OpcDaClient`. |
 | `test-support` | ❌ No | Enables `mockall` and exports `MockOpcProvider`. |
+| `dev-diagnostics` | ❌ No | Compiles verbose TRACE-level operation argument dumps into backend methods. |
 
 ---
 

@@ -36,9 +36,16 @@ See **[architecture.md](./architecture.md)** for the full design, state machine,
 # Run the TUI
 cargo run --bin opc-cli
 
+# Run the TUI with debug logging enabled (default is info)
+cargo run --bin opc-cli -- -v
+
+# Run the TUI with verbose trace logging enabled (captures detailed argument dumps)
+cargo run --bin opc-cli -- -vv
+
 # Run the full verification gate (format → lint → test)
 pwsh -File scripts/verify.ps1
 ```
+
 
 ## ⌨️ Controls
 

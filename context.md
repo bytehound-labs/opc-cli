@@ -610,6 +610,16 @@ emove_group errors now logged instead of silently discarded.
 >   - Screen transitions must go through `app.log_transition()` to ensure auditability.
 >   - `check-logs.ps1` validates state transition sequence integrity during deep analysis.
 
+## 2026-07-29: TARS Summary — Documentation Update (`/update-doc`)
+> 📝 **Context Update:**
+> * **Feature:** Documentation sync for fine-grained logging and CLI verbosity features.
+> * **Changes:**
+>   - Updated `opc-da-client/spec.md` with a recorded verification hash (`586a9d2`) corresponding to the latest source code commit.
+>   - Added [`log_opc_error`](file:///c:/Users/WSALIGAN/code/opc-cli/opc-da-client/spec.md#L158-L170) to the public helpers API contract in `opc-da-client/spec.md`.
+>   - Added the `dev-diagnostics` feature to the Feature Flags table in `opc-da-client/spec.md`.
+>   - Updated workspace `README.md` **Build & Run** section to document TUI execution under `-v` and `-vv` logging verbosity arguments.
+
+
 
 
 

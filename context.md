@@ -619,6 +619,16 @@ emove_group errors now logged instead of silently discarded.
 >   - Added the `dev-diagnostics` feature to the Feature Flags table in `opc-da-client/spec.md`.
 >   - Updated workspace `README.md` **Build & Run** section to document TUI execution under `-v` and `-vv` logging verbosity arguments.
 
+## 2026-07-29: TARS Summary — Architecture Synchronization (`/architecture` + `/plan-making` + `/build`)
+> 📝 **Context Update:**
+> * **Feature:** Synchronized `architecture.md` technical source of truth with fine-grained logging infrastructure, two-tier diagnostics, and verification pipeline hardening.
+> * **Changes:**
+>   - Updated Section 4 (Project Layout) tree to include `backend/` (`connector.rs`, `opc_da.rs`) and full `opc_da/` subtree (`errors.rs`, `com_utils.rs`, `typedefs.rs`, `client/` version subdirs).
+>   - Updated Section 9 (Observability & Logging) to detail two-tier diagnostics (dynamic field `-v`/`-vv` vs. compile-time `dev-diagnostics`), `log_opc_error` structured logging, `App::log_transition()` state audits, `#[tracing::instrument]` timing, and `check-logs.ps1` §E & §F analysis modes.
+>   - Updated Section 10 (Testing Strategy) to document AST-grep rule unit testing in Gate 6.
+>   - Updated Section 12 (Dependencies & External Systems) with `dev-diagnostics` Cargo feature documentation.
+
+
 
 
 

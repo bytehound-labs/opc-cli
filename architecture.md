@@ -56,7 +56,19 @@ opc-cli/
 │       ├── provider.rs         # OpcProvider trait, TagValue, OpcValue, WriteResult
 │       ├── com_worker.rs       # Dedicated COM MTA worker thread & connection pool
 │       ├── com_guard.rs        # RAII CoInitializeEx / CoUninitialize guard
-│       └── helpers.rs          # HRESULT hints, VARIANT/FILETIME formatters
+│       ├── helpers.rs          # HRESULT hints, VARIANT/FILETIME formatters, log_opc_error
+│       ├── backend/            # Concrete OpcProvider implementations
+│       │   ├── connector.rs    # ServerConnector trait and ComConnector
+│       │   └── opc_da.rs       # OpcDaClient implementation
+│       └── opc_da/             # Raw COM bindings and internal wrapping module
+│           ├── errors.rs       # Error types, HRESULT mapping, and log_opc_error
+│           ├── com_utils.rs    # COM utility functions
+│           ├── typedefs.rs     # OPC DA type definitions
+│           └── client/         # Client trait interfaces, version impls, and string iterator
+│               ├── traits/     # Trait definitions for OPC DA operations
+│               ├── v1/         # OPC DA 1.0 interface bindings
+│               ├── v2/         # OPC DA 2.0 interface bindings
+│               └── v3/         # OPC DA 3.0 interface bindings
 ├── compat/                     # Windows 7 / NT 6.1 Polyfill DLL Crates (#![no_std])
 │   ├── bcrypt-polyfill/       # ProcessPrng -> RtlGenRandom polyfill
 │   ├── synch-polyfill/        # WaitOnAddress 1ms Sleep polling polyfill
@@ -142,8 +154,15 @@ The project uses a unified dual-interface build system:
 
 - **Framework**: `tracing` + `tracing-subscriber` + `tracing-appender-localtime`.
 - **Target**: Rolling log file `logs/opc-cli.log` (stdout is reserved for Ratatui TUI rendering).
-- **Instrumentation**: Key operations (`list_servers`, `browse_tags`, `read_tag_values`, `write_tag_value`) log entry, exit, and `elapsed_ms` execution timing.
-- **Log Inspector**: `scripts/check-logs.ps1` provides CLI log scanning, severity filtering (`WARN`/`ERROR`), lifecycle sequence checks, and timing outlier statistics.
+- **Instrumentation**: Key operations (`list_servers`, `browse_tags`, `read_tag_values`, `write_tag_value`) are decorated with `#[tracing::instrument]` and log entry, exit, and `elapsed_ms` execution timing.
+- **Two-Tier Diagnostics**:
+  - **Dynamic Field Tier**: Runtime verbosity count flags `-v` (debug) / `-vv` (trace) mapped to `EnvFilter` levels to dynamically control logging without recompilation.
+  - **Compile-Time Dev Tier**: Opt-in `dev-diagnostics` Cargo feature that compiles verbose trace-level MTA request/response argument dumps into `ComWorker` method executions.
+- **Structured Error Logging**: `log_opc_error(error, operation)` logs machine-parseable errors with fields (`operation`, `hresult`, `hint`, `chain`).
+- **State Audits**: Centralized screen transition auditing hook (`App::log_transition()`) logs all transitions with named info fields.
+- **Log Inspector**: `scripts/check-logs.ps1` provides log scanning, severity filtering, timing statistics, and deep analysis modes:
+  - **§E: HRESULT Aggregation**: Accumulates top 10 HRESULT failure codes.
+  - **§F: State Transition Sequence Validation**: Analyzes screen transition sequence integrity against an allowed state flow whitelist.
 
 ## 10. Testing Strategy
 
@@ -151,7 +170,7 @@ The project uses a unified dual-interface build system:
 - **COM Worker Testing**: `ComWorker` unit tests (`opc-da-client/src/com_worker.rs`) use `ConfigurableMockConnector` to test write paths, server connection pooling (`connect_count == 1`), stale connection eviction (`connect_count == 2`), thread panic safety, and worker drop behaviors (37 unit tests in `opc-da-client`).
 - **Doc Testing**: Public API items include runnable doc tests (`cargo test --doc`).
 - **Polyfill Build Gates**: Independent compilation of `compat/*` polyfill crates inside `scripts/verify.ps1`.
-- **AST-Grep Structural Safety Gates**: `sg scan` enforcement of zero unwrap/expect in production library code and mandatory `// SAFETY:` rationale on all unsafe blocks.
+- **AST-Grep Structural Safety Gates**: `sg scan` enforcement of zero unwrap/expect in production library code and mandatory `// SAFETY:` rationale on all unsafe blocks. Rules are validated via ast-grep unit tests before static scans.
 - **Forbidden Macro Scanner**: Automated `rg` scan ensuring zero `println!`, `dbg!`, or `todo!` macros in `opc-da-client/src/`.
 
 ## 11. Documentation Conventions
@@ -165,6 +184,7 @@ The project uses a unified dual-interface build system:
 - **Windows COM/DCOM**: Core OS dependency for OPC DA. Requires registered OPC Core Components (`opcproxy.dll`, `opccomn_ps.dll`).
 - **`windows` crate (0.61.3)**: Windows Win32 API bindings (`Win32_System_Com`, `Win32_System_Variant`, `Win32_System_Ole`).
 - **`ratatui` (0.29.0) / `crossterm` (0.28.1)**: Terminal user interface framework.
+- **Cargo Feature Flags**: `dev-diagnostics` — opt-in trace-level diagnostic dumps for development builds. See `spec.md` § Feature Flags for the full feature matrix.
 
 ## 13. Architecture Diagrams
 

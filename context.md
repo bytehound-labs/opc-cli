@@ -641,16 +641,15 @@ emove_group errors now logged instead of silently discarded.
 >   - `dev` branch tracks only project-specific workflows (`log-audit.md` and `prepublish.md`); all other `.agents/` run directories are automatically ignored by `.gitignore`.
 > * **Pruned:** 70 ephemeral agent run files tracked in git are permanently removed from tracking.
 
-## 2026-08-12: TARS Summary — opc-cli v0.2.1 Fix (docs.rs Binary Target)
+## 2026-08-12: TARS Summary — Documentation Sync
 > 📝 **Context Update:**
-> * **Feature:** Fix docs.rs build failure for binary crate `opc-cli`.
+> * **Feature:** Documentation Audit & Sync (`/update-doc`)
 > * **Changes:**
->   - Added `cargo-args = ["--bin", "opc-cli"]` to `[package.metadata.docs.rs]` in `opc-cli/Cargo.toml` so docs.rs explicitly targets the binary executable (`src/main.rs`) instead of defaulting to `--lib`.
->   - Published `opc-cli` v0.2.1 to [crates.io](https://crates.io/crates/opc-cli).
->   - Updated root [`CHANGELOG.md`](file:///c:/Users/Wendell%20Saligan/codes/opc-cli/CHANGELOG.md) with `[0.2.1]` release entry.
->   - Merged `dev` to `main` (`a810e32`), pushed tag `v0.2.1`, and published [GitHub Release v0.2.1](https://github.com/wends155/opc-cli/releases/tag/v0.2.1).
+>   - Verified 100% synchronization across `Cargo.toml` description, `//!` crate docs, and `README.md` for both `opc-cli` and `opc-da-client`.
+>   - Updated [`opc-da-client/spec.md`](file:///c:/Users/Wendell%20Saligan/codes/opc-cli/opc-da-client/spec.md) verification hash to `f3b05da`.
 > * **New Constraints:**
->   - Binary-only crates MUST include `cargo-args = ["--bin", "<name>"]` in `[package.metadata.docs.rs]` for docs.rs compatibility.
+>   - Keep `spec.md` verification hashes up-to-date after release updates.
+
 
 
 

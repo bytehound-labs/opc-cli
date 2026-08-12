@@ -640,3 +640,16 @@ emove_group errors now logged instead of silently discarded.
 >   - `main` branch contains ZERO `.agents/` metadata (pure production code).
 >   - `dev` branch tracks only project-specific workflows (`log-audit.md` and `prepublish.md`); all other `.agents/` run directories are automatically ignored by `.gitignore`.
 > * **Pruned:** 70 ephemeral agent run files tracked in git are permanently removed from tracking.
+
+## 2026-08-12: TARS Summary — Fix Audit Deviations (MSVC Linker & LF Line Endings)
+> 📝 **Context Update:**
+> * **Feature:** Audit Deviation Remediation (Linker Path & Line Endings)
+> * **Changes:**
+>   - Removed hardcoded portable MSVC linker override from `.cargo/config.toml` so all developer machines use standard Cargo MSVC linker discovery via `vswhere.exe`.
+>   - Added `.gitattributes` to enforce `eol=lf` for `*.rs`, `*.toml`, `*.md`, `*.yml` and `eol=crlf` for `*.ps1`.
+>   - Renormalized working tree files to LF line endings; `cargo fmt --all -- --check` now passes 100% cleanly on Windows.
+> * **New Constraints:**
+>   - Never hardcode user-specific binary/toolchain paths in `.cargo/config.toml`.
+>   - All Rust source files must use LF line endings, enforced by `.gitattributes`.
+> * **Pruned:** Line ending warnings in `cargo fmt --check` and non-portable linker dependency.
+

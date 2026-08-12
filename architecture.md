@@ -31,12 +31,14 @@
 * **OS Target**: Windows (Strict) due to OPC DA reliance on Windows COM/DCOM (`windows` crate 0.61.3).
 * **Async Runtime**: `tokio` (Multi-thread runtime).
 * **TUI Engine**: `ratatui` (v0.29) + `crossterm` (v0.28).
+* **Published Crates**: `opc-cli` v0.2.1, `opc-da-client` v0.2.0 (crates.io).
 
 ## 4. Project Layout
 
 ```
 opc-cli/
 ├── Cargo.toml                  # Workspace root configuration & shared dependencies
+├── CHANGELOG.md                # Workspace release history and changelog
 ├── Makefile                    # Unified CLI frontend for developers (delegates to scripts/)
 ├── README.md                   # Workspace repository documentation
 ├── architecture.md             # Technical Source of Truth & architecture specifications

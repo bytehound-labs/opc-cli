@@ -1,7 +1,7 @@
 [package]
 name = "opc-cli"
 authors.workspace = true
-version = "0.2.0"
+version = "0.2.1"
 edition.workspace = true
 rust-version.workspace = true
 description = "Interactive TUI for browsing, reading, and writing OPC DA tags on Windows"
@@ -16,6 +16,7 @@ categories = ["command-line-utilities", "network-programming"]
 default-target = "x86_64-pc-windows-msvc"
 targets = ["x86_64-pc-windows-msvc"]
 all-features = true
+cargo-args = ["--bin", "opc-cli"]
 
 [lints]
 workspace = true

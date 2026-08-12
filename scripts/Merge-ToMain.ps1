@@ -82,7 +82,8 @@ Write-Output ""
 
 # Files to remove on main
 $removeFiles = @(
-    '.agents/workflows/',
+    '.agents/',
+    'ORIGINAL_REQUEST.md',
     'context.md',
     'architecture.md',
     'TODO.md',
@@ -119,6 +120,11 @@ if ($LASTEXITCODE -ne 0) {
                 $match = $true
                 break
             }
+        }
+        if (-not $match -and $cTrim -eq '.gitignore') {
+            Invoke-Git { git checkout --theirs .gitignore }
+            $match = $true
+            Write-Output "  Auto-resolved .gitignore conflict using --theirs (Step 4 will clean agent lines)"
         }
         if (-not $match) {
             $unresolvedConflicts += $cTrim
@@ -171,9 +177,16 @@ if (Test-Path $GitIgnorePath) {
         '.agents/rules/',
         '.agents/scripts/',
         '.agents/workflows/*',
+        '# Agent Configuration',
+        '# Default: ignore all agent content',
+        '.agents/*',
+        '!.agents/workflows/',
+        '.agents/workflows/*',
         '# Project-specific workflows (tracked in this repo)',
         '!.agents/workflows/log-audit.md',
-        '!.agents/workflows/prepublish.md'
+        '!.agents/workflows/prepublish.md',
+        '# Agent-generated governance docs',
+        'ORIGINAL_REQUEST.md'
     )
 
     $lines = Get-Content -Path $GitIgnorePath -Encoding UTF8

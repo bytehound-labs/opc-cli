@@ -1,2 +1,0 @@
-[target.x86_64-pc-windows-msvc]
-linker = 'C:\bin\portable-msvc\msvc\VC\Tools\MSVC\14.50.35717\bin\Hostx64\x64\link.exe'

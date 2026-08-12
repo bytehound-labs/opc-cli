@@ -641,19 +641,16 @@ emove_group errors now logged instead of silently discarded.
 >   - `dev` branch tracks only project-specific workflows (`log-audit.md` and `prepublish.md`); all other `.agents/` run directories are automatically ignored by `.gitignore`.
 > * **Pruned:** 70 ephemeral agent run files tracked in git are permanently removed from tracking.
 
-## 2026-08-12: TARS Summary — Official v0.2.0 Release (crates.io & GitHub)
+## 2026-08-12: TARS Summary — opc-cli v0.2.1 Fix (docs.rs Binary Target)
 > 📝 **Context Update:**
-> * **Feature:** Official v0.2.0 Release & Publishing
+> * **Feature:** Fix docs.rs build failure for binary crate `opc-cli`.
 > * **Changes:**
->   - Synchronized workspace versions (`opc-cli` and `opc-da-client` at `0.2.0`).
->   - Published `opc-da-client` v0.2.0 and `opc-cli` v0.2.0 to [crates.io](https://crates.io/crates/opc-cli).
->   - Created root [`CHANGELOG.md`](file:///c:/Users/Wendell%20Saligan/codes/opc-cli/CHANGELOG.md) documenting v0.2.0.
->   - Added `homepage` workspace metadata and `[package.metadata.docs.rs]` MSVC target configuration.
->   - Built release packages: `dist/opc-cli-x64.zip` (Win10+) and `dist/opc-cli-win7-x64.zip` (Legacy NT 6.1 bundle).
->   - Performed clean merge from `dev` to `main` (`d8be2d7`).
->   - Created git tag `v0.2.0` and published official [GitHub Release v0.2.0](https://github.com/wends155/opc-cli/releases/tag/v0.2.0) with attached binary zips.
+>   - Added `cargo-args = ["--bin", "opc-cli"]` to `[package.metadata.docs.rs]` in `opc-cli/Cargo.toml` so docs.rs explicitly targets the binary executable (`src/main.rs`) instead of defaulting to `--lib`.
+>   - Published `opc-cli` v0.2.1 to [crates.io](https://crates.io/crates/opc-cli).
+>   - Updated root [`CHANGELOG.md`](file:///c:/Users/Wendell%20Saligan/codes/opc-cli/CHANGELOG.md) with `[0.2.1]` release entry.
+>   - Merged `dev` to `main` (`a810e32`), pushed tag `v0.2.1`, and published [GitHub Release v0.2.1](https://github.com/wends155/opc-cli/releases/tag/v0.2.1).
 > * **New Constraints:**
->   - Workspace versioning is synchronized at `v0.2.0`.
->   - Future releases must maintain crates.io publishing order (`opc-da-client` library first, then `opc-cli` binary).
+>   - Binary-only crates MUST include `cargo-args = ["--bin", "<name>"]` in `[package.metadata.docs.rs]` for docs.rs compatibility.
+
 
 

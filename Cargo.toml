@@ -12,6 +12,7 @@ resolver = "2"
 authors = ["Wendell Saligan <saliganw@gmail.com>"]
 license = "MIT"
 repository = "https://github.com/wends155/opc-cli"
+homepage = "https://github.com/wends155/opc-cli"
 edition = "2024"
 rust-version = "1.93.1"
 

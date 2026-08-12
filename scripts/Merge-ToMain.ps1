@@ -121,6 +121,11 @@ if ($LASTEXITCODE -ne 0) {
                 break
             }
         }
+        if (-not $match -and $cTrim -eq '.gitignore') {
+            Invoke-Git { git checkout --theirs .gitignore }
+            $match = $true
+            Write-Output "  Auto-resolved .gitignore conflict using --theirs (Step 4 will clean agent lines)"
+        }
         if (-not $match) {
             $unresolvedConflicts += $cTrim
         }

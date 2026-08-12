@@ -641,14 +641,15 @@ emove_group errors now logged instead of silently discarded.
 >   - `dev` branch tracks only project-specific workflows (`log-audit.md` and `prepublish.md`); all other `.agents/` run directories are automatically ignored by `.gitignore`.
 > * **Pruned:** 70 ephemeral agent run files tracked in git are permanently removed from tracking.
 
-## 2026-08-12: TARS Summary — Documentation Sync
+## 2026-08-12: TARS Summary — Architecture Layout & Version Sync
 > 📝 **Context Update:**
-> * **Feature:** Documentation Audit & Sync (`/update-doc`)
+> * **Feature:** Architecture Synchronization (`/architecture`)
 > * **Changes:**
->   - Verified 100% synchronization across `Cargo.toml` description, `//!` crate docs, and `README.md` for both `opc-cli` and `opc-da-client`.
->   - Updated [`opc-da-client/spec.md`](file:///c:/Users/Wendell%20Saligan/codes/opc-cli/opc-da-client/spec.md) verification hash to `f3b05da`.
+>   - Synchronized [`architecture.md`](file:///c:/Users/Wendell%20Saligan/codes/opc-cli/architecture.md) `§4 Project Layout` tree with root `CHANGELOG.md`.
+>   - Updated `§3 Language & Runtime` with current published crate releases (`opc-cli` `v0.2.1` and `opc-da-client` `v0.2.0`).
 > * **New Constraints:**
->   - Keep `spec.md` verification hashes up-to-date after release updates.
+>   - Maintain 100% alignment between root file structure and `architecture.md §4`.
+
 
 
 

@@ -1,0 +1,6 @@
+# Force LF line endings for source code (matches rustfmt.toml newline_style = "Unix")
+*.rs text eol=lf
+*.toml text eol=lf
+*.md text eol=lf
+*.yml text eol=lf
+*.ps1 text eol=crlf

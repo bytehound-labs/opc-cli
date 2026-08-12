@@ -82,7 +82,8 @@ Write-Output ""
 
 # Files to remove on main
 $removeFiles = @(
-    '.agents/workflows/',
+    '.agents/',
+    'ORIGINAL_REQUEST.md',
     'context.md',
     'architecture.md',
     'TODO.md',
@@ -171,9 +172,16 @@ if (Test-Path $GitIgnorePath) {
         '.agents/rules/',
         '.agents/scripts/',
         '.agents/workflows/*',
+        '# Agent Configuration',
+        '# Default: ignore all agent content',
+        '.agents/*',
+        '!.agents/workflows/',
+        '.agents/workflows/*',
         '# Project-specific workflows (tracked in this repo)',
         '!.agents/workflows/log-audit.md',
-        '!.agents/workflows/prepublish.md'
+        '!.agents/workflows/prepublish.md',
+        '# Agent-generated governance docs',
+        'ORIGINAL_REQUEST.md'
     )
 
     $lines = Get-Content -Path $GitIgnorePath -Encoding UTF8

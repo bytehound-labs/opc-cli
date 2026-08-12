@@ -39,13 +39,16 @@ GEMINI.md
 coding_standard.md
 coding_standards.md
 
-# Agent Configuration (synced from rules repo)
-.agents/rules/
-.agents/scripts/
+# Agent Configuration
+# Default: ignore all agent content
+.agents/*
+!.agents/workflows/
 .agents/workflows/*
-# Project-specific workflows (tracked in this repo)
 !.agents/workflows/log-audit.md
 !.agents/workflows/prepublish.md
+
+# Agent-generated governance docs
+ORIGINAL_REQUEST.md
 
 # Database
 data.db

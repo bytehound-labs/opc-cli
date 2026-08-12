@@ -628,13 +628,15 @@ emove_group errors now logged instead of silently discarded.
 >   - Updated Section 10 (Testing Strategy) to document AST-grep rule unit testing in Gate 6.
 >   - Updated Section 12 (Dependencies & External Systems) with `dev-diagnostics` Cargo feature documentation.
 
-
-
-
-
-
-
-
-
-
-
+## 2026-08-12: TARS Summary — Agent/AI File Cleanup & Branch Differentiation
+> 📝 **Context Update:**
+> * **Feature:** Agent/AI File Cleanup & Branch Differentiation Across `dev` and `main`
+> * **Changes:**
+>   - Untracked 70 ephemeral agent run artifacts (briefings, handoffs, progress trackers, prompts from past multi-agent runs) and `ORIGINAL_REQUEST.md` from git index on both `dev` and `main`.
+>   - Updated `dev` `.gitignore` to use a whitelist strategy (`.agents/*` default ignore, un-ignoring designated workflows).
+>   - Updated `scripts/Merge-ToMain.ps1` to strip `.agents/` (entire directory) and `ORIGINAL_REQUEST.md` during clean merges to `main`.
+>   - Retained `.ast-grep/` rules and `sgconfig.yml` on both branches as active quality gate tooling.
+> * **New Constraints:**
+>   - `main` branch contains ZERO `.agents/` metadata (pure production code).
+>   - `dev` branch tracks only project-specific workflows (`log-audit.md` and `prepublish.md`); all other `.agents/` run directories are automatically ignored by `.gitignore`.
+> * **Pruned:** 70 ephemeral agent run files tracked in git are permanently removed from tracking.

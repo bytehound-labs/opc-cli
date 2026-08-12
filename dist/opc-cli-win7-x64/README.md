@@ -1,5 +1,9 @@
 # OPC DA Client CLI
 
+[![Crates.io](https://img.shields.io/crates/v/opc-cli.svg)](https://crates.io/crates/opc-cli)
+[![Docs.rs](https://docs.rs/opc-cli/badge.svg)](https://docs.rs/opc-cli)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+
 A modern, asynchronous TUI (Terminal User Interface) client for browsing, reading, and writing OPC DA (Data Access) tags on Windows.
 
 ## 🏗️ Architecture
@@ -9,7 +13,7 @@ The project is structured as a Cargo workspace with two crates:
 - **`opc-cli`**: The interactive TUI application built with `ratatui` + `crossterm`.
 - **`opc-da-client`**: A native Windows COM library (using `windows-rs`) that abstracts OPC DA communication through an async trait (`OpcProvider`). Generic over `ServerConnector` for easy mocking.
 
-See **[architecture.md](./architecture.md)** for the full design, state machine, and data flow diagrams.
+See **[opc-da-client architecture.md](./opc-da-client/architecture.md)** for the full library design, state machine, and data flow diagrams.
 
 ## ✨ Features
 
@@ -36,9 +40,16 @@ See **[architecture.md](./architecture.md)** for the full design, state machine,
 # Run the TUI
 cargo run --bin opc-cli
 
+# Run the TUI with debug logging enabled (default is info)
+cargo run --bin opc-cli -- -v
+
+# Run the TUI with verbose trace logging enabled (captures detailed argument dumps)
+cargo run --bin opc-cli -- -vv
+
 # Run the full verification gate (format → lint → test)
 pwsh -File scripts/verify.ps1
 ```
+
 
 ## ⌨️ Controls
 
@@ -86,6 +97,13 @@ Output: `dist/opc-cli-win7-x64/` and `dist/opc-cli-win7-x64.zip`
 - `redist/`: Included OPC Core Components redistributable MSI (if placed in `vendor/redist/`).
 
 Simply copy the extracted `dist/opc-cli-win7-x64/` folder to a USB drive and run on the target machine without installing Visual C++ redistributables or Windows updates.
+
+## 🙏 Acknowledgments
+
+- [**rust_opc**](https://github.com/Ronbb/rust_opc) by Wang Ruobiao — original OPC DA Rust bindings and COM interface generation pipeline.
+- [**OPC Foundation**](https://opcfoundation.org/) — OPC Data Access specification and IDL interface definitions.
+- [**windows-rs**](https://github.com/microsoft/windows-rs) by Microsoft — Windows API bindings for Rust.
+- [**ratatui**](https://github.com/ratatui/ratatui) — terminal user interface framework.
 
 ## 📄 License
 

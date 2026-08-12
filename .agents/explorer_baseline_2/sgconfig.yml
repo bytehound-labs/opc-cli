@@ -1,6 +1,0 @@
-ruleDirs:
-- C:\Users\WSALIGAN\code\opc-cli\.agents\explorer_baseline_2\rules
-testConfigs:
-- testDir: C:\Users\WSALIGAN\code\opc-cli\.agents\explorer_baseline_2\rule-tests
-utilDirs:
-- C:\Users\WSALIGAN\code\opc-cli\.agents\explorer_baseline_2\utils

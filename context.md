@@ -641,15 +641,19 @@ emove_group errors now logged instead of silently discarded.
 >   - `dev` branch tracks only project-specific workflows (`log-audit.md` and `prepublish.md`); all other `.agents/` run directories are automatically ignored by `.gitignore`.
 > * **Pruned:** 70 ephemeral agent run files tracked in git are permanently removed from tracking.
 
-## 2026-08-12: TARS Summary — Fix Audit Deviations (MSVC Linker & LF Line Endings)
+## 2026-08-12: TARS Summary — Official v0.2.0 Release (crates.io & GitHub)
 > 📝 **Context Update:**
-> * **Feature:** Audit Deviation Remediation (Linker Path & Line Endings)
+> * **Feature:** Official v0.2.0 Release & Publishing
 > * **Changes:**
->   - Removed hardcoded portable MSVC linker override from `.cargo/config.toml` so all developer machines use standard Cargo MSVC linker discovery via `vswhere.exe`.
->   - Added `.gitattributes` to enforce `eol=lf` for `*.rs`, `*.toml`, `*.md`, `*.yml` and `eol=crlf` for `*.ps1`.
->   - Renormalized working tree files to LF line endings; `cargo fmt --all -- --check` now passes 100% cleanly on Windows.
+>   - Synchronized workspace versions (`opc-cli` and `opc-da-client` at `0.2.0`).
+>   - Published `opc-da-client` v0.2.0 and `opc-cli` v0.2.0 to [crates.io](https://crates.io/crates/opc-cli).
+>   - Created root [`CHANGELOG.md`](file:///c:/Users/Wendell%20Saligan/codes/opc-cli/CHANGELOG.md) documenting v0.2.0.
+>   - Added `homepage` workspace metadata and `[package.metadata.docs.rs]` MSVC target configuration.
+>   - Built release packages: `dist/opc-cli-x64.zip` (Win10+) and `dist/opc-cli-win7-x64.zip` (Legacy NT 6.1 bundle).
+>   - Performed clean merge from `dev` to `main` (`d8be2d7`).
+>   - Created git tag `v0.2.0` and published official [GitHub Release v0.2.0](https://github.com/wends155/opc-cli/releases/tag/v0.2.0) with attached binary zips.
 > * **New Constraints:**
->   - Never hardcode user-specific binary/toolchain paths in `.cargo/config.toml`.
->   - All Rust source files must use LF line endings, enforced by `.gitattributes`.
-> * **Pruned:** Line ending warnings in `cargo fmt --check` and non-portable linker dependency.
+>   - Workspace versioning is synchronized at `v0.2.0`.
+>   - Future releases must maintain crates.io publishing order (`opc-da-client` library first, then `opc-cli` binary).
+
 

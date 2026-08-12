@@ -1,15 +1,21 @@
 [package]
 name = "opc-cli"
 authors.workspace = true
-version = "0.1.0"
+version = "0.2.0"
 edition.workspace = true
 rust-version.workspace = true
 description = "Interactive TUI for browsing, reading, and writing OPC DA tags on Windows"
 license.workspace = true
 repository.workspace = true
+homepage.workspace = true
 readme = "../README.md"
 keywords = ["opc", "cli", "tui", "windows"]
 categories = ["command-line-utilities", "network-programming"]
+
+[package.metadata.docs.rs]
+default-target = "x86_64-pc-windows-msvc"
+targets = ["x86_64-pc-windows-msvc"]
+all-features = true
 
 [lints]
 workspace = true
@@ -18,7 +24,7 @@ workspace = true
 dev-diagnostics = ["opc-da-client/dev-diagnostics"]
 
 [dependencies]
-opc-da-client = { path = "../opc-da-client" }
+opc-da-client = { version = "0.2.0", path = "../opc-da-client" }
 ratatui = "0.29.0"
 crossterm = "0.28.1"
 tokio = { workspace = true, features = ["full"] }
@@ -30,5 +36,5 @@ tracing-appender-localtime = "0.2.4"
 clap = { version = "4.5.28", features = ["derive"] }
 
 [dev-dependencies]
-opc-da-client = { path = "../opc-da-client", features = ["test-support"] }
+opc-da-client = { version = "0.2.0", path = "../opc-da-client", features = ["test-support"] }
 mockall = "0.13.1"

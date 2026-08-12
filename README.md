@@ -1,5 +1,9 @@
 # OPC DA Client CLI
 
+[![Crates.io](https://img.shields.io/crates/v/opc-cli.svg)](https://crates.io/crates/opc-cli)
+[![Docs.rs](https://docs.rs/opc-cli/badge.svg)](https://docs.rs/opc-cli)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+
 A modern, asynchronous TUI (Terminal User Interface) client for browsing, reading, and writing OPC DA (Data Access) tags on Windows.
 
 ## 🏗️ Architecture
@@ -9,7 +13,7 @@ The project is structured as a Cargo workspace with two crates:
 - **`opc-cli`**: The interactive TUI application built with `ratatui` + `crossterm`.
 - **`opc-da-client`**: A native Windows COM library (using `windows-rs`) that abstracts OPC DA communication through an async trait (`OpcProvider`). Generic over `ServerConnector` for easy mocking.
 
-See **[architecture.md](./architecture.md)** for the full design, state machine, and data flow diagrams.
+See **[opc-da-client architecture.md](./opc-da-client/architecture.md)** for the full library design, state machine, and data flow diagrams.
 
 ## ✨ Features
 

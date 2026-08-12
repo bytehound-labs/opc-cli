@@ -7,6 +7,7 @@ rust-version.workspace = true
 description = "Backend-agnostic OPC DA client library for Rust — async, trait-based, with transparent COM management"
 license.workspace = true
 repository.workspace = true
+homepage.workspace = true
 readme = "README.md"
 keywords = ["opc", "opc-da", "windows", "automation", "scada"]
 categories = ["api-bindings", "network-programming"]

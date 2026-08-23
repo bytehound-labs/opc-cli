@@ -11,12 +11,16 @@ homepage.workspace = true
 readme = "README.md"
 keywords = ["opc", "opc-da", "windows", "automation", "scada"]
 categories = ["api-bindings", "network-programming"]
+
 exclude = [
     ".winmd/",
     "architecture.md",
     "spec.md",
     "rewrite.py",
 ]
+
+[lib]
+name = "opc_da_client"
 
 [package.metadata.docs.rs]
 default-target = "x86_64-pc-windows-msvc"

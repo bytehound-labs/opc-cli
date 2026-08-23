@@ -9,9 +9,42 @@ pub use crate::bindings::da::{tagOPCITEMRESULT, tagOPCITEMSTATE};
 pub use crate::opc_da::client::*;
 pub use crate::opc_da::com_utils::RemoteArray;
 pub use crate::opc_da::errors::{OpcError, OpcResult};
+use crate::provider::BrowseNodeFilter;
 use anyhow::Context;
 pub use windows::Win32::System::Variant::VARIANT;
 use windows::core::Interface;
+
+/// Rust-native OPC DA 3.0 browse element used inside the backend boundary.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NativeBrowseElement {
+    pub(crate) name: String,
+    pub(crate) item_id: Option<String>,
+    pub(crate) has_children: bool,
+    pub(crate) is_item: bool,
+}
+
+/// Rust-native OPC DA 3.0 page used inside the backend boundary.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NativeBrowsePage {
+    pub(crate) elements: Vec<NativeBrowseElement>,
+    pub(crate) more_elements: bool,
+    pub(crate) continuation: Option<String>,
+}
+
+/// Object-safe string enumerator used to keep DA 2.x COM enumeration state on
+/// the worker while allowing tests to supply pure Rust iterators.
+pub trait BrowseStringIterator {
+    fn next_string(&mut self) -> Option<OpcResult<String>>;
+}
+
+impl<T> BrowseStringIterator for T
+where
+    T: Iterator<Item = OpcResult<String>>,
+{
+    fn next_string(&mut self) -> Option<OpcResult<String>> {
+        self.next()
+    }
+}
 
 /// Factory for connecting to OPC DA servers.
 ///
@@ -87,6 +120,75 @@ pub trait ConnectedServer {
     ///
     /// Returns an error if the server cannot resolve the item name.
     fn get_item_id(&self, item_name: &str) -> OpcResult<String>;
+
+    /// Resolve a DA 2.x browse name only when it is also an item.
+    ///
+    /// OPC DA servers commonly report `OPC_E_UNKNOWNITEMID` or
+    /// `OPC_E_INVALIDITEMID` when `GetItemID` is called for a branch-only
+    /// browse name. Other failures remain hard errors.
+    fn resolve_da2_item_id(&self, item_name: &str) -> OpcResult<Option<String>> {
+        match self.get_item_id(item_name) {
+            Ok(item_id) => Ok(Some(item_id)),
+            Err(OpcError::Com { source })
+                if matches!(source.code().0.cast_unsigned(), 0xC004_0007 | 0xC004_0008) =>
+            {
+                Ok(None)
+            }
+            Err(error) => Err(error),
+        }
+    }
+
+    /// Return whether a DA 2.x item name also identifies a child branch.
+    ///
+    /// Backends that can probe branch navigation should override this method.
+    fn da2_name_has_children(&self, _item_name: &str) -> OpcResult<bool> {
+        Ok(false)
+    }
+
+    /// Return whether OPC DA 2.x address-space browsing is available.
+    fn supports_da2_browse(&self) -> bool {
+        true
+    }
+
+    /// Return whether OPC DA 3.0 native browsing is available.
+    fn supports_da3_browse(&self) -> bool {
+        false
+    }
+
+    /// Start a stateful OPC DA 2.x string enumeration.
+    ///
+    /// The returned iterator remains on the COM worker and is never exposed
+    /// through the public API.
+    fn begin_da2_browse(
+        &self,
+        browse_type: u32,
+        filter: Option<&str>,
+        data_type: u16,
+        access_rights: u32,
+    ) -> OpcResult<Box<dyn BrowseStringIterator>> {
+        Ok(Box::new(self.browse_opc_item_ids(
+            browse_type,
+            filter,
+            data_type,
+            access_rights,
+        )?))
+    }
+
+    /// Return one native OPC DA 3.0 browse page.
+    ///
+    /// The continuation value is backend-private and is replaced with an
+    /// opaque random token before crossing the public API boundary.
+    fn browse_da3(
+        &self,
+        _item_id: Option<&str>,
+        _continuation: Option<&str>,
+        _max_elements: u32,
+        _filter: BrowseNodeFilter,
+    ) -> OpcResult<NativeBrowsePage> {
+        Err(OpcError::NotImplemented(
+            "IOPCBrowse is not supported".to_string(),
+        ))
+    }
 
     /// Add a new OPC group to this server connection.
     ///
@@ -207,6 +309,7 @@ impl ServerConnector for ComConnector {
             item_properties: unknown.cast()?,
             server_public_groups: unknown.cast().ok(),
             browse_server_address_space: unknown.cast().ok(),
+            browse: unknown.cast().ok(),
         })
     }
 }
@@ -220,6 +323,7 @@ pub struct ComServer {
     pub(crate) server_public_groups: Option<crate::bindings::da::IOPCServerPublicGroups>,
     pub(crate) browse_server_address_space:
         Option<crate::bindings::da::IOPCBrowseServerAddressSpace>,
+    pub(crate) browse: Option<crate::bindings::da::IOPCBrowse>,
 }
 
 impl ServerTrait<ComGroup> for ComServer {
@@ -262,6 +366,14 @@ impl BrowseServerAddressSpaceTrait for ComServer {
     }
 }
 
+impl BrowseTrait for ComServer {
+    fn interface(&self) -> OpcResult<&crate::bindings::da::IOPCBrowse> {
+        self.browse
+            .as_ref()
+            .ok_or_else(|| OpcError::NotImplemented("IOPCBrowse not supported".to_string()))
+    }
+}
+
 impl ConnectedServer for ComServer {
     type Group = ComGroup;
 
@@ -296,6 +408,94 @@ impl ConnectedServer for ComServer {
 
     fn get_item_id(&self, item_name: &str) -> OpcResult<String> {
         BrowseServerAddressSpaceTrait::get_item_id(self, item_name)
+    }
+
+    fn da2_name_has_children(&self, item_name: &str) -> OpcResult<bool> {
+        let down = crate::bindings::da::OPC_BROWSE_DOWN.0.cast_unsigned();
+        let up = crate::bindings::da::OPC_BROWSE_UP.0.cast_unsigned();
+        match ConnectedServer::change_browse_position(self, down, item_name) {
+            Ok(()) => {
+                ConnectedServer::change_browse_position(self, up, "")?;
+                Ok(true)
+            }
+            Err(OpcError::Com { source })
+                if !matches!(
+                    source.code().0.cast_unsigned(),
+                    0x8007_06BA | 0x8007_06BF | 0x8007_06BE | 0x8008_0005
+                ) =>
+            {
+                Ok(false)
+            }
+            Err(error) => Err(error),
+        }
+    }
+
+    fn supports_da2_browse(&self) -> bool {
+        self.browse_server_address_space.is_some()
+    }
+
+    fn supports_da3_browse(&self) -> bool {
+        self.browse.is_some()
+    }
+
+    fn browse_da3(
+        &self,
+        item_id: Option<&str>,
+        continuation: Option<&str>,
+        max_elements: u32,
+        filter: BrowseNodeFilter,
+    ) -> OpcResult<NativeBrowsePage> {
+        use crate::bindings::da::{
+            OPC_BROWSE_FILTER_ALL, OPC_BROWSE_FILTER_BRANCHES, OPC_BROWSE_FILTER_ITEMS,
+            OPC_BROWSE_HASCHILDREN, OPC_BROWSE_ISITEM,
+        };
+        use crate::opc_da::com_utils::RemotePointer;
+
+        let native_filter = match filter {
+            BrowseNodeFilter::Branches => OPC_BROWSE_FILTER_BRANCHES,
+            BrowseNodeFilter::Items => OPC_BROWSE_FILTER_ITEMS,
+            BrowseNodeFilter::All => OPC_BROWSE_FILTER_ALL,
+        };
+        let (more_elements, continuation, elements) = BrowseTrait::browse(
+            self,
+            item_id,
+            continuation,
+            max_elements,
+            native_filter,
+            None::<&str>,
+            None::<&str>,
+            false,
+            false,
+            &[],
+        )?;
+
+        let owned_strings: Vec<_> = elements
+            .as_slice()
+            .iter()
+            .map(|element| {
+                (
+                    RemotePointer::from(element.szName),
+                    RemotePointer::from(element.szItemID),
+                    element.dwFlagValue,
+                )
+            })
+            .collect();
+
+        let mut mapped = Vec::with_capacity(owned_strings.len());
+        for (name, item_id, flags) in owned_strings {
+            mapped.push(NativeBrowseElement {
+                name: String::try_from(name)?,
+                item_id: Option::<String>::try_from(item_id)?.filter(|value| !value.is_empty()),
+                has_children: flags & OPC_BROWSE_HASCHILDREN != 0,
+                is_item: flags & OPC_BROWSE_ISITEM != 0,
+            });
+        }
+
+        Ok(NativeBrowsePage {
+            elements: mapped,
+            more_elements,
+            continuation: continuation.filter(|value| !value.is_empty()),
+        })
     }
 
     fn add_group(

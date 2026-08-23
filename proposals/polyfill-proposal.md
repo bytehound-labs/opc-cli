@@ -333,7 +333,7 @@ sequenceDiagram
 ## 9. Open Questions
 
 1. **Crates.io Publishing**: Should `win7-compat` be published to crates.io for `cargo install` convenience, or distributed only via GitHub Releases?
-2. **Minimum Supported Rust Version (MSRV)**: Should `win7-compat` target the same MSRV as `opc-cli` (1.93.1 / edition 2024), or a lower MSRV for broader compatibility?
+2. **Minimum Supported Rust Version (MSRV)**: Should `win7-compat` target the same MSRV as `opc-cli` (1.88 / edition 2024), or a lower MSRV for broader compatibility?
 3. **Additional PE Patches**: Are there other Win8+-only import strings that should be included in the patcher beyond `GetSystemTimePreciseAsFileTime`? Should the tool accept a user-configurable patch list?
 
 ---

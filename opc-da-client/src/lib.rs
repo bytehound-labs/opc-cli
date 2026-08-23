@@ -31,8 +31,10 @@
 //! **Windows only** — OPC DA is built on COM/DCOM.
 
 mod com_guard;
-pub(crate) use com_guard::ComGuard;
+pub use com_guard::ComGuard;
 mod helpers;
+#[cfg(feature = "opc-da-backend")]
+mod native_browse;
 mod provider;
 
 #[cfg(feature = "opc-da-backend")]
@@ -49,7 +51,11 @@ mod backend;
 
 // Stable public API
 pub use helpers::{format_hresult, friendly_com_hint, log_opc_error};
-pub use provider::{OpcProvider, OpcValue, TagValue, WriteResult};
+pub use provider::{
+    BrowseCapabilities, BrowseNamespace, BrowseNode, BrowseNodeFilter, BrowseNodeKind,
+    BrowseNodeToken, BrowsePage, BrowsePageRequest, BrowsePageToken, BrowseSessionToken,
+    OpcProvider, OpcValue, TagValue, WriteResult,
+};
 
 #[cfg(feature = "opc-da-backend")]
 pub use opc_da::{

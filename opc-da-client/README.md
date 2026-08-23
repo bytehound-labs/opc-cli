@@ -1,7 +1,7 @@
-# opc-da-client
+# bytehound-opc-da-client
 
-[![Crates.io](https://img.shields.io/crates/v/opc-da-client.svg)](https://crates.io/crates/opc-da-client)
-[![Docs.rs](https://docs.rs/opc-da-client/badge.svg)](https://docs.rs/opc-da-client)
+[![Crates.io](https://img.shields.io/crates/v/bytehound-opc-da-client.svg)](https://crates.io/crates/bytehound-opc-da-client)
+[![Docs.rs](https://docs.rs/bytehound-opc-da-client/badge.svg)](https://docs.rs/bytehound-opc-da-client)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 Backend-agnostic OPC DA client library for Rust — async, trait-based, with transparent COM management.
@@ -12,6 +12,7 @@ Backend-agnostic OPC DA client library for Rust — async, trait-based, with tra
 - **Trait-Based Abstraction**: The `OpcProvider` trait allows for easy mocking and backend swapping.
 - **Transparent COM Management**: Handles COM initialization (`CoInitializeEx`) and apartment thread affinity automatically in the background.
 - **Read & Write Support**: Read tag values and write typed values (`Int`, `Float`, `Bool`, `String`) to OPC tags.
+- **Scalable Native Browsing**: Open isolated sessions and request bounded, one-level pages through OPC DA 3.0 with an automatic OPC DA 2.x fallback.
 - **Windows COM/DCOM Support**: Native OPC DA backend via `windows-rs` — no external OPC crates needed.
 - **Robust Error Handling**: Leverages `thiserror` for the `OpcError` domain type and `friendly_com_hint()` for human-readable HRESULT explanations.
 - **Test-Friendly**: Built-in `MockOpcProvider` via the `test-support` feature.
@@ -22,12 +23,13 @@ Add this to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-opc-da-client = "0.2.0"
+opc-da-client = { package = "bytehound-opc-da-client", version = "0.2.0" }
 ```
 
 ## Prerequisites
 
 - **Operating System**: Windows (COM/DCOM is a Windows-only technology).
+- **Rust**: 1.88 or newer.
 - **OPC DA Core Components**: Ensure the OPC DA Core Components are installed and registered on your system.
 - **DCOM Configuration**: If connecting to remote servers, appropriate DCOM permissions must be configured.
 
@@ -134,20 +136,65 @@ async fn main() -> anyhow::Result<()> {
 }
 ```
 
+For large namespaces, use the bounded native browse API instead of recursive discovery:
+
+```rust,no_run
+use opc_da_client::{
+    BrowseNodeFilter, BrowsePageRequest, OpcDaClient, OpcProvider,
+};
+
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
+    let client = OpcDaClient::default();
+    let server = "Matrikon.OPC.Simulation.1";
+    let capabilities = client.browse_capabilities(server).await?;
+    let session = client.open_browse_session(server).await?;
+
+    let page = client
+        .browse_page(
+            &session,
+            BrowsePageRequest {
+                parent: None,
+                filter: BrowseNodeFilter::All,
+                max_elements: capabilities.max_page_size.min(100),
+                continuation: None,
+            },
+        )
+        .await?;
+
+    for node in page.nodes {
+        println!("{}: {:?}", node.name, node.kind);
+    }
+    client.close_browse_session(&session).await?;
+    Ok(())
+}
+```
+
+Session, node, and continuation tokens are opaque UUIDs. Native browse sessions
+own dedicated server connections, expire after five minutes of inactivity, and
+never expose COM pointers or OPC DA continuation strings. Transport adapters can
+encode tokens with `to_string()` and restore them with each token type's
+`parse()` method.
+
+The DA 2.x fallback merges a same-named branch and leaf into one
+`BrowseNodeKind::BranchAndItem` node and resolves its exact item ID through
+`GetItemID`.
+
 ## Architecture
 
 The library is split into a core trait layer and concrete implementations:
 
-- **`OpcProvider`**: The primary async trait defining OPC operations (list, browse, read, write).
+- **`OpcProvider`**: The primary async trait defining server discovery, recursive tag browsing, native paged browsing, reads, and writes.
 - **`OpcDaClient`**: The default implementation using native `windows-rs` COM calls. Generic over `ServerConnector` for testability; defaults to `ComConnector`.
 
-See [architecture.md](https://github.com/wends155/opc-cli/blob/main/opc-da-client/architecture.md) for in-depth design details and [spec.md](https://github.com/wends155/opc-cli/blob/main/opc-da-client/spec.md) for behavioral contracts.
+See [architecture.md](https://github.com/bytehound-labs/opc-cli/blob/main/opc-da-client/architecture.md) for in-depth design details and [spec.md](https://github.com/bytehound-labs/opc-cli/blob/main/opc-da-client/spec.md) for behavioral contracts.
 
 ### COM Threading Model
 
-OPC DA relies on Windows COM, which requires per-thread initialization and strict thread affinity. `opc-da-client` handles this transparently:
+OPC DA relies on Windows COM, which requires per-thread initialization and strict thread affinity. The `opc-da-client` dependency alias handles this transparently:
 * **Dedicated Worker Thread**: All COM operations are executed on a dedicated background worker thread initialized in Multi-Threaded Apartment (MTA) mode.
 * **No Manual Init**: You do not need to call `CoInitialize` or manage COM lifecycles in your calling application.
+* **Host Thread Initialization**: Applications that also perform COM work on their own thread can hold a public `ComGuard::new()` guard for that thread's lifetime.
 
 ## License
 

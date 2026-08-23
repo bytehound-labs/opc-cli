@@ -1,7 +1,10 @@
 use crate::backend::connector::{ComConnector, ServerConnector};
 use crate::com_worker::{ComRequest, ComWorker};
 use crate::opc_da::errors::OpcResult;
-use crate::provider::{OpcProvider, OpcValue, TagValue, WriteResult};
+use crate::provider::{
+    BrowseCapabilities, BrowsePage, BrowsePageRequest, BrowseSessionToken, OpcProvider, OpcValue,
+    TagValue, WriteResult,
+};
 use async_trait::async_trait;
 use std::sync::Arc;
 use std::sync::atomic::AtomicUsize;
@@ -73,6 +76,48 @@ impl<C: ServerConnector + 'static> OpcProvider for OpcDaClient<C> {
                 tags_sink,
                 reply,
             })
+            .await
+    }
+
+    async fn browse_capabilities(&self, server: &str) -> OpcResult<BrowseCapabilities> {
+        let server_owned = server.to_string();
+        self.worker
+            .send_request(|reply| ComRequest::BrowseCapabilities {
+                server: server_owned,
+                reply,
+            })
+            .await
+    }
+
+    async fn open_browse_session(&self, server: &str) -> OpcResult<BrowseSessionToken> {
+        let server_owned = server.to_string();
+        self.worker
+            .send_request(|reply| ComRequest::OpenBrowseSession {
+                server: server_owned,
+                reply,
+            })
+            .await
+    }
+
+    async fn browse_page(
+        &self,
+        session: &BrowseSessionToken,
+        request: BrowsePageRequest,
+    ) -> OpcResult<BrowsePage> {
+        let session = *session;
+        self.worker
+            .send_request(|reply| ComRequest::BrowsePage {
+                session,
+                request,
+                reply,
+            })
+            .await
+    }
+
+    async fn close_browse_session(&self, session: &BrowseSessionToken) -> OpcResult<()> {
+        let session = *session;
+        self.worker
+            .send_request(|reply| ComRequest::CloseBrowseSession { session, reply })
             .await
     }
 

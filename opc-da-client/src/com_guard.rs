@@ -20,9 +20,9 @@ use windows::Win32::System::Com::{COINIT_MULTITHREADED, CoInitializeEx, CoUninit
 ///
 /// # Examples
 ///
-/// ```ignore
+/// ```no_run
 /// # use anyhow::Result;
-/// # use crate::ComGuard;
+/// # use opc_da_client::ComGuard;
 /// # fn main() -> Result<()> {
 /// let _guard = ComGuard::new()?;
 /// // ... COM operations ...

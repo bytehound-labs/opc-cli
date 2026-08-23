@@ -6,10 +6,10 @@
 | :--- | :--- |
 | **Package** | `bytehound-opc-da-client` |
 | **Rust library** | `opc_da_client` |
-| **Version** | `0.2.0` |
+| **Version** | `0.2.1` |
 | **Purpose** | Backend-agnostic Rust library for interacting with OPC DA (Data Access) servers |
 | **Spec** | [spec.md](file:///c:/Users/WSALIGAN/code/opc-cli/opc-da-client/spec.md) |
-| **Status** | ✅ 0.2.0 baseline (Crates.io) |
+| **Status** | ✅ 0.2.1 baseline (Crates.io) |
 
 The library provides an async, trait-based API that abstracts away the complexities of Windows COM/DCOM and the underlying OPC implementation. It follows a layered architecture: a **stable public API** (trait + data types) and **feature-gated backend implementations** that can be swapped without affecting consumer code.
 
@@ -39,6 +39,7 @@ opc-da-client/
     ├── lib.rs              # Crate root: module declarations, public re-exports
     ├── com_guard.rs        # Public RAII guard for caller-owned COM threads
     ├── provider.rs         # OpcProvider trait + public Rust-native data types
+    ├── inventory.rs        # Bounded cancellable namespace inventory traversal
     ├── native_browse.rs    # Bounded session/page state machine
     ├── helpers.rs          # COM utilities: friendly_com_hint, variant/quality/time converters
     ├── opc_da/             # Merged from vendor/opc_da (Phase 2)

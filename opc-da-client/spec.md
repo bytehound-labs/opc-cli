@@ -27,6 +27,7 @@ All methods use `#[async_trait]`.
 | `open_browse_session` | `async fn open_browse_session(&self, server: &str) -> OpcResult<BrowseSessionToken>` | Open an isolated worker-owned server connection for paged browsing. |
 | `browse_page` | `async fn browse_page(&self, session: &BrowseSessionToken, request: BrowsePageRequest) -> OpcResult<BrowsePage>` | Return one bounded level of branches/items without recursively enumerating descendants. |
 | `close_browse_session` | `async fn close_browse_session(&self, session: &BrowseSessionToken) -> OpcResult<()>` | Close a browse session and release its server connection and continuation state. |
+| `start_inventory` | `async fn start_inventory(&self, server: &str, options: InventoryOptions) -> OpcResult<InventoryStream>` | Start a bounded, cancellable namespace inventory that streams exact ItemIDs and breadcrumb labels. |
 | `read_tag_values` | `async fn read_tag_values(&self, server: &str, tag_ids: Vec<String>) -> Result<Vec<TagValue>>` | Read current value, quality, and timestamp for the given tag IDs. |
 | `write_tag_value` | `async fn write_tag_value(&self, server: &str, tag_id: &str, value: OpcValue) -> Result<WriteResult>` | Write a typed value to a single tag on `server`. |
 
@@ -56,6 +57,10 @@ All methods use `#[async_trait]`.
 *   Native browse pages contain at most 1,000 nodes and never recursively enumerate descendants.
 *   Native session, node, and page tokens are random UUIDs with string encode/parse support for transport adapters. Raw COM pointers and DA continuation strings never cross the public API boundary.
 *   Native browse sessions own their server connection, expire after five minutes of inactivity, and keep DA 2.x mutable browse positions isolated.
+*   `start_inventory` requests no more than `batch_size` native entries per operation and never exposes
+    browse-session or continuation tokens.
+*   Inventory cancellation is observed before the next bounded native operation; a cancelled or
+    truncated inventory never claims `complete = true`.
 *   Closing, expiry, worker shutdown, or cancellation of an open/page request drops the affected session state on the COM worker.
 *   `read_tag_values` returns a `TagValue` entry for all requested tags, preserving the original array length and order. Items that fail to be added to the group or read will have their `value` set to `"Error"` and `quality` set to `"Bad — <hint>"`.
 *   `write_tag_value` returns `Ok(WriteResult)` in all non-fatal cases; per-tag success/error is reported inside `WriteResult`.

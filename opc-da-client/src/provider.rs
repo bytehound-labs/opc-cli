@@ -1,7 +1,8 @@
 use crate::opc_da::errors::{OpcError, OpcResult};
 use async_trait::async_trait;
 use std::sync::Arc;
-use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use tokio::sync::mpsc;
 use uuid::Uuid;
 
 #[cfg(feature = "test-support")]
@@ -181,6 +182,11 @@ impl BrowseNodeKind {
     pub fn has_children(self) -> bool {
         matches!(self, Self::Branch | Self::BranchAndItem)
     }
+
+    /// Returns whether the node identifies a selectable OPC item.
+    pub fn is_item(self) -> bool {
+        matches!(self, Self::Item | Self::BranchAndItem)
+    }
 }
 
 /// Node-kind filter for a one-level browse request.
@@ -227,6 +233,199 @@ pub struct BrowsePage {
     pub nodes: Vec<BrowseNode>,
     /// Opaque token for the next page, or `None` when enumeration is complete.
     pub continuation: Option<BrowsePageToken>,
+}
+
+/// Options controlling one bounded namespace inventory.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct InventoryOptions {
+    /// Maximum number of native entries requested per browse operation.
+    pub batch_size: u32,
+    /// Optional safety cap for a deliberately bounded inventory.
+    pub max_entries: Option<u64>,
+}
+
+impl Default for InventoryOptions {
+    fn default() -> Self {
+        Self {
+            batch_size: 100,
+            max_entries: None,
+        }
+    }
+}
+
+/// One selectable OPC DA item discovered during inventory.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InventoryEntry {
+    /// Local display name returned by the server.
+    pub display_name: String,
+    /// Exact ItemID returned by the server.
+    pub item_id: String,
+    /// Whether the item is also a browsable branch.
+    pub kind: BrowseNodeKind,
+    /// Stable display labels for the item's ancestors.
+    pub breadcrumbs: Vec<String>,
+}
+
+/// Progress emitted between bounded inventory operations.
+#[derive(Debug, Clone, PartialEq)]
+pub struct InventoryProgress {
+    pub branches_visited: u64,
+    pub entries_seen: u64,
+    pub unique_items: u64,
+    pub active_time_ms: u64,
+    pub paused_time_ms: u64,
+    pub items_per_second: f64,
+    pub estimated_remaining_ms: Option<u64>,
+}
+
+/// Terminal result for one inventory operation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InventoryCompleted {
+    pub complete: bool,
+    pub cancelled: bool,
+    pub truncated: bool,
+    pub warning: Option<String>,
+    pub capabilities: BrowseCapabilities,
+}
+
+/// Event emitted by [`InventoryStream`].
+#[derive(Debug, Clone, PartialEq)]
+pub enum InventoryEvent {
+    Entry(InventoryEntry),
+    Progress(InventoryProgress),
+    Completed(InventoryCompleted),
+}
+
+#[derive(Debug)]
+struct InventoryControlState {
+    cancelled: AtomicBool,
+    paused: AtomicBool,
+}
+
+/// Control handle for a running inventory.
+#[derive(Clone, Debug)]
+pub struct InventoryControl {
+    state: Arc<InventoryControlState>,
+}
+
+impl InventoryControl {
+    pub(crate) fn new() -> Self {
+        Self {
+            state: Arc::new(InventoryControlState {
+                cancelled: AtomicBool::new(false),
+                paused: AtomicBool::new(false),
+            }),
+        }
+    }
+
+    /// Request cancellation at the next bounded COM boundary.
+    pub fn cancel(&self) {
+        self.state.cancelled.store(true, Ordering::Release);
+    }
+
+    /// Pause before the next bounded COM operation.
+    pub fn pause(&self) {
+        self.state.paused.store(true, Ordering::Release);
+    }
+
+    /// Resume a paused inventory.
+    pub fn resume(&self) {
+        self.state.paused.store(false, Ordering::Release);
+    }
+
+    /// Return whether cancellation has been requested.
+    pub fn is_cancelled(&self) -> bool {
+        self.state.cancelled.load(Ordering::Acquire)
+    }
+
+    pub(crate) fn is_paused(&self) -> bool {
+        self.state.paused.load(Ordering::Acquire)
+    }
+}
+
+/// Cancellable stream of bounded inventory events.
+pub struct InventoryStream {
+    receiver: mpsc::Receiver<OpcResult<InventoryEvent>>,
+    control: InventoryControl,
+    worker: Option<std::thread::JoinHandle<()>>,
+}
+
+impl InventoryStream {
+    pub(crate) fn new(
+        receiver: mpsc::Receiver<OpcResult<InventoryEvent>>,
+        control: InventoryControl,
+        worker: std::thread::JoinHandle<()>,
+    ) -> Self {
+        Self {
+            receiver,
+            control,
+            worker: Some(worker),
+        }
+    }
+
+    /// Wait for the next inventory event.
+    ///
+    /// A failed inventory is delivered as `Some(Err(_))`, which is the
+    /// terminal event for the stream. A successful or cancelled inventory
+    /// ends with an [`InventoryEvent::Completed`] message.
+    pub async fn message(&mut self) -> Option<OpcResult<InventoryEvent>> {
+        self.receiver.recv().await
+    }
+
+    /// Return a control handle for this inventory.
+    pub fn control(&self) -> InventoryControl {
+        self.control.clone()
+    }
+
+    /// Request cancellation of this inventory.
+    pub fn cancel(&self) {
+        self.control.cancel();
+    }
+
+    /// Pause this inventory before its next bounded operation.
+    pub fn pause(&self) {
+        self.control.pause();
+    }
+
+    /// Resume this inventory.
+    pub fn resume(&self) {
+        self.control.resume();
+    }
+}
+
+impl Drop for InventoryStream {
+    fn drop(&mut self) {
+        // Close the receiver before joining so a worker blocked on a full
+        // event channel can observe the disconnect and finish.
+        self.receiver.close();
+        self.control.cancel();
+        if let Some(worker) = self.worker.take() {
+            let _ = worker.join();
+        }
+    }
+}
+
+#[cfg(test)]
+mod inventory_stream_tests {
+    use super::*;
+
+    #[test]
+    fn dropping_inventory_stream_cancels_and_joins_worker() {
+        let control = InventoryControl::new();
+        let worker_control = control.clone();
+        let finished = Arc::new(AtomicBool::new(false));
+        let worker_finished = Arc::clone(&finished);
+        let (_sender, receiver) = mpsc::channel(1);
+        let worker = std::thread::spawn(move || {
+            while !worker_control.is_cancelled() {
+                std::thread::yield_now();
+            }
+            worker_finished.store(true, Ordering::Release);
+        });
+
+        drop(InventoryStream::new(receiver, control, worker));
+        assert!(finished.load(Ordering::Acquire));
+    }
 }
 
 /// Async trait for OPC DA operations.
@@ -304,6 +503,22 @@ pub trait OpcProvider: Send + Sync {
         let _ = session;
         Err(OpcError::NotImplemented(
             "Native browsing is not implemented by this provider".to_string(),
+        ))
+    }
+
+    /// Start a cancellable, bounded namespace inventory on a separate
+    /// connection from foreground operations.
+    ///
+    /// The returned stream never exposes interactive browse-session tokens;
+    /// all traversal state remains private to the inventory worker.
+    async fn start_inventory(
+        &self,
+        server: &str,
+        options: InventoryOptions,
+    ) -> OpcResult<InventoryStream> {
+        let _ = (server, options);
+        Err(OpcError::NotImplemented(
+            "Namespace inventory is not implemented by this provider".to_string(),
         ))
     }
 

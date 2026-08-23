@@ -723,7 +723,7 @@ mod tests {
                 fail: false,
             }))),
         });
-        let (sender, mut receiver) = mpsc::channel(100_010);
+        let (sender, mut receiver) = mpsc::channel(100_200);
         run_inventory(
             connector.as_ref(),
             "test",

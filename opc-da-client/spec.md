@@ -23,6 +23,10 @@ All methods use `#[async_trait]`.
 | :--- | :--- | :--- |
 | `list_servers` | `async fn list_servers(&self, host: &str) -> Result<Vec<String>>` | Enumerate OPC DA servers available on `host`. |
 | `browse_tags` | `async fn browse_tags(&self, server: &str, max_tags: usize, progress: Arc<AtomicUsize>, tags_sink: Arc<Mutex<Vec<String>>>) -> Result<Vec<String>>` | Recursively discover tags on `server`, pushing each to `tags_sink` as found. |
+| `browse_capabilities` | `async fn browse_capabilities(&self, server: &str) -> OpcResult<BrowseCapabilities>` | Report namespace organization, DA 2.x/3.0 browse support, and the maximum page size. |
+| `open_browse_session` | `async fn open_browse_session(&self, server: &str) -> OpcResult<BrowseSessionToken>` | Open an isolated worker-owned server connection for paged browsing. |
+| `browse_page` | `async fn browse_page(&self, session: &BrowseSessionToken, request: BrowsePageRequest) -> OpcResult<BrowsePage>` | Return one bounded level of branches/items without recursively enumerating descendants. |
+| `close_browse_session` | `async fn close_browse_session(&self, session: &BrowseSessionToken) -> OpcResult<()>` | Close a browse session and release its server connection and continuation state. |
 | `read_tag_values` | `async fn read_tag_values(&self, server: &str, tag_ids: Vec<String>) -> Result<Vec<TagValue>>` | Read current value, quality, and timestamp for the given tag IDs. |
 | `write_tag_value` | `async fn write_tag_value(&self, server: &str, tag_id: &str, value: OpcValue) -> Result<WriteResult>` | Write a typed value to a single tag on `server`. |
 
@@ -49,6 +53,10 @@ All methods use `#[async_trait]`.
 *   `browse_tags` **never** collects more than `max_tags` items.
 *   `browse_tags` pushes tags to `tags_sink` incrementally; on timeout the caller can harvest partial results.
 *   `browse_tags` updates `progress` atomically for each discovered tag.
+*   Native browse pages contain at most 1,000 nodes and never recursively enumerate descendants.
+*   Native session, node, and page tokens are random UUIDs with string encode/parse support for transport adapters. Raw COM pointers and DA continuation strings never cross the public API boundary.
+*   Native browse sessions own their server connection, expire after five minutes of inactivity, and keep DA 2.x mutable browse positions isolated.
+*   Closing, expiry, worker shutdown, or cancellation of an open/page request drops the affected session state on the COM worker.
 *   `read_tag_values` returns a `TagValue` entry for all requested tags, preserving the original array length and order. Items that fail to be added to the group or read will have their `value` set to `"Error"` and `quality` set to `"Bad — <hint>"`.
 *   `write_tag_value` returns `Ok(WriteResult)` in all non-fatal cases; per-tag success/error is reported inside `WriteResult`.
 
@@ -199,7 +207,7 @@ All methods use `#[async_trait]`.
 | :--- | :--- | :--- |
 | `new(connector: C)` | `fn new(connector: C) -> OpcResult<Self>` | Constructs a new wrapper, launching the dedicated COM worker thread. |
 
-Implements `OpcProvider` for all four trait methods by dispatching to the `ComWorker`.
+Implements every `OpcProvider` method by dispatching to the `ComWorker`.
 
 **Invariants:**
 *   All COM work runs on a dedicated, long-lived `ComWorker` thread, avoiding repeated initialization overhead and solving COM thread-affinity constraints.
@@ -231,17 +239,26 @@ fn browse_recursive(
 5.  Converts browse names to fully-qualified item IDs via `get_item_id()`; falls back to browse name on failure.
 6.  Each discovered tag is pushed to both `tags` and `tags_sink`, and `progress` is incremented.
 
-#### Internal: OPC_FLAT Fast Path
+#### Native paged browsing
 
-Before calling `browse_recursive`, `browse_tags` attempts `BrowseOPCItemIDs(OPC_FLAT)` at root. If the server returns items, they are collected directly as fully-qualified IDs — skipping recursion and `get_item_id()` entirely. Falls back to `browse_recursive` on error, empty results, or first-item failure.
+`browse_page` uses `IOPCBrowse::Browse` when the session's connection exposes
+OPC DA 3.0 browsing. The worker retains raw continuation strings and returns
+opaque page tokens. When DA 3.0 browsing is unavailable, hierarchical DA 2.x
+sessions enumerate immediate `OPC_BRANCH` and `OPC_LEAF` children and resolve
+leaf names through `GetItemID`; flat sessions page `OPC_FLAT` results. The DA
+2.x fallback never recursively enumerates descendants. When a browse name is
+both a branch and a leaf, it is emitted once as `BranchAndItem` with the exact
+`GetItemID` value.
+
+The compatibility `browse_tags` method retains recursive discovery for the TUI.
+Hierarchical namespaces do not use `OPC_FLAT`, because some servers return
+branch-only names that are not valid item IDs.
 
 ---
 
-### 1.4 `com_guard` — RAII COM Initialization
+### 1.4 `ComGuard` — Public RAII COM Initialization
 
 **Purpose:** Provide a drop guard that ensures `CoUninitialize` is called exactly once per successful `CoInitializeEx`, even on early returns or panics.
-
-#### Internal API
 
 ##### `struct ComGuard`
 
@@ -263,7 +280,7 @@ Before calling `browse_recursive`, `browse_tags` attempts `BrowseOPCItemIDs(OPC_
 *   The guard is **not** `Send` or `Sync` — it must remain on the thread that created it.
 
 **Required Test Coverage:**
-- [x] Doctest: `ComGuard::new()?` is ignored (internal only).
+- [x] Compile-only doctest: `ComGuard::new()?`.
 
 ---
 
@@ -327,7 +344,7 @@ Defined in § 1.1. See table above.
 | Server enumeration | `Client.get_servers()` |
 | Server connection | `Client.create_server()` |
 | Namespace detection | `Server.query_organization()` |
-| Tag browsing | `Server.browse_opc_item_ids()` (OPC_LEAF, OPC_BRANCH, OPC_FLAT), `Server.change_browse_position()`, `Server.get_item_id()` |
+| Tag browsing | DA 3.0 `IOPCBrowse::Browse`; DA 2.x `Server.browse_opc_item_ids()` (`OPC_LEAF`, `OPC_BRANCH`, or flat-only `OPC_FLAT`), `Server.change_browse_position()`, `Server.get_item_id()` |
 | Tag reading | `Server.add_group()`, group `.add_items()`, group `.read()`, `Server.remove_group()` |
 | Tag writing | `Server.add_group()`, group `.add_items()`, group `.write()`, `Server.remove_group()` |
 | String iteration | `StringIterator::new()` |
@@ -396,11 +413,15 @@ Defined in § 1.1. See table above.
 - [x] `test_mock_write_tag_happy` — tag valid, `success=true`.
 - [x] `test_mock_write_tag_add_fail` — tag rejected, `success=false`, group cleaned up.
 - [x] `test_browse_tags_flat_server` — flat namespace browse collects tags correctly.
-- [x] `test_browse_tags_opc_flat_success` — OPC_FLAT fast path collects all tags.
-- [x] `test_browse_tags_opc_flat_error_fallback` — OPC_FLAT error falls back to recursive.
-- [x] `test_browse_tags_opc_flat_empty_fallback` — OPC_FLAT empty falls back to recursive.
+- [x] Hierarchical branch-only `OPC_FLAT` results are never treated as item IDs.
 - [x] `test_browse_tags_hierarchical_recursive` — recursive browse traverses hierarchy.
 - [x] `test_browse_tags_max_tags_limit` — max_tags cap works on all paths.
+- [x] DA 3.0 pages map branch/item/both flags and hide native continuations behind opaque tokens.
+- [x] DA 2.x pages return immediate branches/leaves and exact `GetItemID` values.
+- [x] Same-named DA 2.x branches and leaves merge into one `BranchAndItem`, including across page boundaries.
+- [x] Flat namespaces page `OPC_FLAT` results.
+- [x] Browse sessions keep independent DA 2.x positions and reject invalid or closed tokens.
+- [x] Explicit close, expiry, and cancelled native browse requests release session-owned connections.
 
 ### Mock-Based Tests (in `opc-cli`)
 
@@ -412,7 +433,7 @@ Defined in § 1.1. See table above.
 ### Doc Tests
 
 - [x] `friendly_com_hint` — runnable doctest in `helpers.rs`.
-- [x] `ComGuard` — internal-only ignored doctest in `com_guard.rs`.
+- [x] `ComGuard` — public compile-only doctest in `com_guard.rs`.
 
 ### Integration / Manual Tests
 
@@ -426,4 +447,3 @@ Defined in § 1.1. See table above.
 - [ ] `write_tag_value` returns success for a valid write to a simulation tag.
 - [ ] `write_tag_value` returns error (with hint) when writing to a read-only tag.
 - [ ] `opc_value_to_variant` correctly converts all `OpcValue` variants.
-

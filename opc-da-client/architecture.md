@@ -1,10 +1,11 @@
-# Architecture: opc-da-client
+# Architecture: bytehound-opc-da-client
 
 ## 1. Project Overview
 
 | Field | Value |
 | :--- | :--- |
-| **Crate** | `opc-da-client` |
+| **Package** | `bytehound-opc-da-client` |
+| **Rust library** | `opc_da_client` |
 | **Version** | `0.2.0` |
 | **Purpose** | Backend-agnostic Rust library for interacting with OPC DA (Data Access) servers |
 | **Spec** | [spec.md](file:///c:/Users/WSALIGAN/code/opc-cli/opc-da-client/spec.md) |
@@ -19,6 +20,7 @@ The library provides an async, trait-based API that abstracts away the complexit
 | Aspect | Value |
 | :--- | :--- |
 | Language | Rust (2024 Edition) |
+| MSRV | Rust 1.88 |
 | Async Runtime | `tokio` (features: `rt`, `sync`) |
 | Platform | **Windows-only** — COM/DCOM is a Windows technology |
 | Trait Async | `async-trait` crate |
@@ -35,8 +37,9 @@ opc-da-client/
 ├── spec.md                 # Behavioral contracts — Behavioral Source of Truth
 └── src/
     ├── lib.rs              # Crate root: module declarations, public re-exports
-    ├── com_guard.rs        # Internal RAII guard for COM init/teardown (ComGuard)
-    ├── provider.rs         # OpcProvider trait + TagValue struct
+    ├── com_guard.rs        # Public RAII guard for caller-owned COM threads
+    ├── provider.rs         # OpcProvider trait + public Rust-native data types
+    ├── native_browse.rs    # Bounded session/page state machine
     ├── helpers.rs          # COM utilities: friendly_com_hint, variant/quality/time converters
     ├── opc_da/             # Merged from vendor/opc_da (Phase 2)
     │   ├── mod.rs          # Module root with lint allows
@@ -65,7 +68,7 @@ All commands are run from the **workspace root** (`opc-cli/`).
 | Tests | `cargo test --workspace` |
 | Verification Script | `pwsh -File scripts/verify.ps1` |
 | Release Merge Script | `powershell -File scripts/Merge-ToMain.ps1` |
-| Documentation | `cargo doc --no-deps --package opc-da-client` |
+| Documentation | `cargo doc --no-deps --package bytehound-opc-da-client` |
 
 The verification script ([verify.ps1](file:///c:/Users/WSALIGAN/code/opc-cli/scripts/verify.ps1)) runs all three verification gates sequentially. The release merge script ([Merge-ToMain.ps1](file:///c:/Users/WSALIGAN/code/opc-cli/scripts/Merge-ToMain.ps1)) automates clean merges to the `main` branch.
 
@@ -114,14 +117,14 @@ The verification script ([verify.ps1](file:///c:/Users/WSALIGAN/code/opc-cli/scr
 - **Export**: `MockOpcProvider` — allows downstream consumers (`opc-cli`) to test UI and state logic without a live OPC server on any OS.
 
 ### Mock-Backend Integration Tests
-- **Location**: Co-located `#[cfg(test)] mod tests` in `backend/opc_da.rs`.
+- **Location**: Co-located `#[cfg(test)] mod tests` in `com_worker.rs` and `native_browse.rs`.
 - **Mechanism**: In-process `MockGroup` / `MockServer` / `MockConnector` implementing `ConnectedGroup`, `ConnectedServer`, and `ServerConnector` traits.
 - **Coverage**: `read_tag_values` (happy, partial reject, all reject), `write_tag_value` (happy, add fail), `list_servers` (happy).
-- **Browse Coverage**: `browse_tags` (flat server, OPC_FLAT success, OPC_FLAT error fallback, OPC_FLAT empty fallback, hierarchical recursive, max_tags limit).
+- **Browse Coverage**: DA 3.0 page mapping and continuation, DA 2.x immediate branches/leaves, exact item IDs, flat paging, isolated sessions, invalid/closed sessions, and the hierarchical branch-only `OPC_FLAT` regression.
 
 ### Doc Tests
 - `friendly_com_hint()` — runnable doctest in `helpers.rs`.
-- `ComGuard::new()` — internal-only ignored doctest in `com_guard.rs`.
+- `ComGuard::new()` — public compile-only doctest in `com_guard.rs`.
 
 ### Integration / Manual
 - Tested against real OPC servers (Matrikon, ABB, Kepware) on Windows.
@@ -151,6 +154,7 @@ The verification script ([verify.ps1](file:///c:/Users/WSALIGAN/code/opc-cli/scr
 | `chrono` | 0.4.43 | FILETIME → local time conversion |
 | `tokio` | 1.43.0 | Async runtime (`rt`, `sync` features) |
 | `tracing` | 0.1.41 | Structured logging |
+| `uuid` | 1.x | Cryptographically random opaque browse tokens |
 | `windows` | 0.61.3 | Win32 COM/DCOM/Foundation/Variant APIs |
 | `windows-core` | 0.61.3 | Core COM runtime types (HRESULT, PWSTR, etc.) |
 
@@ -211,28 +215,36 @@ OPC DA relies on Windows COM, which requires per-thread initialization and stric
 The `OpcDaClient` handles this using a dedicated **Worker Thread** and **Connection Pooling**:
 1. **`ComWorker` Thread:** Initialized once via `ComWorker::start()`, it spawns a dedicated `std::thread` that calls `CoInitializeEx` in MTA mode. This thread stays alive for the lifetime of the client, exclusively owning all COM pointers.
 2. **Message Passing:** The async `OpcProvider` trait functions convert caller requests into `ComRequest` elements, sending them over a Tokio `mpsc` channel to the worker. Execution results are returned via `oneshot::Sender`.
-3. **Connection Pooling:** To prevent COM connection churn and ephemeral port exhaustion, the worker maintains a cache (`HashMap<String, C::Server>`) of active server connections mapped by ProgID.
+3. **Connection Pooling:** Read, write, capability, and recursive browse operations share a cache (`HashMap<String, C::Server>`) of active server connections mapped by ProgID.
 4. **Resilience & Retry:** If a cached connection becomes stale or the remote server restarts (e.g. `RPC_S_SERVER_UNAVAILABLE`), the `dispatch_with_retry` logic transparently evicts the corrupted proxy, reconnects, and retries the operation.
+5. **Browse Session Isolation:** Native browse sessions own separate server connections on the worker. This prevents the mutable DA 2.x browse position of one session from affecting another session.
 
 ### Browse Strategy
 
-The library handles both flat and hierarchical OPC DA namespaces:
+The library exposes two browse surfaces:
 
-1. `query_organization()` detects namespace type (flat vs hierarchical).
-2. **Flat:** Enumerate all `OPC_LEAF` items at root.
-3. **Hierarchical — OPC_FLAT fast path (preferred):**
-   Try `BrowseOPCItemIDs(OPC_FLAT)` at root — returns ALL leaf items as fully-qualified IDs in a single pass. Falls back to recursive browse if the server returns an error or empty results.
-4. **Hierarchical — Recursive fallback:**
-   Depth-first walk via `browse_recursive()`:
+1. **Recursive compatibility API (`browse_tags`)**
+   - Flat namespaces enumerate `OPC_LEAF` items at root.
+   - Hierarchical namespaces always use a depth-first walk via `browse_recursive()`:
    - **Branches first:** Enumerate `OPC_BRANCH` items, navigate down via `change_browse_position(DOWN)`, recurse, then **always** navigate back `UP` — even if recursion fails — to prevent position corruption.
    - **Leaves second (soft-fail):** Enumerate `OPC_LEAF` items at current position; failures are logged and skipped.
    - **Fully-qualified IDs:** `get_item_id()` converts browse names to item IDs; falls back to browse name if conversion fails.
    - **Iterator bug handled:** The upstream `StringIterator` bug (OPC-BUG-001) is handled internally via cache zeroing.
-5. **Safety guards:**
+   - Hierarchical browsing never treats `OPC_FLAT` output as complete item IDs because some servers return branch-only results.
+2. **Native paged API**
+   - `browse_capabilities`, `open_browse_session`, `browse_page`, and `close_browse_session` expose bounded one-level enumeration.
+   - DA 3.0 servers use native `IOPCBrowse::Browse`, including branch/item/all filters and private continuation strings.
+   - DA 2.x hierarchical servers enumerate only immediate `OPC_BRANCH` and/or `OPC_LEAF` children and resolve leaves with exact `GetItemID` values.
+   - A DA 2.x browse name present as both a branch and a leaf is emitted once as `BranchAndItem`, with its exact `GetItemID` value.
+   - DA 2.x flat servers page `OPC_FLAT` results without recursive traversal.
+   - Public session, node, and continuation tokens are random UUIDs with string encode/parse support for transport adapters; raw COM pointers and DA continuation strings remain on the worker.
+3. **Safety guards**
    - `max_tags` hard cap (default 10,000) to prevent unbounded collection.
    - `MAX_DEPTH` (50) to guard against infinite recursion in malformed namespaces.
    - A shared `tags_sink` (`Arc<Mutex<Vec<String>>>`) allows the caller to harvest tags mid-browse on timeout.
    - `progress` (`Arc<AtomicUsize>`) reports discovered tag count in real-time.
+   - Native pages are capped at 1,000 nodes, sessions expire after five minutes of inactivity, and per-session node/page token counts are bounded.
+   - Closing or expiring a session drops its dedicated connection and continuation enumerators on the COM worker. A cancelled open/page request avoids or closes the associated session.
 
 ---
 

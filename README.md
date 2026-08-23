@@ -11,19 +11,19 @@ A modern, asynchronous TUI (Terminal User Interface) client for browsing, readin
 The project is structured as a Cargo workspace with two crates:
 
 - **`opc-cli`**: The interactive TUI application built with `ratatui` + `crossterm`.
-- **`opc-da-client`**: A native Windows COM library (using `windows-rs`) that abstracts OPC DA communication through an async trait (`OpcProvider`). Generic over `ServerConnector` for easy mocking.
+- **`bytehound-opc-da-client`**: A ByteHound-maintained distribution of the native Windows COM library (using `windows-rs`) that abstracts OPC DA communication through an async trait (`OpcProvider`). Its Rust library name remains `opc_da_client`; the package is aliased as `opc-da-client` by consumers. Generic over `ServerConnector` for easy mocking.
 
-See **[opc-da-client architecture.md](./opc-da-client/architecture.md)** for the full library design, state machine, and data flow diagrams.
+See **[bytehound-opc-da-client architecture.md](./opc-da-client/architecture.md)** for the full library design, state machine, and data flow diagrams.
 
 ## ✨ Features
 
 - **Server Discovery**: Enumerate OPC DA servers on local or remote hosts.
-- **Hierarchical Browsing**: Recursive exploration of complex server namespaces with partial-result harvesting on timeout.
+- **Hierarchical Browsing**: Recursive tag discovery for the TUI plus bounded, one-level native browse pages for scalable clients.
 - **Real-time Monitoring**: Live tag value updates with 1-second auto-refresh.
 - **Tag Write Support**: Write typed values (int, float, bool, string) to individual tags.
 - **Search & Filter**: Substring search with `Tab`/`Shift+Tab` cycling through matches.
 - **Rich Error Hints**: Human-readable explanations for cryptic Windows COM/DCOM HRESULT codes.
-- **Transparent COM Management**: COM initialization and apartment thread affinity handled automatically by a dedicated background worker thread.
+- **Transparent COM Management**: COM initialization and apartment thread affinity are handled automatically by a dedicated worker; hosts performing additional COM work can initialize their own thread with `ComGuard`.
 - **Mockable Backend**: Unit-test the TUI on any OS without a live OPC server.
 
 ## 🚀 Getting Started
@@ -32,7 +32,7 @@ See **[opc-da-client architecture.md](./opc-da-client/architecture.md)** for the
 
 - **Windows OS**: This application uses Windows COM/DCOM.
 - **OPC Core Components**: Must be installed on the system to resolve OPC ProgIDs.
-- **Rust 1.93+**: Edition 2024.
+- **Rust 1.88+**: Edition 2024.
 
 ### Build & Run
 

@@ -1,14 +1,17 @@
 use crate::backend::connector::{ConnectedGroup, ConnectedServer, ServerConnector};
 use crate::bindings::da::{
-    OPC_BRANCH, OPC_BROWSE_DOWN, OPC_BROWSE_UP, OPC_DS_DEVICE, OPC_FLAT, OPC_LEAF, OPC_NS_FLAT,
-    tagOPCITEMDEF,
+    OPC_BRANCH, OPC_BROWSE_DOWN, OPC_BROWSE_UP, OPC_DS_DEVICE, OPC_LEAF, OPC_NS_FLAT, tagOPCITEMDEF,
 };
 use crate::helpers::{
     filetime_to_string, format_hresult, opc_value_to_variant, quality_to_string, variant_to_string,
 };
+use crate::native_browse::{BrowseSessions, capabilities_for_server};
 use crate::opc_da::errors::{OpcError, OpcResult};
 use crate::opc_da::typedefs::{GroupHandle, ItemHandle};
-use crate::provider::{OpcValue, TagValue, WriteResult};
+use crate::provider::{
+    BrowseCapabilities, BrowsePage, BrowsePageRequest, BrowseSessionToken, OpcValue, TagValue,
+    WriteResult,
+};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -55,6 +58,36 @@ pub enum ComRequest {
         tags_sink: Arc<std::sync::Mutex<Vec<String>>>,
         /// One-shot channel to send back the complete tag discovery list.
         reply: oneshot::Sender<OpcResult<Vec<String>>>,
+    },
+    /// Request the native browse capabilities of a server.
+    BrowseCapabilities {
+        /// OPC server ProgID.
+        server: String,
+        /// One-shot channel to send back the capabilities.
+        reply: oneshot::Sender<OpcResult<BrowseCapabilities>>,
+    },
+    /// Open an isolated native browse session.
+    OpenBrowseSession {
+        /// OPC server ProgID.
+        server: String,
+        /// One-shot channel to send back the opaque session token.
+        reply: oneshot::Sender<OpcResult<BrowseSessionToken>>,
+    },
+    /// Request one bounded native browse page.
+    BrowsePage {
+        /// Opaque browse session token.
+        session: BrowseSessionToken,
+        /// One-level browse request.
+        request: BrowsePageRequest,
+        /// One-shot channel to send back the page.
+        reply: oneshot::Sender<OpcResult<BrowsePage>>,
+    },
+    /// Close an isolated native browse session.
+    CloseBrowseSession {
+        /// Opaque browse session token.
+        session: BrowseSessionToken,
+        /// One-shot channel to report completion.
+        reply: oneshot::Sender<OpcResult<()>>,
     },
 }
 
@@ -117,8 +150,10 @@ impl<C: ServerConnector + 'static> ComWorker<C> {
             };
 
             let mut cache: HashMap<String, C::Server> = HashMap::new();
+            let mut browse_sessions = BrowseSessions::default();
 
             while let Some(req) = rx.blocking_recv() {
+                browse_sessions.cleanup_expired();
                 match req {
                     ComRequest::ListServers { host, reply } => {
                         let span = tracing::info_span!("opc.list_servers", host = %host);
@@ -189,6 +224,47 @@ impl<C: ServerConnector + 'static> ComWorker<C> {
                                 )
                             },
                         );
+                        let _ = reply.send(result);
+                    }
+                    ComRequest::BrowseCapabilities { server, reply } => {
+                        if reply.is_closed() {
+                            continue;
+                        }
+                        let result = Self::dispatch_with_retry(
+                            &mut cache,
+                            &connector,
+                            &server,
+                            capabilities_for_server,
+                        );
+                        let _ = reply.send(result);
+                    }
+                    ComRequest::OpenBrowseSession { server, reply } => {
+                        if reply.is_closed() {
+                            continue;
+                        }
+                        let result = connector
+                            .connect(&server)
+                            .and_then(|opc_server| browse_sessions.open(opc_server));
+                        if let Err(Ok(session)) = reply.send(result) {
+                            let _ = browse_sessions.close(&session);
+                        }
+                    }
+                    ComRequest::BrowsePage {
+                        session,
+                        request,
+                        reply,
+                    } => {
+                        if reply.is_closed() {
+                            let _ = browse_sessions.close(&session);
+                            continue;
+                        }
+                        let result = browse_sessions.page(&session, request);
+                        if reply.send(result).is_err() {
+                            let _ = browse_sessions.close(&session);
+                        }
+                    }
+                    ComRequest::CloseBrowseSession { session, reply } => {
+                        let result = browse_sessions.close(&session);
                         let _ = reply.send(result);
                     }
                 }
@@ -558,8 +634,8 @@ impl<C: ServerConnector + 'static> ComWorker<C> {
         let mut tags = Vec::new();
 
         if org == OPC_NS_FLAT.0 as u32 {
-            let string_iter = opc_server.browse_opc_item_ids(OPC_LEAF.0 as u32, Some(""), 0, 0)?;
-            for tag_res in string_iter {
+            let mut string_iter = opc_server.begin_da2_browse(OPC_LEAF.0 as u32, Some(""), 0, 0)?;
+            while let Some(tag_res) = string_iter.next_string() {
                 if tags.len() >= max_tags {
                     break;
                 }
@@ -571,53 +647,7 @@ impl<C: ServerConnector + 'static> ComWorker<C> {
                 progress.fetch_add(1, Ordering::Relaxed);
             }
         } else {
-            let use_flat = match opc_server.browse_opc_item_ids(OPC_FLAT.0 as u32, Some(""), 0, 0) {
-                Ok(mut flat_enum) => match flat_enum.next() {
-                    Some(Ok(first_tag)) => {
-                        tracing::info!("OPC_FLAT browse supported — using fast flat enumeration");
-                        tags.push(first_tag.clone());
-                        if let Ok(mut sink) = tags_sink.lock() {
-                            sink.push(first_tag);
-                        }
-                        progress.fetch_add(1, Ordering::Relaxed);
-
-                        for tag_res in flat_enum {
-                            if tags.len() >= max_tags {
-                                break;
-                            }
-                            match tag_res {
-                                Ok(tag) => {
-                                    tags.push(tag.clone());
-                                    if let Ok(mut sink) = tags_sink.lock() {
-                                        sink.push(tag);
-                                    }
-                                    progress.fetch_add(1, Ordering::Relaxed);
-                                }
-                                Err(e) => {
-                                    tracing::warn!(error = ?e, "OPC_FLAT tag iteration error, skipping");
-                                }
-                            }
-                        }
-                        true
-                    }
-                    Some(Err(e)) => {
-                        tracing::debug!(error = ?e, "OPC_FLAT first item error, falling back to recursive");
-                        false
-                    }
-                    None => {
-                        tracing::debug!("OPC_FLAT returned no items, falling back to recursive");
-                        false
-                    }
-                },
-                Err(e) => {
-                    tracing::debug!(error = ?e, "OPC_FLAT not supported, falling back to recursive");
-                    false
-                }
-            };
-
-            if !use_flat {
-                Self::browse_recursive(opc_server, &mut tags, max_tags, progress, tags_sink, 0)?;
-            }
+            Self::browse_recursive(opc_server, &mut tags, max_tags, progress, tags_sink, 0)?;
         }
         tracing::info!(
             count = tags.len(),
@@ -643,20 +673,19 @@ impl<C: ServerConnector + 'static> ComWorker<C> {
             return Ok(());
         }
 
-        let branch_enum = server.browse_opc_item_ids(OPC_BRANCH.0 as u32, Some(""), 0, 0)?;
-
-        let branches: Vec<String> = branch_enum
-            .filter_map(|r| match r {
-                Ok(name) => Some(name),
+        let mut branch_enum = server.begin_da2_browse(OPC_BRANCH.0 as u32, Some(""), 0, 0)?;
+        let mut branches = Vec::new();
+        while let Some(result) = branch_enum.next_string() {
+            match result {
+                Ok(name) => branches.push(name),
                 Err(e) => {
                     tracing::warn!(error = ?e, "Branch iteration error, skipping");
-                    None
                 }
-            })
-            .collect();
+            }
+        }
 
-        let leaf_enum = server.browse_opc_item_ids(OPC_LEAF.0 as u32, Some(""), 0, 0)?;
-        for tag_res in leaf_enum {
+        let mut leaf_enum = server.begin_da2_browse(OPC_LEAF.0 as u32, Some(""), 0, 0)?;
+        while let Some(tag_res) = leaf_enum.next_string() {
             if tags.len() >= max_tags {
                 return Ok(());
             }
@@ -728,10 +757,14 @@ mod tests {
     )]
     use super::*;
     use crate::backend::connector::{
-        ConnectedGroup, ConnectedServer, RemoteArray, ServerConnector, StringIterator,
+        BrowseStringIterator, ConnectedGroup, ConnectedServer, RemoteArray, ServerConnector,
+        StringIterator,
     };
+    use crate::bindings::da::OPC_FLAT;
     use crate::bindings::da::{tagOPCDATASOURCE, tagOPCITEMDEF, tagOPCITEMRESULT, tagOPCITEMSTATE};
+    use crate::provider::BrowseNodeFilter;
 
+    use std::sync::Mutex;
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
     #[derive(Default)]
@@ -1333,5 +1366,288 @@ mod tests {
             result.is_err(),
             "ListServers request should fail when connector enumeration fails"
         );
+    }
+
+    #[derive(Default)]
+    struct BranchOnlyFlatState {
+        flat_calls: AtomicUsize,
+        position: Mutex<Vec<String>>,
+    }
+
+    struct BranchOnlyFlatConnector {
+        state: Arc<BranchOnlyFlatState>,
+    }
+
+    struct BranchOnlyFlatServer {
+        state: Arc<BranchOnlyFlatState>,
+    }
+
+    impl ConnectedServer for BranchOnlyFlatServer {
+        type Group = WorkerMockGroup;
+
+        fn query_organization(&self) -> OpcResult<u32> {
+            Ok(crate::bindings::da::OPC_NS_HIERARCHIAL.0.cast_unsigned())
+        }
+
+        fn browse_opc_item_ids(
+            &self,
+            _browse_type: u32,
+            _filter: Option<&str>,
+            _data_type: u16,
+            _access_rights: u32,
+        ) -> OpcResult<StringIterator> {
+            Err(OpcError::NotImplemented("mock".to_string()))
+        }
+
+        fn begin_da2_browse(
+            &self,
+            browse_type: u32,
+            _filter: Option<&str>,
+            _data_type: u16,
+            _access_rights: u32,
+        ) -> OpcResult<Box<dyn BrowseStringIterator>> {
+            let position = self.state.position.lock().unwrap();
+            let values = if browse_type == OPC_FLAT.0.cast_unsigned() {
+                self.state.flat_calls.fetch_add(1, Ordering::Relaxed);
+                vec!["Area".to_string()]
+            } else if browse_type == OPC_BRANCH.0.cast_unsigned() && position.is_empty() {
+                vec!["Area".to_string()]
+            } else if browse_type == OPC_LEAF.0.cast_unsigned() && position.as_slice() == ["Area"] {
+                vec!["Tag".to_string()]
+            } else {
+                vec![]
+            };
+            Ok(Box::new(values.into_iter().map(Ok)))
+        }
+
+        fn change_browse_position(&self, direction: u32, name: &str) -> OpcResult<()> {
+            let mut position = self.state.position.lock().unwrap();
+            if direction == OPC_BROWSE_DOWN.0.cast_unsigned() {
+                position.push(name.to_string());
+            } else if direction == OPC_BROWSE_UP.0.cast_unsigned() {
+                position.pop();
+            }
+            drop(position);
+            Ok(())
+        }
+
+        fn get_item_id(&self, item_name: &str) -> OpcResult<String> {
+            let position = self.state.position.lock().unwrap();
+            let item_id = format!("{}.{}", position.join("."), item_name);
+            drop(position);
+            Ok(item_id)
+        }
+
+        fn add_group(
+            &self,
+            _name: &str,
+            _active: bool,
+            _update_rate: u32,
+            _client_handle: GroupHandle,
+            _time_bias: i32,
+            _percent_deadband: f32,
+            _locale_id: u32,
+            _revised_update_rate: &mut u32,
+            _server_handle: &mut GroupHandle,
+        ) -> OpcResult<Self::Group> {
+            Err(OpcError::NotImplemented("mock".to_string()))
+        }
+
+        fn remove_group(&self, _server_group: GroupHandle, _force: bool) -> OpcResult<()> {
+            Err(OpcError::NotImplemented("mock".to_string()))
+        }
+    }
+
+    impl ServerConnector for BranchOnlyFlatConnector {
+        type Server = BranchOnlyFlatServer;
+
+        fn enumerate_servers(&self) -> OpcResult<Vec<String>> {
+            Ok(vec![])
+        }
+
+        fn connect(&self, _server_name: &str) -> OpcResult<Self::Server> {
+            Ok(BranchOnlyFlatServer {
+                state: self.state.clone(),
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn hierarchical_browse_does_not_treat_branch_only_opc_flat_as_items() {
+        let state = Arc::new(BranchOnlyFlatState::default());
+        let connector = Arc::new(BranchOnlyFlatConnector {
+            state: state.clone(),
+        });
+        let worker = tokio::task::spawn_blocking(move || ComWorker::start(connector).unwrap())
+            .await
+            .unwrap();
+
+        let result = worker
+            .send_request(|reply| ComRequest::BrowseTags {
+                server: "Mock.Server".to_string(),
+                max_tags: 10,
+                progress: Arc::new(AtomicUsize::new(0)),
+                tags_sink: Arc::new(Mutex::new(Vec::new())),
+                reply,
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(result, vec!["Area.Tag"]);
+        assert_eq!(state.flat_calls.load(Ordering::Relaxed), 0);
+    }
+
+    #[derive(Default)]
+    struct CancelledBrowseState {
+        connect_count: AtomicUsize,
+        drop_count: AtomicUsize,
+    }
+
+    struct CancelledBrowseConnector {
+        state: Arc<CancelledBrowseState>,
+    }
+
+    struct CancelledBrowseServer {
+        state: Arc<CancelledBrowseState>,
+    }
+
+    impl Drop for CancelledBrowseServer {
+        fn drop(&mut self) {
+            self.state.drop_count.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    impl ConnectedServer for CancelledBrowseServer {
+        type Group = WorkerMockGroup;
+
+        fn query_organization(&self) -> OpcResult<u32> {
+            Ok(OPC_NS_FLAT.0.cast_unsigned())
+        }
+
+        fn browse_opc_item_ids(
+            &self,
+            _browse_type: u32,
+            _filter: Option<&str>,
+            _data_type: u16,
+            _access_rights: u32,
+        ) -> OpcResult<StringIterator> {
+            Err(OpcError::NotImplemented("mock".to_string()))
+        }
+
+        fn begin_da2_browse(
+            &self,
+            _browse_type: u32,
+            _filter: Option<&str>,
+            _data_type: u16,
+            _access_rights: u32,
+        ) -> OpcResult<Box<dyn BrowseStringIterator>> {
+            Ok(Box::new(std::iter::empty()))
+        }
+
+        fn change_browse_position(&self, _direction: u32, _name: &str) -> OpcResult<()> {
+            Ok(())
+        }
+
+        fn get_item_id(&self, _item_name: &str) -> OpcResult<String> {
+            Err(OpcError::NotImplemented("mock".to_string()))
+        }
+
+        fn add_group(
+            &self,
+            _name: &str,
+            _active: bool,
+            _update_rate: u32,
+            _client_handle: GroupHandle,
+            _time_bias: i32,
+            _percent_deadband: f32,
+            _locale_id: u32,
+            _revised_update_rate: &mut u32,
+            _server_handle: &mut GroupHandle,
+        ) -> OpcResult<Self::Group> {
+            Err(OpcError::NotImplemented("mock".to_string()))
+        }
+
+        fn remove_group(&self, _server_group: GroupHandle, _force: bool) -> OpcResult<()> {
+            Ok(())
+        }
+    }
+
+    impl ServerConnector for CancelledBrowseConnector {
+        type Server = CancelledBrowseServer;
+
+        fn enumerate_servers(&self) -> OpcResult<Vec<String>> {
+            Ok(vec![])
+        }
+
+        fn connect(&self, _server_name: &str) -> OpcResult<Self::Server> {
+            self.state.connect_count.fetch_add(1, Ordering::Relaxed);
+            Ok(CancelledBrowseServer {
+                state: self.state.clone(),
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn cancelled_native_browse_requests_release_or_avoid_sessions() {
+        let state = Arc::new(CancelledBrowseState::default());
+        let connector = Arc::new(CancelledBrowseConnector {
+            state: state.clone(),
+        });
+        let worker = tokio::task::spawn_blocking(move || ComWorker::start(connector).unwrap())
+            .await
+            .unwrap();
+
+        let session = worker
+            .send_request(|reply| ComRequest::OpenBrowseSession {
+                server: "Mock.Server".to_string(),
+                reply,
+            })
+            .await
+            .unwrap();
+        assert_eq!(state.connect_count.load(Ordering::Relaxed), 1);
+
+        let (page_reply, page_receiver) = oneshot::channel();
+        drop(page_receiver);
+        worker
+            .sender
+            .send(ComRequest::BrowsePage {
+                session,
+                request: BrowsePageRequest {
+                    parent: None,
+                    filter: BrowseNodeFilter::All,
+                    max_elements: 10,
+                    continuation: None,
+                },
+                reply: page_reply,
+            })
+            .await
+            .unwrap();
+        worker
+            .send_request(|reply| ComRequest::ListServers {
+                host: "localhost".to_string(),
+                reply,
+            })
+            .await
+            .unwrap();
+        assert_eq!(state.drop_count.load(Ordering::Relaxed), 1);
+
+        let (open_reply, open_receiver) = oneshot::channel();
+        drop(open_receiver);
+        worker
+            .sender
+            .send(ComRequest::OpenBrowseSession {
+                server: "Mock.Server".to_string(),
+                reply: open_reply,
+            })
+            .await
+            .unwrap();
+        worker
+            .send_request(|reply| ComRequest::ListServers {
+                host: "localhost".to_string(),
+                reply,
+            })
+            .await
+            .unwrap();
+        assert_eq!(state.connect_count.load(Ordering::Relaxed), 1);
     }
 }

@@ -7,6 +7,15 @@ use windows::core::Interface as _;
 const MAX_CACHE_SIZE: usize = 16;
 const STRING_CACHE_SIZE: usize = 256;
 
+fn validate_fetched_count(count: u32, capacity: usize, iterator: &str) -> OpcResult<()> {
+    if count > capacity as u32 {
+        return Err(OpcError::Internal(format!(
+            "{iterator} returned {count} entries for a {capacity}-entry cache"
+        )));
+    }
+    Ok(())
+}
+
 /// Iterator over COM GUIDs from IEnumGUID.  
 ///
 /// # Safety  
@@ -48,6 +57,12 @@ impl Iterator for GuidIterator {
             };
 
             if code.is_ok() {
+                if let Err(error) =
+                    validate_fetched_count(self.count, self.cache.len(), "IEnumGUID")
+                {
+                    self.done = true;
+                    return Some(Err(error));
+                }
                 if self.count == 0 {
                     self.done = true;
                     return None;
@@ -117,6 +132,12 @@ impl Iterator for StringIterator {
                 );
 
                 if code.is_ok() {
+                    if let Err(error) =
+                        validate_fetched_count(self.count, self.cache.len(), "IEnumString")
+                    {
+                        self.done = true;
+                        return Some(Err(error));
+                    }
                     if self.count == 0 {
                         self.done = true;
                         return None;
@@ -205,6 +226,12 @@ impl<Group: TryFrom<windows::core::IUnknown, Error = windows::core::Error>> Iter
             };
 
             if code.is_ok() {
+                if let Err(error) =
+                    validate_fetched_count(self.count, self.cache.len(), "IEnumUnknown")
+                {
+                    self.done = true;
+                    return Some(Err(error));
+                }
                 if self.count == 0 {
                     self.done = true;
                     return None;
@@ -504,5 +531,13 @@ mod tests {
         let iter = StringIterator::new(mock_enum);
         let results: Vec<_> = iter.collect::<Result<Vec<_>, _>>().unwrap();
         assert!(results.is_empty(), "Empty iterator should yield no items");
+    }
+
+    #[test]
+    fn test_fetched_count_over_capacity_is_rejected() {
+        let error = validate_fetched_count(17, MAX_CACHE_SIZE, "IEnumGUID")
+            .expect_err("an oversized COM count must be rejected");
+        assert!(error.to_string().contains("17 entries"));
+        assert!(error.to_string().contains("16-entry cache"));
     }
 }

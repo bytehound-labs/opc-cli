@@ -10,7 +10,8 @@ use mockall::automock;
 
 /// A single tag's read result.
 ///
-/// Returned by [`OpcProvider::read_tag_values`].
+/// Returned by [`OpcProvider::read_tag_values`] and
+/// [`OpcProvider::read_tag_values_for_display`].
 ///
 /// # Examples
 ///
@@ -29,7 +30,11 @@ use mockall::automock;
 pub struct TagValue {
     /// The fully qualified tag identifier (e.g., `"Channel1.Device1.Tag1"`).
     pub tag_id: String,
-    /// The current value as a display string.
+    /// The current value as a string representation.
+    ///
+    /// [`OpcProvider::read_tag_values`] preserves `VT_BSTR` contents exactly.
+    /// [`OpcProvider::read_tag_values_for_display`] may add presentation quotes
+    /// around BSTR values.
     pub value: String,
     /// OPC quality indicator (e.g., `"Good"`, `"Bad"`, or `"Uncertain"`).
     pub quality: String,
@@ -428,6 +433,69 @@ mod inventory_stream_tests {
     }
 }
 
+#[cfg(test)]
+mod read_display_fallback_tests {
+    use super::*;
+
+    struct FallbackProvider;
+
+    #[async_trait]
+    impl OpcProvider for FallbackProvider {
+        async fn list_servers(&self, _host: &str) -> OpcResult<Vec<String>> {
+            Ok(Vec::new())
+        }
+
+        async fn browse_tags(
+            &self,
+            _server: &str,
+            _max_tags: usize,
+            _progress: Arc<AtomicUsize>,
+            _tags_sink: Arc<std::sync::Mutex<Vec<String>>>,
+        ) -> OpcResult<Vec<String>> {
+            Ok(Vec::new())
+        }
+
+        async fn read_tag_values(
+            &self,
+            _server: &str,
+            tag_ids: Vec<String>,
+        ) -> OpcResult<Vec<TagValue>> {
+            Ok(tag_ids
+                .into_iter()
+                .map(|tag_id| TagValue {
+                    tag_id,
+                    value: "AUT".to_string(),
+                    quality: "Good".to_string(),
+                    timestamp: String::new(),
+                })
+                .collect())
+        }
+
+        async fn write_tag_value(
+            &self,
+            _server: &str,
+            tag_id: &str,
+            _value: OpcValue,
+        ) -> OpcResult<WriteResult> {
+            Ok(WriteResult {
+                tag_id: tag_id.to_string(),
+                success: true,
+                error: None,
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn display_read_defaults_to_semantic_read() {
+        let values = FallbackProvider
+            .read_tag_values_for_display("Server", vec!["Tag".to_string()])
+            .await
+            .unwrap();
+
+        assert_eq!(values[0].value, "AUT");
+    }
+}
+
 /// Async trait for OPC DA operations.
 ///
 /// This is the stable public API. Backend implementations provide
@@ -524,11 +592,31 @@ pub trait OpcProvider: Send + Sync {
 
     /// Read current values for the given tag IDs.
     ///
+    /// `VT_BSTR` values preserve their exact COM contents. No quote characters
+    /// are added or removed, so this method is suitable for machine consumers.
+    ///
     /// # Errors
     /// Returns `Err` if the server connection fails, no items can be added
     /// to the OPC group, or the synchronous read operation fails.
     async fn read_tag_values(&self, server: &str, tag_ids: Vec<String>)
     -> OpcResult<Vec<TagValue>>;
+
+    /// Read current values formatted for human-readable display.
+    ///
+    /// The native provider wraps `VT_BSTR` contents in quote characters while
+    /// leaving all other value formatting unchanged. The default implementation
+    /// delegates to [`Self::read_tag_values`] so third-party providers remain
+    /// source-compatible.
+    ///
+    /// # Errors
+    /// Returns the same errors as [`Self::read_tag_values`].
+    async fn read_tag_values_for_display(
+        &self,
+        server: &str,
+        tag_ids: Vec<String>,
+    ) -> OpcResult<Vec<TagValue>> {
+        self.read_tag_values(server, tag_ids).await
+    }
 
     /// Write a value to a single OPC DA tag.
     ///

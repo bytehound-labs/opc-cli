@@ -1,5 +1,5 @@
 use crate::backend::connector::{ComConnector, ServerConnector};
-use crate::com_worker::{ComRequest, ComWorker};
+use crate::com_worker::{ComRequest, ComWorker, ReadPresentation};
 use crate::opc_da::errors::OpcResult;
 use crate::provider::{
     BrowseCapabilities, BrowsePage, BrowsePageRequest, BrowseSessionToken, InventoryControl,
@@ -62,6 +62,23 @@ impl<C: ServerConnector + 'static> OpcDaClient<C> {
             connector,
             inventory_active: Arc::new(AtomicBool::new(false)),
         })
+    }
+
+    async fn read_tag_values_with_presentation(
+        &self,
+        server: &str,
+        tag_ids: Vec<String>,
+        presentation: ReadPresentation,
+    ) -> OpcResult<Vec<TagValue>> {
+        let server_owned = server.to_string();
+        self.worker
+            .send_request(|reply| ComRequest::ReadTagValues {
+                server: server_owned,
+                tag_ids,
+                presentation,
+                reply,
+            })
+            .await
     }
 }
 
@@ -200,13 +217,16 @@ impl<C: ServerConnector + 'static> OpcProvider for OpcDaClient<C> {
         server: &str,
         tag_ids: Vec<String>,
     ) -> OpcResult<Vec<TagValue>> {
-        let server_owned = server.to_string();
-        self.worker
-            .send_request(|reply| ComRequest::ReadTagValues {
-                server: server_owned,
-                tag_ids,
-                reply,
-            })
+        self.read_tag_values_with_presentation(server, tag_ids, ReadPresentation::Semantic)
+            .await
+    }
+
+    async fn read_tag_values_for_display(
+        &self,
+        server: &str,
+        tag_ids: Vec<String>,
+    ) -> OpcResult<Vec<TagValue>> {
+        self.read_tag_values_with_presentation(server, tag_ids, ReadPresentation::Display)
             .await
     }
 

@@ -24,7 +24,7 @@ Add this to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-opc-da-client = { package = "bytehound-opc-da-client", version = "0.2.1" }
+opc-da-client = { package = "bytehound-opc-da-client", version = "0.2.2" }
 ```
 
 ## Prerequisites
@@ -81,6 +81,12 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 ```
+
+`read_tag_values` is the machine-facing read API. For `VT_BSTR` values, `TagValue::value`
+contains the exact COM string contents: no quote characters are added or removed. Consumers
+that intentionally want the historical quoted string presentation can call
+`read_tag_values_for_display`; its default trait implementation falls back to
+`read_tag_values` for third-party providers.
 
 ### Writing a Value
 

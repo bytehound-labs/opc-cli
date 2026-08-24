@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+## [0.2.2] - 2026-08-24
+
+### Changed
+- `OpcProvider::read_tag_values` preserves exact `VT_BSTR` contents instead of adding display
+  quotes.
+- Added `OpcProvider::read_tag_values_for_display` with a default fallback for third-party
+  providers; the native backend and `opc-cli` use it when intentional quoted display output is
+  required.
+
 ## [0.2.1] - 2026-08-23
 
 ### Added

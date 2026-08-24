@@ -3,7 +3,8 @@ use crate::bindings::da::{
     OPC_BRANCH, OPC_BROWSE_DOWN, OPC_BROWSE_UP, OPC_DS_DEVICE, OPC_LEAF, OPC_NS_FLAT, tagOPCITEMDEF,
 };
 use crate::helpers::{
-    filetime_to_string, format_hresult, opc_value_to_variant, quality_to_string, variant_to_string,
+    filetime_to_string, format_hresult, opc_value_to_variant, quality_to_string,
+    variant_to_display_string, variant_to_string,
 };
 use crate::native_browse::{BrowseSessions, capabilities_for_server};
 use crate::opc_da::errors::{OpcError, OpcResult};
@@ -16,6 +17,15 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use tokio::sync::{mpsc, oneshot};
+
+/// Controls whether read values preserve machine semantics or use TUI-oriented display formatting.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReadPresentation {
+    /// Return `VT_BSTR` contents exactly as stored by COM.
+    Semantic,
+    /// Wrap `VT_BSTR` contents in quotes for human-readable display.
+    Display,
+}
 
 /// Represents a asynchronous request dispatched to the COM worker thread.
 pub enum ComRequest {
@@ -32,6 +42,8 @@ pub enum ComRequest {
         server: String,
         /// List of fully qualified tag identifiers to read.
         tag_ids: Vec<String>,
+        /// Value formatting intent for this read.
+        presentation: ReadPresentation,
         /// One-shot channel to send back the tag values result.
         reply: oneshot::Sender<OpcResult<Vec<TagValue>>>,
     },
@@ -183,13 +195,16 @@ impl<C: ServerConnector + 'static> ComWorker<C> {
                     ComRequest::ReadTagValues {
                         server,
                         tag_ids,
+                        presentation,
                         reply,
                     } => {
                         let result = Self::dispatch_with_retry(
                             &mut cache,
                             &connector,
                             &server,
-                            |opc_server| Self::handle_read(&server, &tag_ids, opc_server),
+                            |opc_server| {
+                                Self::handle_read(&server, &tag_ids, presentation, opc_server)
+                            },
                         );
                         let _ = reply.send(result);
                     }
@@ -357,6 +372,7 @@ impl<C: ServerConnector + 'static> ComWorker<C> {
     fn handle_read(
         server_name: &str,
         tag_ids: &[String],
+        presentation: ReadPresentation,
         opc_server: &C::Server,
     ) -> OpcResult<Vec<TagValue>> {
         let span = tracing::info_span!(
@@ -471,7 +487,10 @@ impl<C: ServerConnector + 'static> ComWorker<C> {
 
             let (value_str, quality_str) = if read_error.is_ok() {
                 (
-                    variant_to_string(&state.vDataValue),
+                    match presentation {
+                        ReadPresentation::Semantic => variant_to_string(&state.vDataValue),
+                        ReadPresentation::Display => variant_to_display_string(&state.vDataValue),
+                    },
                     quality_to_string(state.wQuality),
                 )
             } else {
@@ -774,6 +793,7 @@ mod tests {
         should_fail_write: AtomicBool,
         should_fail_with_connection_error: AtomicBool,
         should_panic_on_request: AtomicBool,
+        read_value: Mutex<String>,
     }
 
     struct ConfigurableMockConnector {
@@ -836,7 +856,36 @@ mod tests {
             RemoteArray<tagOPCITEMSTATE>,
             RemoteArray<windows::core::HRESULT>,
         )> {
-            Ok((RemoteArray::empty(), RemoteArray::empty()))
+            use windows::Win32::Foundation::S_OK;
+
+            let value = self.state.read_value.lock().unwrap().clone();
+            let item_state = tagOPCITEMSTATE {
+                hClient: 0,
+                ftTimeStamp: windows::Win32::Foundation::FILETIME::default(),
+                wQuality: 0xC0,
+                wReserved: 0,
+                vDataValue: opc_value_to_variant(&OpcValue::String(value)),
+            };
+            let state_ptr = unsafe {
+                windows::Win32::System::Com::CoTaskMemAlloc(std::mem::size_of::<tagOPCITEMSTATE>())
+            } as *mut tagOPCITEMSTATE;
+            unsafe {
+                std::ptr::write(state_ptr, item_state);
+            }
+
+            let error_ptr = unsafe {
+                windows::Win32::System::Com::CoTaskMemAlloc(std::mem::size_of::<
+                    windows::core::HRESULT,
+                >())
+            } as *mut windows::core::HRESULT;
+            unsafe {
+                std::ptr::write(error_ptr, S_OK);
+            }
+
+            Ok((
+                RemoteArray::from_mut_ptr(state_ptr, 1),
+                RemoteArray::from_mut_ptr(error_ptr, 1),
+            ))
         }
 
         fn write(
@@ -1166,6 +1215,7 @@ mod tests {
             .send_request(|reply| ComRequest::ReadTagValues {
                 server: "MockServer".to_string(),
                 tag_ids: vec!["Tag1".to_string(), "Tag2".to_string()],
+                presentation: ReadPresentation::Semantic,
                 reply,
             })
             .await;
@@ -1179,6 +1229,40 @@ mod tests {
         } else {
             panic!("Expected OpcError::Internal, got {:?}", result);
         }
+    }
+
+    #[tokio::test]
+    async fn test_worker_routes_read_presentation() {
+        let state = Arc::new(MockState {
+            read_value: Mutex::new("AUT".to_string()),
+            ..MockState::default()
+        });
+        let connector = Arc::new(ConfigurableMockConnector { state });
+        let worker = tokio::task::spawn_blocking(move || ComWorker::start(connector).unwrap())
+            .await
+            .unwrap();
+
+        let semantic = worker
+            .send_request(|reply| ComRequest::ReadTagValues {
+                server: "Mock.Server.1".to_string(),
+                tag_ids: vec!["StringTag".to_string()],
+                presentation: ReadPresentation::Semantic,
+                reply,
+            })
+            .await
+            .unwrap();
+        assert_eq!(semantic[0].value, "AUT");
+
+        let display = worker
+            .send_request(|reply| ComRequest::ReadTagValues {
+                server: "Mock.Server.1".to_string(),
+                tag_ids: vec!["StringTag".to_string()],
+                presentation: ReadPresentation::Display,
+                reply,
+            })
+            .await
+            .unwrap();
+        assert_eq!(display[0].value, "\"AUT\"");
     }
 
     #[tokio::test]

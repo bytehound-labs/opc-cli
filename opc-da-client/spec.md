@@ -28,7 +28,8 @@ All methods use `#[async_trait]`.
 | `browse_page` | `async fn browse_page(&self, session: &BrowseSessionToken, request: BrowsePageRequest) -> OpcResult<BrowsePage>` | Return one bounded level of branches/items without recursively enumerating descendants. |
 | `close_browse_session` | `async fn close_browse_session(&self, session: &BrowseSessionToken) -> OpcResult<()>` | Close a browse session and release its server connection and continuation state. |
 | `start_inventory` | `async fn start_inventory(&self, server: &str, options: InventoryOptions) -> OpcResult<InventoryStream>` | Start a bounded, cancellable namespace inventory that streams exact ItemIDs and breadcrumb labels. |
-| `read_tag_values` | `async fn read_tag_values(&self, server: &str, tag_ids: Vec<String>) -> Result<Vec<TagValue>>` | Read current value, quality, and timestamp for the given tag IDs. |
+| `read_tag_values` | `async fn read_tag_values(&self, server: &str, tag_ids: Vec<String>) -> Result<Vec<TagValue>>` | Read current value, quality, and timestamp; `VT_BSTR` values contain the exact COM string contents. |
+| `read_tag_values_for_display` | `async fn read_tag_values_for_display(&self, server: &str, tag_ids: Vec<String>) -> Result<Vec<TagValue>>` | Read values for human display, quoting BSTR contents in the native provider; defaults to `read_tag_values` for third-party providers. |
 | `write_tag_value` | `async fn write_tag_value(&self, server: &str, tag_id: &str, value: OpcValue) -> Result<WriteResult>` | Write a typed value to a single tag on `server`. |
 
 **Error Conditions:**
@@ -63,6 +64,8 @@ All methods use `#[async_trait]`.
     truncated inventory never claims `complete = true`.
 *   Closing, expiry, worker shutdown, or cancellation of an open/page request drops the affected session state on the COM worker.
 *   `read_tag_values` returns a `TagValue` entry for all requested tags, preserving the original array length and order. Items that fail to be added to the group or read will have their `value` set to `"Error"` and `quality` set to `"Bad — <hint>"`.
+*   Successful `VT_BSTR` reads through `read_tag_values` preserve the exact BSTR contents. Empty strings remain empty, embedded quotes remain embedded, and leading/trailing quote characters remain data.
+*   `read_tag_values_for_display` preserves non-BSTR formatting and wraps BSTR contents in one additional pair of quote characters in the native provider.
 *   `write_tag_value` returns `Ok(WriteResult)` in all non-fatal cases; per-tag success/error is reported inside `WriteResult`.
 
 
@@ -75,7 +78,7 @@ All methods use `#[async_trait]`.
 | Field | Type | Required | Description | Constraints |
 | :--- | :--- | :--- | :--- | :--- |
 | `tag_id` | `String` | Yes | Fully qualified tag identifier. | Non-empty. |
-| `value` | `String` | Yes | Current value as a display string. | May be `"Empty"`, `"Null"`, or formatted number/string. |
+| `value` | `String` | Yes | Current value string in the presentation requested by the provider method. | Machine reads preserve exact BSTR contents; display reads may quote BSTR values. Non-BSTR values may be `"Empty"`, `"Null"`, or a formatted number/aggregate. |
 | `quality` | `String` | Yes | OPC quality label. | One of `"Good"`, `"Bad"`, `"Uncertain"`, or `"Unknown(0xNNNN)"`. |
 | `timestamp` | `String` | Yes | Last-change timestamp as local time. | Format `YYYY-MM-DD HH:MM:SS`, or `"N/A"` / `"Invalid"`. |
 
@@ -189,7 +192,8 @@ All methods use `#[async_trait]`.
 | Function | Signature | Purpose |
 | :--- | :--- | :--- |
 | `guid_to_progid` | `fn(guid: &GUID) -> Result<String>` | Converts a COM GUID to its registered ProgID string. |
-| `variant_to_string` | `fn(variant: &VARIANT) -> String` | Formats a COM VARIANT as a display string. Handles VT_EMPTY, VT_NULL, VT_I2, VT_I4, VT_R4, VT_R8, VT_CY, VT_DATE, VT_BSTR, VT_ERROR, VT_BOOL, VT_I1, VT_UI1, VT_UI2, VT_UI4, VT_I8, VT_UI8, and VT_ARRAY composites. |
+| `variant_to_string` | `fn(variant: &VARIANT) -> String` | Formats a COM VARIANT for semantic reads. `VT_BSTR` contents are preserved exactly; all other supported types retain their established formatting. |
+| `variant_to_display_string` | `fn(variant: &VARIANT) -> String` | Formats a COM VARIANT for display reads, wrapping `VT_BSTR` contents in quotes while retaining the same formatting as `variant_to_string` for other types. |
 | `quality_to_string` | `fn(quality: u16) -> String` | Maps OPC quality bitmask to `"Good"` / `"Bad"` / `"Uncertain"`. |
 | `filetime_to_string` | `fn(ft: &FILETIME) -> String` | Converts Win32 FILETIME to local `YYYY-MM-DD HH:MM:SS` string. |
 | `opc_value_to_variant` | `fn(value: &OpcValue) -> VARIANT` | Converts an `OpcValue` to a COM `VARIANT`. |

@@ -1,7 +1,7 @@
 [package]
 name = "bytehound-opc-da-client"
 authors.workspace = true
-version = "0.2.2"
+version = "0.2.4"
 edition.workspace = true
 rust-version.workspace = true
 description = "Backend-agnostic OPC DA client library for Rust — async, trait-based, with transparent COM management"

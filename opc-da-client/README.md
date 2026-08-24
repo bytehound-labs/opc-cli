@@ -24,7 +24,7 @@ Add this to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-opc-da-client = { package = "bytehound-opc-da-client", version = "0.2.2" }
+opc-da-client = { package = "bytehound-opc-da-client", version = "0.2.3" }
 ```
 
 ## Prerequisites
@@ -227,6 +227,9 @@ async fn main() -> anyhow::Result<()> {
 The returned `InventoryStream` exposes pause, resume, and cancellation controls.
 Each native browse call is bounded by `InventoryOptions::batch_size`, and
 `max_entries` can cap a deliberately limited inventory.
+If a DA2 server rejects a branch name with `E_INVALIDARG`, the client probes native
+navigation before deciding whether it is safe to skip; navigable branches are retained,
+and genuinely non-navigable names are reported as a completion warning.
 
 ## Architecture
 

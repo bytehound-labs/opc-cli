@@ -6,10 +6,10 @@
 | :--- | :--- |
 | **Package** | `bytehound-opc-da-client` |
 | **Rust library** | `opc_da_client` |
-| **Version** | `0.2.4` |
+| **Version** | `0.2.5` |
 | **Purpose** | Backend-agnostic Rust library for interacting with OPC DA (Data Access) servers |
 | **Spec** | [spec.md](file:///c:/Users/WSALIGAN/code/opc-cli/opc-da-client/spec.md) |
-| **Status** | Stable `0.2.4` library |
+| **Status** | Stable `0.2.5` library |
 
 The library provides an async, trait-based API that abstracts away the complexities of Windows COM/DCOM and the underlying OPC implementation. It follows a layered architecture: a **stable public API** (trait + data types) and **feature-gated backend implementations** that can be swapped without affecting consumer code.
 
@@ -235,6 +235,8 @@ The library exposes two browse surfaces:
 2. **Native paged API**
    - `browse_capabilities`, `open_browse_session`, `browse_page`, and `close_browse_session` expose bounded one-level enumeration.
    - DA 3.0 servers use native `IOPCBrowse::Browse`, including branch/item/all filters and private continuation strings.
+   - DA 3.0 root and unused-filter arguments are non-null empty UTF-16 strings. The initial continuation uses a non-null outer pointer whose value is null, and a zero property count retains the generated binding's valid reference pointer.
+   - The first real DA 3.0 root page negotiates usability without consuming a separate continuation. `RPC_X_NULL_REF_POINTER` and `E_NOTIMPL` fall back to DA 2.x only when that interface is available; other COM failures remain terminal.
    - DA 2.x hierarchical servers enumerate only immediate `OPC_BRANCH` and/or `OPC_LEAF` children and resolve leaves with exact `GetItemID` values.
    - A DA 2.x browse name present as both a branch and a leaf is emitted once as `BranchAndItem`, with its exact `GetItemID` value.
    - DA 2.x flat servers page `OPC_FLAT` results without recursive traversal.
@@ -246,6 +248,7 @@ The library exposes two browse surfaces:
    - `progress` (`Arc<AtomicUsize>`) reports discovered tag count in real-time.
    - Native pages are capped at 1,000 nodes, sessions expire after five minutes of inactivity, and per-session node/page token counts are bounded.
    - Closing or expiring a session drops its dedicated connection and continuation enumerators on the COM worker. A cancelled open/page request avoids or closes the associated session.
+   - Inventory shares the same DA 3.0 root negotiation and records DA 2.x as the effective source when compatibility fallback occurs.
 
 ---
 

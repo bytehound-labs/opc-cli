@@ -103,6 +103,8 @@ pub fn friendly_com_hint(error: &OpcError) -> Option<&'static str> {
 }
 
 pub(crate) const E_INVALIDARG_HRESULT: u32 = 0x8007_0057;
+pub(crate) const E_NOTIMPL_HRESULT: u32 = 0x8000_4001;
+pub(crate) const RPC_X_NULL_REF_POINTER_HRESULT: u32 = 0x8007_06F4;
 
 pub(crate) fn com_hresult(error: &OpcError) -> Option<u32> {
     match error {
@@ -113,6 +115,11 @@ pub(crate) fn com_hresult(error: &OpcError) -> Option<u32> {
 
 pub(crate) fn is_com_hresult(error: &OpcError, expected: u32) -> bool {
     com_hresult(error) == Some(expected)
+}
+
+pub(crate) fn is_da3_browse_compatibility_error(error: &OpcError) -> bool {
+    is_com_hresult(error, RPC_X_NULL_REF_POINTER_HRESULT)
+        || is_com_hresult(error, E_NOTIMPL_HRESULT)
 }
 
 pub(crate) fn contextual_browse_error(
@@ -195,6 +202,26 @@ mod tests {
         let error = OpcError::Internal("test".to_string());
         assert_eq!(com_hresult(&error), None);
         assert!(!is_com_hresult(&error, E_INVALIDARG_HRESULT));
+    }
+
+    #[test]
+    fn da3_browse_fallback_is_limited_to_compatibility_hresult_values() {
+        for hresult in [RPC_X_NULL_REF_POINTER_HRESULT, E_NOTIMPL_HRESULT] {
+            let error = OpcError::Com {
+                source: windows::core::Error::from_hresult(HRESULT(hresult as i32)),
+            };
+            assert!(is_da3_browse_compatibility_error(&error));
+        }
+
+        for hresult in [E_INVALIDARG_HRESULT, 0x8007_0005, 0x8007_06BA] {
+            let error = OpcError::Com {
+                source: windows::core::Error::from_hresult(HRESULT(hresult as i32)),
+            };
+            assert!(!is_da3_browse_compatibility_error(&error));
+        }
+        assert!(!is_da3_browse_compatibility_error(&OpcError::Internal(
+            "not a COM compatibility failure".to_string()
+        )));
     }
 
     #[test]

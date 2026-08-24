@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.5] - 2026-08-24
+
+### Fixed
+
+- DA 3.0 browsing passes non-null empty UTF-16 strings for the root ItemID and
+  unused filters, preventing out-of-process RPC stubs such as Kepware's from
+  rejecting a root browse with `RPC_X_NULL_REF_POINTER`.
+- Interactive browsing and inventory fall back to DA 2.x only when the first
+  DA 3.0 root page returns `RPC_X_NULL_REF_POINTER` or `E_NOTIMPL`; other COM
+  failures remain visible. Inventory reports the effective DA 2.x source and a
+  compatibility warning.
+
 ## [0.2.4] - 2026-08-24
 
 ### Fixed

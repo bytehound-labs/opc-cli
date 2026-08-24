@@ -87,9 +87,14 @@ pub trait BrowseTrait {
         S2: AsRef<str>,
         S3: AsRef<str>,
     {
-        let item_id = LocalPointer::from_option(item_id);
-        let element_name_filter = LocalPointer::from_option(element_name_filter);
-        let vendor_filter = LocalPointer::from_option(vendor_filter);
+        let item_id = LocalPointer::from(item_id.as_ref().map_or("", |value| value.as_ref()));
+        let element_name_filter = LocalPointer::from(
+            element_name_filter
+                .as_ref()
+                .map_or("", |value| value.as_ref()),
+        );
+        let vendor_filter =
+            LocalPointer::from(vendor_filter.as_ref().map_or("", |value| value.as_ref()));
         let mut continuation_point =
             RemotePointer::from_option(continuation_point.as_ref().map(|v| v.as_ref()));
         let mut more_elements = false.into();
@@ -124,5 +129,214 @@ pub trait BrowseTrait {
             continuation_point.try_into()?,
             elements,
         ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::bindings::da::{IOPCBrowse_Impl, OPC_BROWSE_FILTER_ALL};
+    use std::sync::{Arc, Mutex};
+    use windows::Win32::Foundation::E_NOTIMPL;
+    use windows::core::{BOOL, PCWSTR, PWSTR, implement};
+
+    #[derive(Debug, PartialEq, Eq)]
+    struct BrowseCall {
+        item_id_pointer_is_null: bool,
+        item_id: Option<String>,
+        continuation_pointer_is_null: bool,
+        continuation: Option<String>,
+        element_filter_pointer_is_null: bool,
+        element_filter: Option<String>,
+        vendor_filter_pointer_is_null: bool,
+        vendor_filter: Option<String>,
+        property_count: u32,
+        property_pointer_is_null: bool,
+        property_ids: Vec<u32>,
+    }
+
+    #[allow(clippy::ref_as_ptr, clippy::inline_always)]
+    #[implement(IOPCBrowse)]
+    struct BrowseRecorder {
+        calls: Arc<Mutex<Vec<BrowseCall>>>,
+    }
+
+    impl IOPCBrowse_Impl for BrowseRecorder_Impl {
+        fn GetProperties(
+            &self,
+            _dwitemcount: u32,
+            _pszitemids: *const PCWSTR,
+            _breturnpropertyvalues: BOOL,
+            _dwpropertycount: u32,
+            _pdwpropertyids: *const u32,
+            _ppitemproperties: *mut *mut tagOPCITEMPROPERTIES,
+        ) -> windows::core::Result<()> {
+            Err(windows::core::Error::from_hresult(E_NOTIMPL))
+        }
+
+        fn Browse(
+            &self,
+            szitemid: &PCWSTR,
+            pszcontinuationpoint: *mut PWSTR,
+            _dwmaxelementsreturned: u32,
+            _dwbrowsefilter: tagOPCBROWSEFILTER,
+            szelementnamefilter: &PCWSTR,
+            szvendorfilter: &PCWSTR,
+            _breturnallproperties: BOOL,
+            _breturnpropertyvalues: BOOL,
+            dwpropertycount: u32,
+            pdwpropertyids: *const u32,
+            pbmoreelements: *mut BOOL,
+            pdwcount: *mut u32,
+            ppbrowseelements: *mut *mut tagOPCBROWSEELEMENT,
+        ) -> windows::core::Result<()> {
+            let continuation = if pszcontinuationpoint.is_null() {
+                None
+            } else {
+                // SAFETY: The caller supplies a valid outer continuation pointer.
+                let value = unsafe { *pszcontinuationpoint };
+                if value.is_null() {
+                    None
+                } else {
+                    // SAFETY: The continuation points to a NUL-terminated UTF-16 string.
+                    Some(unsafe { value.to_string()? })
+                }
+            };
+            let property_ids = if dwpropertycount == 0 {
+                Vec::new()
+            } else {
+                // SAFETY: A non-zero count requires a valid array with that many IDs.
+                unsafe {
+                    std::slice::from_raw_parts(pdwpropertyids, dwpropertycount as usize).to_vec()
+                }
+            };
+            self.calls.lock().unwrap().push(BrowseCall {
+                item_id_pointer_is_null: szitemid.is_null(),
+                item_id: pcwstr_to_string(szitemid)?,
+                continuation_pointer_is_null: pszcontinuationpoint.is_null(),
+                continuation,
+                element_filter_pointer_is_null: szelementnamefilter.is_null(),
+                element_filter: pcwstr_to_string(szelementnamefilter)?,
+                vendor_filter_pointer_is_null: szvendorfilter.is_null(),
+                vendor_filter: pcwstr_to_string(szvendorfilter)?,
+                property_count: dwpropertycount,
+                property_pointer_is_null: pdwpropertyids.is_null(),
+                property_ids,
+            });
+
+            if !pbmoreelements.is_null() {
+                // SAFETY: The caller supplied this optional output pointer.
+                unsafe { *pbmoreelements = false.into() };
+            }
+            if !pdwcount.is_null() {
+                // SAFETY: The caller supplied this optional output pointer.
+                unsafe { *pdwcount = 0 };
+            }
+            if !ppbrowseelements.is_null() {
+                // SAFETY: The caller supplied this optional output pointer.
+                unsafe { *ppbrowseelements = core::ptr::null_mut() };
+            }
+            Ok(())
+        }
+    }
+
+    fn pcwstr_to_string(value: &PCWSTR) -> windows::core::Result<Option<String>> {
+        if value.is_null() {
+            return Ok(None);
+        }
+        // SAFETY: The COM caller supplies a NUL-terminated UTF-16 string.
+        Ok(Some(unsafe { value.to_string()? }))
+    }
+
+    struct TestBrowse(IOPCBrowse);
+
+    impl BrowseTrait for TestBrowse {
+        fn interface(&self) -> OpcResult<&IOPCBrowse> {
+            Ok(&self.0)
+        }
+    }
+
+    #[test]
+    fn browse_marshals_absent_required_strings_as_non_null_empty_strings() {
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let interface: IOPCBrowse = BrowseRecorder {
+            calls: Arc::clone(&calls),
+        }
+        .into();
+        let browse = TestBrowse(interface);
+
+        let (_, continuation, _) = browse
+            .browse(
+                None::<&str>,
+                None::<&str>,
+                100,
+                OPC_BROWSE_FILTER_ALL,
+                None::<&str>,
+                None::<&str>,
+                false,
+                false,
+                &[],
+            )
+            .unwrap();
+
+        assert_eq!(continuation, None);
+        assert_eq!(
+            calls.lock().unwrap().as_slice(),
+            &[BrowseCall {
+                item_id_pointer_is_null: false,
+                item_id: Some(String::new()),
+                continuation_pointer_is_null: false,
+                continuation: None,
+                element_filter_pointer_is_null: false,
+                element_filter: Some(String::new()),
+                vendor_filter_pointer_is_null: false,
+                vendor_filter: Some(String::new()),
+                property_count: 0,
+                property_pointer_is_null: false,
+                property_ids: Vec::new(),
+            }]
+        );
+    }
+
+    #[test]
+    fn browse_preserves_non_empty_strings_continuation_and_property_ids() {
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let interface: IOPCBrowse = BrowseRecorder {
+            calls: Arc::clone(&calls),
+        }
+        .into();
+        let browse = TestBrowse(interface);
+
+        let (_, continuation, _) = browse
+            .browse(
+                Some("Channel.Device"),
+                Some("resume-here"),
+                25,
+                OPC_BROWSE_FILTER_ALL,
+                Some("Tag*"),
+                Some("Vendor"),
+                false,
+                true,
+                &[1, 5],
+            )
+            .unwrap();
+
+        assert_eq!(continuation.as_deref(), Some("resume-here"));
+        assert_eq!(
+            calls.lock().unwrap().as_slice(),
+            &[BrowseCall {
+                item_id_pointer_is_null: false,
+                item_id: Some("Channel.Device".to_string()),
+                continuation_pointer_is_null: false,
+                continuation: Some("resume-here".to_string()),
+                element_filter_pointer_is_null: false,
+                element_filter: Some("Tag*".to_string()),
+                vendor_filter_pointer_is_null: false,
+                vendor_filter: Some("Vendor".to_string()),
+                property_count: 2,
+                property_pointer_is_null: false,
+                property_ids: vec![1, 5],
+            }]
+        );
     }
 }

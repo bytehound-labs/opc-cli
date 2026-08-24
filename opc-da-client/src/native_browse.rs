@@ -5,7 +5,9 @@ use crate::backend::connector::{
 use crate::bindings::da::{
     OPC_BRANCH, OPC_BROWSE_DOWN, OPC_BROWSE_UP, OPC_FLAT, OPC_LEAF, OPC_NS_FLAT, OPC_NS_HIERARCHIAL,
 };
-use crate::opc_da::errors::{OpcError, OpcResult, contextual_browse_error};
+use crate::opc_da::errors::{
+    OpcError, OpcResult, com_hresult, contextual_browse_error, is_da3_browse_compatibility_error,
+};
 use crate::provider::{
     BrowseCapabilities, BrowseNamespace, BrowseNode, BrowseNodeFilter, BrowseNodeKind,
     BrowseNodeToken, BrowsePage, BrowsePageRequest, BrowsePageToken, BrowseSessionToken,
@@ -174,7 +176,31 @@ impl<S: ConnectedServer> BrowseSessions<S> {
         max_elements: u32,
     ) -> OpcResult<BrowsePage> {
         match session.backend {
-            BrowseBackend::Da3 => Self::browse_da3(session, parent, filter, max_elements, None),
+            BrowseBackend::Da3 => {
+                match Self::browse_da3(session, parent, filter, max_elements, None) {
+                    Err(error)
+                        if parent.is_none()
+                            && session.capabilities.supports_da2
+                            && is_da3_browse_compatibility_error(&error) =>
+                    {
+                        tracing::warn!(
+                            hresult = com_hresult(&error)
+                                .map(|value| format!("0x{value:08X}"))
+                                .as_deref()
+                                .unwrap_or("N/A"),
+                            error = %error,
+                            "OPC DA 3.0 root browse is incompatible; falling back to OPC DA 2.x"
+                        );
+                        session.capabilities.supports_da3 = false;
+                        session.backend = BrowseBackend::Da2 {
+                            current_path: Vec::new(),
+                        };
+                        let state = Self::start_da2_page(session, parent, filter)?;
+                        Self::browse_da2(session, parent, filter, max_elements, state)
+                    }
+                    result => result,
+                }
+            }
             BrowseBackend::Da2 { .. } => {
                 let state = Self::start_da2_page(session, parent, filter)?;
                 Self::browse_da2(session, parent, filter, max_elements, state)
@@ -746,7 +772,7 @@ mod tests {
     use super::*;
     use crate::backend::connector::{ConnectedGroup, RemoteArray};
     use crate::bindings::da::{tagOPCDATASOURCE, tagOPCITEMDEF, tagOPCITEMRESULT, tagOPCITEMSTATE};
-    use crate::opc_da::errors::E_INVALIDARG_HRESULT;
+    use crate::opc_da::errors::{E_INVALIDARG_HRESULT, RPC_X_NULL_REF_POINTER_HRESULT};
     use crate::opc_da::typedefs::{GroupHandle, ItemHandle};
     use std::collections::VecDeque;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -787,6 +813,8 @@ mod tests {
     struct MockServer {
         namespace: BrowseNamespace,
         da3: bool,
+        da2: bool,
+        da3_error: Option<u32>,
         da3_pages: Arc<Mutex<VecDeque<NativeBrowsePage>>>,
         da3_calls: Arc<Mutex<Vec<Da3Call>>>,
         position: Arc<Mutex<Vec<String>>>,
@@ -804,6 +832,8 @@ mod tests {
             Self {
                 namespace: BrowseNamespace::Hierarchical,
                 da3: true,
+                da2: false,
+                da3_error: None,
                 da3_pages: Arc::new(Mutex::new(pages.into())),
                 da3_calls: Arc::default(),
                 position: Arc::default(),
@@ -826,6 +856,8 @@ mod tests {
             Self {
                 namespace,
                 da3: false,
+                da2: true,
+                da3_error: None,
                 da3_pages: Arc::default(),
                 da3_calls: Arc::default(),
                 position: Arc::default(),
@@ -837,6 +869,14 @@ mod tests {
                 navigation_errors: Arc::default(),
                 drop_count: None,
             }
+        }
+
+        fn with_da2_fallback(mut self, hresult: u32, flat_items: Vec<String>) -> Self {
+            self.namespace = BrowseNamespace::Flat;
+            self.da2 = true;
+            self.da3_error = Some(hresult);
+            self.flat_items = Arc::new(flat_items);
+            self
         }
 
         fn with_invalidarg_branch(mut self, name: &str, navigable: bool) -> Self {
@@ -984,7 +1024,7 @@ mod tests {
         }
 
         fn supports_da2_browse(&self) -> bool {
-            !self.da3
+            self.da2
         }
 
         fn supports_da3_browse(&self) -> bool {
@@ -1023,6 +1063,11 @@ mod tests {
                 continuation.map(str::to_string),
                 filter,
             ));
+            if let Some(hresult) = self.da3_error {
+                return Err(OpcError::Com {
+                    source: windows::core::Error::from_hresult(HRESULT(hresult.cast_signed())),
+                });
+            }
             self.da3_pages
                 .lock()
                 .unwrap()
@@ -1062,6 +1107,48 @@ mod tests {
             max_elements,
             continuation,
         }
+    }
+
+    #[test]
+    fn da3_root_compatibility_failure_falls_back_to_da2_for_the_session() {
+        let server = MockServer::da3(Vec::new()).with_da2_fallback(
+            RPC_X_NULL_REF_POINTER_HRESULT,
+            vec!["Channel.Device.Tag".to_string()],
+        );
+        let calls = Arc::clone(&server.da3_calls);
+        let mut sessions = BrowseSessions::default();
+        let session = sessions.open(server).unwrap();
+
+        let first = sessions
+            .page(&session, request(None, BrowseNodeFilter::All, 10, None))
+            .unwrap();
+        assert_eq!(first.nodes.len(), 1);
+        assert_eq!(first.nodes[0].name, "Channel.Device.Tag");
+        assert_eq!(
+            first.nodes[0].item_id.as_deref(),
+            Some("Channel.Device.Tag")
+        );
+        assert_eq!(first.nodes[0].kind, BrowseNodeKind::Item);
+
+        let second = sessions
+            .page(&session, request(None, BrowseNodeFilter::All, 10, None))
+            .unwrap();
+        assert_eq!(second.nodes.len(), 1);
+        assert_eq!(calls.lock().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn da3_root_operational_failure_does_not_fall_back() {
+        let server = MockServer::da3(Vec::new())
+            .with_da2_fallback(0x8007_0005, vec!["must-not-be-returned".to_string()]);
+        let mut sessions = BrowseSessions::default();
+        let session = sessions.open(server).unwrap();
+
+        assert!(matches!(
+            sessions.page(&session, request(None, BrowseNodeFilter::All, 10, None)),
+            Err(OpcError::Com { source })
+                if source.code().0.cast_unsigned() == 0x8007_0005
+        ));
     }
 
     #[test]

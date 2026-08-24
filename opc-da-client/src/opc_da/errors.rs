@@ -102,6 +102,58 @@ pub fn friendly_com_hint(error: &OpcError) -> Option<&'static str> {
     }
 }
 
+pub(crate) const E_INVALIDARG_HRESULT: u32 = 0x8007_0057;
+
+pub(crate) fn com_hresult(error: &OpcError) -> Option<u32> {
+    match error {
+        OpcError::Com { source } => Some(source.code().0 as u32),
+        _ => None,
+    }
+}
+
+pub(crate) fn is_com_hresult(error: &OpcError, expected: u32) -> bool {
+    com_hresult(error) == Some(expected)
+}
+
+pub(crate) fn contextual_browse_error(
+    error: OpcError,
+    operation: &str,
+    browse_path: &[String],
+    item_name: Option<&str>,
+) -> OpcError {
+    let path = if browse_path.is_empty() {
+        "<root>".to_string()
+    } else {
+        browse_path
+            .iter()
+            .map(|part| format!("{part:?}"))
+            .collect::<Vec<_>>()
+            .join(" > ")
+    };
+    let item = item_name
+        .map(|name| format!(" item {name:?}"))
+        .unwrap_or_default();
+    let hresult = com_hresult(&error)
+        .map(|value| format!("0x{value:08X}"))
+        .unwrap_or_else(|| "N/A".to_string());
+    let hint = friendly_com_hint(&error).unwrap_or("none");
+    let chain = format!("{error:#}");
+
+    tracing::error!(
+        operation = %operation,
+        browse_path = %path,
+        item_name = %item_name.map_or("<none>", |name| name),
+        hresult = %hresult,
+        hint = %hint,
+        chain = %chain,
+        "OPC browse operation failed"
+    );
+
+    OpcError::Internal(format!(
+        "OPC DA {operation} failed at browse path {path}{item}: {error}"
+    ))
+}
+
 /// Emits a structured `tracing::error!` event with machine-parseable fields.
 ///
 /// Extracts the HRESULT code and friendly hint from an [`OpcError`],
@@ -111,10 +163,7 @@ pub fn friendly_com_hint(error: &OpcError) -> Option<&'static str> {
 /// * `error` - The OPC error to log
 /// * `operation` - Name of the operation that failed (e.g., "read_tag_values")
 pub fn log_opc_error(error: &OpcError, operation: &str) {
-    let hresult = match error {
-        OpcError::Com { source: e } => Some(format!("0x{:08X}", e.code().0 as u32)),
-        _ => None,
-    };
+    let hresult = com_hresult(error).map(|value| format!("0x{value:08X}"));
     let hint = friendly_com_hint(error);
     let chain = format!("{error:#}");
 
@@ -125,4 +174,43 @@ pub fn log_opc_error(error: &OpcError, operation: &str) {
         chain = %chain,
         "OPC operation failed"
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn extracts_com_hresult_and_matches_expected_code() {
+        let error = OpcError::Com {
+            source: windows::core::Error::from_hresult(HRESULT(E_INVALIDARG_HRESULT as i32)),
+        };
+        assert_eq!(com_hresult(&error), Some(E_INVALIDARG_HRESULT));
+        assert!(is_com_hresult(&error, E_INVALIDARG_HRESULT));
+        assert!(!is_com_hresult(&error, 0));
+    }
+
+    #[test]
+    fn non_com_errors_have_no_hresult() {
+        let error = OpcError::Internal("test".to_string());
+        assert_eq!(com_hresult(&error), None);
+        assert!(!is_com_hresult(&error, E_INVALIDARG_HRESULT));
+    }
+
+    #[test]
+    fn contextual_browse_error_includes_escaped_path_and_item() {
+        let error = contextual_browse_error(
+            OpcError::Internal("synthetic".to_string()),
+            "GetItemID",
+            &[String::from("FCS0528"), "\u{1}".to_string()],
+            Some("\u{1}"),
+        );
+        assert!(matches!(
+            error,
+            OpcError::Internal(message)
+                if message.contains("\"FCS0528\" > \"\\u{1}\"")
+                    && message.contains("item \"\\u{1}\"")
+                    && message.contains("synthetic")
+        ));
+    }
 }

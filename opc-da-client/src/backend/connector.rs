@@ -8,6 +8,7 @@ pub use crate::bindings::da::tagOPCITEMDEF;
 pub use crate::bindings::da::{tagOPCITEMRESULT, tagOPCITEMSTATE};
 pub use crate::opc_da::client::*;
 pub use crate::opc_da::com_utils::RemoteArray;
+use crate::opc_da::errors::{E_INVALIDARG_HRESULT, is_com_hresult};
 pub use crate::opc_da::errors::{OpcError, OpcResult};
 use crate::provider::BrowseNodeFilter;
 use anyhow::Context;
@@ -29,6 +30,45 @@ pub struct NativeBrowsePage {
     pub(crate) elements: Vec<NativeBrowseElement>,
     pub(crate) more_elements: bool,
     pub(crate) continuation: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Da2BranchNavigation {
+    Navigable,
+    RejectedInvalidArgument,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Da2BranchClassification {
+    pub item_id: Option<String>,
+    pub navigation: Da2BranchNavigation,
+}
+
+pub fn classify_da2_branch<S: ConnectedServer>(
+    server: &S,
+    item_name: &str,
+) -> OpcResult<Da2BranchClassification> {
+    let item_id = match server.resolve_da2_item_id(item_name) {
+        Ok(item_id) => item_id,
+        Err(error) if is_com_hresult(&error, E_INVALIDARG_HRESULT) => None,
+        Err(error) => return Err(error),
+    };
+    let down = crate::bindings::da::OPC_BROWSE_DOWN.0.cast_unsigned();
+    let up = crate::bindings::da::OPC_BROWSE_UP.0.cast_unsigned();
+    let navigation = match server.change_browse_position(down, item_name) {
+        Ok(()) => {
+            server.change_browse_position(up, "")?;
+            Da2BranchNavigation::Navigable
+        }
+        Err(error) if is_com_hresult(&error, E_INVALIDARG_HRESULT) => {
+            Da2BranchNavigation::RejectedInvalidArgument
+        }
+        Err(error) => return Err(error),
+    };
+    Ok(Da2BranchClassification {
+        item_id,
+        navigation,
+    })
 }
 
 /// Object-safe string enumerator used to keep DA 2.x COM enumeration state on

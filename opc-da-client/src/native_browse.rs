@@ -1,10 +1,11 @@
 use crate::backend::connector::{
-    BrowseStringIterator, ConnectedServer, NativeBrowseElement, NativeBrowsePage,
+    BrowseStringIterator, ConnectedServer, Da2BranchNavigation, NativeBrowseElement,
+    NativeBrowsePage, classify_da2_branch,
 };
 use crate::bindings::da::{
     OPC_BRANCH, OPC_BROWSE_DOWN, OPC_BROWSE_UP, OPC_FLAT, OPC_LEAF, OPC_NS_FLAT, OPC_NS_HIERARCHIAL,
 };
-use crate::opc_da::errors::{OpcError, OpcResult};
+use crate::opc_da::errors::{OpcError, OpcResult, contextual_browse_error};
 use crate::provider::{
     BrowseCapabilities, BrowseNamespace, BrowseNode, BrowseNodeFilter, BrowseNodeKind,
     BrowseNodeToken, BrowsePage, BrowsePageRequest, BrowsePageToken, BrowseSessionToken,
@@ -417,25 +418,40 @@ impl<S: ConnectedServer> BrowseSessions<S> {
             }
             let (item_id, location) = match kind {
                 BrowseNodeKind::Branch => {
-                    let mut path = state.parent_path.clone();
-                    path.push(name.clone());
-                    let item_id = match session.server.resolve_da2_item_id(&name)? {
-                        Some(item_id) => {
-                            state.merged_items.insert(name.clone());
-                            kind = BrowseNodeKind::BranchAndItem;
-                            Some(item_id)
-                        }
-                        None => None,
+                    let Some((mapped_kind, item_id, location)) =
+                        map_browse_da2_branch(&session.server, &mut state, filter, &name)?
+                    else {
+                        continue;
                     };
-                    (item_id, NodeLocation::Da2(path))
+                    kind = mapped_kind;
+                    (item_id, location)
                 }
                 BrowseNodeKind::Item => {
                     let item_id = if state.flat {
                         name.clone()
                     } else {
-                        session.server.get_item_id(&name)?
+                        session.server.get_item_id(&name).map_err(|error| {
+                            contextual_browse_error(
+                                error,
+                                "get_item_id",
+                                &state.parent_path,
+                                Some(&name),
+                            )
+                        })?
                     };
-                    if !state.flat && session.server.da2_name_has_children(&name)? {
+                    if !state.flat
+                        && session
+                            .server
+                            .da2_name_has_children(&name)
+                            .map_err(|error| {
+                                contextual_browse_error(
+                                    error,
+                                    "probe_da2_branch",
+                                    &state.parent_path,
+                                    Some(&name),
+                                )
+                            })?
+                    {
                         let mut path = state.parent_path.clone();
                         path.push(name.clone());
                         kind = BrowseNodeKind::BranchAndItem;
@@ -477,6 +493,54 @@ impl<S: ConnectedServer> BrowseSessions<S> {
             continuation,
         })
     }
+}
+
+fn map_browse_da2_branch<S: ConnectedServer>(
+    server: &S,
+    state: &mut Da2PageState,
+    filter: BrowseNodeFilter,
+    name: &str,
+) -> OpcResult<Option<(BrowseNodeKind, Option<String>, NodeLocation)>> {
+    let mut path = state.parent_path.clone();
+    path.push(name.to_string());
+    let classification = classify_da2_branch(server, name).map_err(|error| {
+        contextual_browse_error(error, "classify_da2_branch", &state.parent_path, Some(name))
+    })?;
+    Ok(match (classification.item_id, classification.navigation) {
+        (Some(item_id), Da2BranchNavigation::Navigable) => {
+            state.merged_items.insert(name.to_string());
+            Some((
+                BrowseNodeKind::BranchAndItem,
+                Some(item_id),
+                NodeLocation::Da2(path),
+            ))
+        }
+        (Some(item_id), Da2BranchNavigation::RejectedInvalidArgument) => {
+            state.merged_items.insert(name.to_string());
+            if filter == BrowseNodeFilter::Branches {
+                return Ok(None);
+            }
+            tracing::debug!(
+                browse_path = ?state.parent_path,
+                item_name = ?name,
+                hresult = "0x80070057",
+                "preserving exact DA2 item returned as a non-navigable branch"
+            );
+            Some((BrowseNodeKind::Item, Some(item_id), NodeLocation::Item))
+        }
+        (None, Da2BranchNavigation::Navigable) => {
+            Some((BrowseNodeKind::Branch, None, NodeLocation::Da2(path)))
+        }
+        (None, Da2BranchNavigation::RejectedInvalidArgument) => {
+            tracing::warn!(
+                browse_path = ?state.parent_path,
+                item_name = ?name,
+                hresult = "0x80070057",
+                "skipping non-navigable DA2 branch-only name"
+            );
+            None
+        }
+    })
 }
 
 struct BrowseSessionState<S: ConnectedServer> {
@@ -682,6 +746,7 @@ mod tests {
     use super::*;
     use crate::backend::connector::{ConnectedGroup, RemoteArray};
     use crate::bindings::da::{tagOPCDATASOURCE, tagOPCITEMDEF, tagOPCITEMRESULT, tagOPCITEMSTATE};
+    use crate::opc_da::errors::E_INVALIDARG_HRESULT;
     use crate::opc_da::typedefs::{GroupHandle, ItemHandle};
     use std::collections::VecDeque;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -728,6 +793,9 @@ mod tests {
         branches: Arc<HashMap<Vec<String>, Vec<String>>>,
         items: Arc<HashMap<Vec<String>, Vec<String>>>,
         flat_items: Arc<Vec<String>>,
+        invalidarg_branches: Arc<HashSet<String>>,
+        non_navigable_branches: Arc<HashSet<String>>,
+        navigation_errors: Arc<HashMap<String, u32>>,
         drop_count: Option<Arc<AtomicUsize>>,
     }
 
@@ -742,6 +810,9 @@ mod tests {
                 branches: Arc::default(),
                 items: Arc::default(),
                 flat_items: Arc::default(),
+                invalidarg_branches: Arc::default(),
+                non_navigable_branches: Arc::default(),
+                navigation_errors: Arc::default(),
                 drop_count: None,
             }
         }
@@ -761,8 +832,37 @@ mod tests {
                 branches: Arc::new(branches),
                 items: Arc::new(items),
                 flat_items: Arc::new(flat_items),
+                invalidarg_branches: Arc::default(),
+                non_navigable_branches: Arc::default(),
+                navigation_errors: Arc::default(),
                 drop_count: None,
             }
+        }
+
+        fn with_invalidarg_branch(mut self, name: &str, navigable: bool) -> Self {
+            let mut invalidarg_branches = (*self.invalidarg_branches).clone();
+            invalidarg_branches.insert(name.to_string());
+            self.invalidarg_branches = Arc::new(invalidarg_branches);
+            if !navigable {
+                let mut non_navigable_branches = (*self.non_navigable_branches).clone();
+                non_navigable_branches.insert(name.to_string());
+                self.non_navigable_branches = Arc::new(non_navigable_branches);
+            }
+            self
+        }
+
+        fn with_non_navigable_branch(mut self, name: &str) -> Self {
+            let mut non_navigable_branches = (*self.non_navigable_branches).clone();
+            non_navigable_branches.insert(name.to_string());
+            self.non_navigable_branches = Arc::new(non_navigable_branches);
+            self
+        }
+
+        fn with_navigation_error(mut self, name: &str, hresult: u32) -> Self {
+            let mut navigation_errors = (*self.navigation_errors).clone();
+            navigation_errors.insert(name.to_string(), hresult);
+            self.navigation_errors = Arc::new(navigation_errors);
+            self
         }
 
         fn with_drop_count(mut self, drop_count: Arc<AtomicUsize>) -> Self {
@@ -802,6 +902,22 @@ mod tests {
         }
 
         fn change_browse_position(&self, direction: u32, name: &str) -> OpcResult<()> {
+            if direction == OPC_BROWSE_DOWN.0.cast_unsigned() {
+                if let Some(hresult) = self.navigation_errors.get(name) {
+                    return Err(OpcError::Com {
+                        source: windows::core::Error::from_hresult(HRESULT(
+                            (*hresult).cast_signed(),
+                        )),
+                    });
+                }
+                if self.non_navigable_branches.contains(name) {
+                    return Err(OpcError::Com {
+                        source: windows::core::Error::from_hresult(HRESULT(
+                            E_INVALIDARG_HRESULT.cast_signed(),
+                        )),
+                    });
+                }
+            }
             let mut position = self.position.lock().unwrap();
             if direction == OPC_BROWSE_DOWN.0.cast_unsigned() {
                 position.push(name.to_string());
@@ -833,6 +949,13 @@ mod tests {
         }
 
         fn resolve_da2_item_id(&self, item_name: &str) -> OpcResult<Option<String>> {
+            if self.invalidarg_branches.contains(item_name) {
+                return Err(OpcError::Com {
+                    source: windows::core::Error::from_hresult(HRESULT(
+                        E_INVALIDARG_HRESULT.cast_signed(),
+                    )),
+                });
+            }
             let position = self.position.lock().unwrap();
             let is_item = self
                 .items
@@ -848,6 +971,9 @@ mod tests {
         }
 
         fn da2_name_has_children(&self, item_name: &str) -> OpcResult<bool> {
+            if self.non_navigable_branches.contains(item_name) {
+                return Ok(false);
+            }
             let position = self.position.lock().unwrap();
             let is_branch = self
                 .branches
@@ -1101,6 +1227,96 @@ mod tests {
             children.nodes[0].item_id.as_deref(),
             Some("exact::Area.AreaTag")
         );
+    }
+
+    #[test]
+    fn da2_skips_branch_only_navigation_rejections_but_keeps_navigable_ones() {
+        let mut branches = HashMap::new();
+        branches.insert(Vec::new(), vec!["Bad".to_string(), "Odd".to_string()]);
+        branches.insert(vec!["Odd".to_string()], Vec::new());
+        let mut items = HashMap::new();
+        items.insert(vec!["Odd".to_string()], vec!["PV".to_string()]);
+        let server = MockServer::da2(BrowseNamespace::Hierarchical, branches, items, vec![])
+            .with_non_navigable_branch("Bad")
+            .with_invalidarg_branch("Odd", true);
+        let mut sessions = BrowseSessions::default();
+        let session = sessions.open(server).unwrap();
+
+        let root = sessions
+            .page(&session, request(None, BrowseNodeFilter::All, 1, None))
+            .unwrap();
+        assert_eq!(root.nodes.len(), 1);
+        assert_eq!(root.nodes[0].name, "Odd");
+        assert_eq!(root.nodes[0].kind, BrowseNodeKind::Branch);
+
+        let children = sessions
+            .page(
+                &session,
+                request(Some(root.nodes[0].token), BrowseNodeFilter::Items, 10, None),
+            )
+            .unwrap();
+        assert_eq!(children.nodes.len(), 1);
+        assert_eq!(children.nodes[0].item_id.as_deref(), Some("exact::Odd.PV"));
+    }
+
+    #[test]
+    fn da2_preserves_non_navigable_branch_entries_that_are_exact_items() {
+        let mut branches = HashMap::new();
+        branches.insert(Vec::new(), vec!["LeafOnly".to_string()]);
+        let mut items = HashMap::new();
+        items.insert(Vec::new(), vec!["LeafOnly".to_string()]);
+        let server = MockServer::da2(
+            BrowseNamespace::Hierarchical,
+            branches.clone(),
+            items.clone(),
+            vec![],
+        )
+        .with_non_navigable_branch("LeafOnly");
+        let mut sessions = BrowseSessions::default();
+        let session = sessions.open(server).unwrap();
+
+        let root = sessions
+            .page(&session, request(None, BrowseNodeFilter::All, 10, None))
+            .unwrap();
+        assert_eq!(root.nodes.len(), 1);
+        assert_eq!(root.nodes[0].name, "LeafOnly");
+        assert_eq!(root.nodes[0].kind, BrowseNodeKind::Item);
+        assert_eq!(root.nodes[0].item_id.as_deref(), Some("exact::LeafOnly"));
+
+        let branches_only_server =
+            MockServer::da2(BrowseNamespace::Hierarchical, branches, items, vec![])
+                .with_non_navigable_branch("LeafOnly");
+        let branches_only_session = sessions.open(branches_only_server).unwrap();
+        let branches_only = sessions
+            .page(
+                &branches_only_session,
+                request(None, BrowseNodeFilter::Branches, 10, None),
+            )
+            .unwrap();
+        assert!(branches_only.nodes.is_empty());
+    }
+
+    #[test]
+    fn da2_branch_navigation_propagates_non_invalidarg_errors() {
+        let mut branches = HashMap::new();
+        branches.insert(Vec::new(), vec!["Denied".to_string()]);
+        let server = MockServer::da2(
+            BrowseNamespace::Hierarchical,
+            branches,
+            HashMap::new(),
+            vec![],
+        )
+        .with_navigation_error("Denied", 0x8007_0005);
+        let mut sessions = BrowseSessions::default();
+        let session = sessions.open(server).unwrap();
+
+        assert!(matches!(
+            sessions.page(&session, request(None, BrowseNodeFilter::All, 10, None)),
+            Err(OpcError::Internal(message))
+                if message.contains("classify_da2_branch")
+                    && message.contains("\"Denied\"")
+                    && message.contains("0x80070005")
+        ));
     }
 
     #[test]

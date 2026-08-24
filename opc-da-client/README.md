@@ -14,6 +14,8 @@ Backend-agnostic OPC DA client library for Rust — async, trait-based, with tra
 - **Read & Write Support**: Read tag values and write typed values (`Int`, `Float`, `Bool`, `String`) to OPC tags.
 - **Scalable Native Browsing**: Open isolated sessions and request bounded, one-level pages through OPC DA 3.0 with an automatic OPC DA 2.x fallback.
 - **Bounded Namespace Inventory**: Stream exact ItemIDs with breadcrumb labels through a cancellable, bounded DA 3.0/2.x traversal.
+- **Failure-safe Inventory Worker**: Converts worker panics and inventory errors into terminal stream errors instead of silently ending the stream.
+- **Defensive COM Iterators**: Rejects native enumerator counts that exceed the fixed cache capacity before indexing the returned buffer.
 - **Windows COM/DCOM Support**: Native OPC DA backend via `windows-rs` — no external OPC crates needed.
 - **Robust Error Handling**: Leverages `thiserror` for the `OpcError` domain type and `friendly_com_hint()` for human-readable HRESULT explanations.
 - **Test-Friendly**: Built-in `MockOpcProvider` via the `test-support` feature.
@@ -24,7 +26,7 @@ Add this to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-opc-da-client = { package = "bytehound-opc-da-client", version = "0.2.2" }
+opc-da-client = { package = "bytehound-opc-da-client", version = "0.2.4" }
 ```
 
 ## Prerequisites
@@ -227,6 +229,11 @@ async fn main() -> anyhow::Result<()> {
 The returned `InventoryStream` exposes pause, resume, and cancellation controls.
 Each native browse call is bounded by `InventoryOptions::batch_size`, and
 `max_entries` can cap a deliberately limited inventory.
+For DA2 hierarchical namespaces, every server-reported branch is validated with
+a bounded native navigation probe. Branch-only names rejected with
+`E_INVALIDARG` are skipped and reported in the inventory completion warning;
+names that resolve to exact items remain selectable even when they are not
+navigable. Other COM and transport failures remain visible errors.
 
 ## Architecture
 

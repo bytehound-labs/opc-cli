@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.4] - 2026-08-24
+
+### Fixed
+
+- DA2 inventory and interactive browsing validate every reported branch with a bounded native
+  navigation probe, including branch-only names that `GetItemID` does not reject. Branch-only
+  names rejected with `E_INVALIDARG` are skipped, while exact items remain selectable.
+- Inventory worker panics and failures are reported as terminal stream errors.
+- Malformed native enumerator counts are rejected before indexing fixed-size buffers.
+
+## [0.2.3] - 2026-08-24
+
+### Fixed
+
+- DA2 inventory and interactive browsing now probe branch navigation before skipping a branch
+  name rejected by `GetItemID` with `E_INVALIDARG`, preserving navigable branches while reporting
+  genuinely non-navigable names as a completion warning.
+
 ## [0.2.2] - 2026-08-24
 
 ### Changed

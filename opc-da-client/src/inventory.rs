@@ -1,13 +1,14 @@
 //! Bounded namespace inventory traversal used by the bridge search index.
 
 use crate::backend::connector::{
-    BrowseStringIterator, ConnectedServer, NativeBrowseElement, ServerConnector,
+    BrowseStringIterator, ConnectedServer, Da2BranchNavigation, NativeBrowseElement,
+    ServerConnector, classify_da2_branch,
 };
 use crate::bindings::da::{
     OPC_BRANCH, OPC_BROWSE_DOWN, OPC_BROWSE_UP, OPC_FLAT, OPC_LEAF, OPC_NS_FLAT,
 };
 use crate::native_browse::capabilities_for_server;
-use crate::opc_da::errors::{OpcError, OpcResult};
+use crate::opc_da::errors::{OpcError, OpcResult, contextual_browse_error};
 use crate::provider::{
     BrowseCapabilities, BrowseNodeFilter, BrowseNodeKind, InventoryCompleted, InventoryControl,
     InventoryEntry, InventoryEvent, InventoryOptions, InventoryProgress,
@@ -45,6 +46,12 @@ enum InventoryContinuation {
     Da2(Da2PageState),
 }
 
+struct InventoryDa2BranchNode {
+    kind: BrowseNodeKind,
+    item_id: Option<String>,
+    child: Option<BranchLocation>,
+}
+
 /// Traverse one server without exposing browse-session state to the caller.
 #[allow(clippy::redundant_pub_crate, clippy::too_many_lines)]
 pub fn run_inventory<C: ServerConnector>(
@@ -69,6 +76,8 @@ pub fn run_inventory<C: ServerConnector>(
     let mut entries_seen = 0_u64;
     let mut active_time = Duration::ZERO;
     let mut paused_time = Duration::ZERO;
+    let mut skipped_invalid_branches = 0_u64;
+    let mut first_skipped_invalid_branch = None;
 
     let mut terminal = InventoryCompleted {
         complete: true,
@@ -115,6 +124,8 @@ pub fn run_inventory<C: ServerConnector>(
             &mut work,
             options.batch_size,
             &mut current_da2_path,
+            &mut skipped_invalid_branches,
+            &mut first_skipped_invalid_branch,
         ) {
             Ok(page) => page,
             Err(error) => {
@@ -219,6 +230,19 @@ pub fn run_inventory<C: ServerConnector>(
         terminal.complete = false;
         terminal.cancelled = true;
     }
+    if skipped_invalid_branches > 0 {
+        let warning = format!(
+            "skipped {skipped_invalid_branches} non-navigable DA2 branch name(s); \
+             first skipped branch: {}",
+            first_skipped_invalid_branch
+                .as_deref()
+                .unwrap_or("<unknown>")
+        );
+        terminal.warning = Some(match terminal.warning.take() {
+            Some(existing) => format!("{existing}; {warning}"),
+            None => warning,
+        });
+    }
     let _ = send_event(sender, InventoryEvent::Completed(terminal));
     Ok(())
 }
@@ -242,15 +266,26 @@ fn next_page<S: ConnectedServer>(
     work: &mut BranchWork,
     batch_size: u32,
     current_da2_path: &mut Vec<String>,
+    skipped_invalid_branches: &mut u64,
+    first_skipped_invalid_branch: &mut Option<String>,
 ) -> OpcResult<InventoryPage> {
     match &work.location {
         BranchLocation::Da3(item_id) => {
-            let page = server.browse_da3(
-                item_id.as_deref(),
-                work.da3_continuation.as_deref(),
-                batch_size,
-                BrowseNodeFilter::All,
-            )?;
+            let page = server
+                .browse_da3(
+                    item_id.as_deref(),
+                    work.da3_continuation.as_deref(),
+                    batch_size,
+                    BrowseNodeFilter::All,
+                )
+                .map_err(|error| {
+                    contextual_browse_error(
+                        error,
+                        "browse_da3",
+                        &work.breadcrumbs,
+                        item_id.as_deref(),
+                    )
+                })?;
             let nodes = page
                 .elements
                 .into_iter()
@@ -277,7 +312,14 @@ fn next_page<S: ConnectedServer>(
             let state = work.da2_state.take().ok_or_else(|| {
                 OpcError::Internal("DA2 inventory page state disappeared".to_string())
             })?;
-            let (nodes, state) = browse_da2_page(server, state, batch_size, current_da2_path)?;
+            let (nodes, state) = browse_da2_page(
+                server,
+                state,
+                batch_size,
+                current_da2_path,
+                skipped_invalid_branches,
+                first_skipped_invalid_branch,
+            )?;
             Ok(InventoryPage {
                 nodes,
                 continuation: state.map(InventoryContinuation::Da2),
@@ -335,27 +377,46 @@ fn start_da2_page<S: ConnectedServer>(
     current_path: &mut Vec<String>,
 ) -> OpcResult<Da2PageState> {
     move_to_da2_path(server, current_path, parent_path)?;
-    let flat = server.query_organization()? == OPC_NS_FLAT.0.cast_unsigned();
+    let flat = server
+        .query_organization()
+        .map_err(|error| contextual_browse_error(error, "query_organization", parent_path, None))?
+        == OPC_NS_FLAT.0.cast_unsigned();
     let branches = if flat {
         None
     } else {
-        Some(BufferedBrowseIterator::new(server.begin_da2_browse(
-            OPC_BRANCH.0.cast_unsigned(),
-            Some(""),
-            0,
-            0,
-        )?))
+        Some(BufferedBrowseIterator::new(
+            server
+                .begin_da2_browse(OPC_BRANCH.0.cast_unsigned(), Some(""), 0, 0)
+                .map_err(|error| {
+                    contextual_browse_error(error, "begin_da2_browse(branches)", parent_path, None)
+                })?,
+        ))
     };
-    let items = Some(BufferedBrowseIterator::new(server.begin_da2_browse(
-        if flat {
-            OPC_FLAT.0.cast_unsigned()
-        } else {
-            OPC_LEAF.0.cast_unsigned()
-        },
-        Some(""),
-        0,
-        0,
-    )?));
+    let items = Some(BufferedBrowseIterator::new(
+        server
+            .begin_da2_browse(
+                if flat {
+                    OPC_FLAT.0.cast_unsigned()
+                } else {
+                    OPC_LEAF.0.cast_unsigned()
+                },
+                Some(""),
+                0,
+                0,
+            )
+            .map_err(|error| {
+                contextual_browse_error(
+                    error,
+                    if flat {
+                        "begin_da2_browse(flat)"
+                    } else {
+                        "begin_da2_browse(items)"
+                    },
+                    parent_path,
+                    None,
+                )
+            })?,
+    ));
     Ok(Da2PageState {
         parent_path: parent_path.to_vec(),
         branches,
@@ -370,11 +431,16 @@ fn browse_da2_page<S: ConnectedServer>(
     mut state: Da2PageState,
     batch_size: u32,
     current_path: &mut Vec<String>,
+    skipped_invalid_branches: &mut u64,
+    first_skipped_invalid_branch: &mut Option<String>,
 ) -> OpcResult<(Vec<InventoryNode>, Option<Da2PageState>)> {
     move_to_da2_path(server, current_path, &state.parent_path)?;
     let mut nodes = Vec::with_capacity(batch_size as usize);
     while nodes.len() < batch_size as usize {
-        let Some((mut kind, name)) = state.next()? else {
+        let Some((mut kind, name)) = state.next().map_err(|error| {
+            contextual_browse_error(error, "enumerate_da2_names", &state.parent_path, None)
+        })?
+        else {
             break;
         };
         if kind == BrowseNodeKind::Item && state.merged_items.contains(&name) {
@@ -382,25 +448,41 @@ fn browse_da2_page<S: ConnectedServer>(
         }
         let (item_id, child) = match kind {
             BrowseNodeKind::Branch => {
-                let mut child_path = state.parent_path.clone();
-                child_path.push(name.clone());
-                let item_id = match server.resolve_da2_item_id(&name)? {
-                    Some(item_id) => {
-                        state.merged_items.insert(name.clone());
-                        kind = BrowseNodeKind::BranchAndItem;
-                        Some(item_id)
-                    }
-                    None => None,
+                let Some(mapped) = map_inventory_da2_branch(
+                    server,
+                    &mut state,
+                    &name,
+                    skipped_invalid_branches,
+                    first_skipped_invalid_branch,
+                )?
+                else {
+                    continue;
                 };
-                (item_id, Some(BranchLocation::Da2(child_path)))
+                kind = mapped.kind;
+                (mapped.item_id, mapped.child)
             }
             BrowseNodeKind::Item => {
                 let item_id = if state.flat {
                     name.clone()
                 } else {
-                    server.get_item_id(&name)?
+                    server.get_item_id(&name).map_err(|error| {
+                        contextual_browse_error(
+                            error,
+                            "get_item_id",
+                            &state.parent_path,
+                            Some(&name),
+                        )
+                    })?
                 };
-                let child = if !state.flat && server.da2_name_has_children(&name)? {
+                let child = if !state.flat
+                    && server.da2_name_has_children(&name).map_err(|error| {
+                        contextual_browse_error(
+                            error,
+                            "probe_da2_branch",
+                            &state.parent_path,
+                            Some(&name),
+                        )
+                    })? {
                     let mut child_path = state.parent_path.clone();
                     child_path.push(name.clone());
                     kind = BrowseNodeKind::BranchAndItem;
@@ -425,6 +507,65 @@ fn browse_da2_page<S: ConnectedServer>(
     }
     let continuation = state.has_more().then_some(state);
     Ok((nodes, continuation))
+}
+
+fn map_inventory_da2_branch<S: ConnectedServer>(
+    server: &S,
+    state: &mut Da2PageState,
+    name: &str,
+    skipped_invalid_branches: &mut u64,
+    first_skipped_invalid_branch: &mut Option<String>,
+) -> OpcResult<Option<InventoryDa2BranchNode>> {
+    let mut child_path = state.parent_path.clone();
+    child_path.push(name.to_string());
+    let classification = classify_da2_branch(server, name).map_err(|error| {
+        contextual_browse_error(error, "classify_da2_branch", &state.parent_path, Some(name))
+    })?;
+    Ok(match (classification.item_id, classification.navigation) {
+        (Some(item_id), Da2BranchNavigation::Navigable) => {
+            state.merged_items.insert(name.to_string());
+            Some(InventoryDa2BranchNode {
+                kind: BrowseNodeKind::BranchAndItem,
+                item_id: Some(item_id),
+                child: Some(BranchLocation::Da2(child_path)),
+            })
+        }
+        (Some(item_id), Da2BranchNavigation::RejectedInvalidArgument) => {
+            state.merged_items.insert(name.to_string());
+            tracing::debug!(
+                browse_path = ?state.parent_path,
+                item_name = ?name,
+                hresult = "0x80070057",
+                "preserving exact DA2 item returned as a non-navigable branch"
+            );
+            Some(InventoryDa2BranchNode {
+                kind: BrowseNodeKind::Item,
+                item_id: Some(item_id),
+                child: None,
+            })
+        }
+        (None, Da2BranchNavigation::Navigable) => Some(InventoryDa2BranchNode {
+            kind: BrowseNodeKind::Branch,
+            item_id: None,
+            child: Some(BranchLocation::Da2(child_path)),
+        }),
+        (None, Da2BranchNavigation::RejectedInvalidArgument) => {
+            *skipped_invalid_branches = skipped_invalid_branches.saturating_add(1);
+            if first_skipped_invalid_branch.is_none() {
+                *first_skipped_invalid_branch = Some(format!(
+                    "name {name:?} at {}",
+                    describe_browse_path(&state.parent_path)
+                ));
+            }
+            tracing::warn!(
+                browse_path = ?state.parent_path,
+                item_name = ?name,
+                hresult = "0x80070057",
+                "skipping non-navigable DA2 branch-only name"
+            );
+            None
+        }
+    })
 }
 
 impl Da2PageState {
@@ -493,14 +634,43 @@ fn move_to_da2_path<S: ConnectedServer>(
         .take_while(|(left, right)| left == right)
         .count();
     for _ in shared..current_path.len() {
-        server.change_browse_position(OPC_BROWSE_UP.0.cast_unsigned(), "")?;
+        server
+            .change_browse_position(OPC_BROWSE_UP.0.cast_unsigned(), "")
+            .map_err(|error| {
+                contextual_browse_error(
+                    error,
+                    "change_browse_position(up)",
+                    current_path,
+                    current_path.last().map(String::as_str),
+                )
+            })?;
     }
     current_path.truncate(shared);
     for branch in &target[shared..] {
-        server.change_browse_position(OPC_BROWSE_DOWN.0.cast_unsigned(), branch)?;
+        server
+            .change_browse_position(OPC_BROWSE_DOWN.0.cast_unsigned(), branch)
+            .map_err(|error| {
+                contextual_browse_error(
+                    error,
+                    "change_browse_position(down)",
+                    current_path,
+                    Some(branch),
+                )
+            })?;
         current_path.push(branch.clone());
     }
     Ok(())
+}
+
+fn describe_browse_path(path: &[String]) -> String {
+    if path.is_empty() {
+        "<root>".to_string()
+    } else {
+        path.iter()
+            .map(|part| format!("{part:?}"))
+            .collect::<Vec<_>>()
+            .join(" > ")
+    }
 }
 
 fn wait_until_resumed(control: &InventoryControl, paused_time: &mut Duration) -> bool {
@@ -547,6 +717,7 @@ mod tests {
     use crate::bindings::da::{
         OPC_NS_HIERARCHIAL, tagOPCDATASOURCE, tagOPCITEMDEF, tagOPCITEMRESULT, tagOPCITEMSTATE,
     };
+    use crate::opc_da::errors::E_INVALIDARG_HRESULT;
     use crate::opc_da::typedefs::{GroupHandle, ItemHandle};
     use std::sync::Arc;
     use std::sync::Mutex;
@@ -880,6 +1051,57 @@ mod tests {
         assert!(error.is_none());
     }
 
+    #[test]
+    fn da2_branch_only_navigation_rejection_is_skipped_without_losing_items() {
+        let connector = Arc::new(SharedConnector {
+            server: Arc::new(Mutex::new(Some(InvalidDa2BranchServer::default()))),
+        });
+        let (sender, mut receiver) = mpsc::channel(32);
+        run_inventory(
+            connector.as_ref(),
+            "test",
+            InventoryOptions {
+                batch_size: 10,
+                max_entries: None,
+            },
+            &InventoryControl::new(),
+            &sender,
+        )
+        .unwrap();
+
+        let (entries, completed, error) = collect(&mut receiver);
+        assert_eq!(
+            entries
+                .iter()
+                .map(|entry| entry.item_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["FCS0528.LeafOnly", "FCS0528.PV", "FCS0528!Odd.PV"]
+        );
+        assert_eq!(entries[0].kind, BrowseNodeKind::Item);
+        assert!(completed.is_some_and(|value| {
+            value.complete
+                && value.warning.is_some_and(|warning| {
+                    warning.contains("skipped 1 non-navigable DA2 branch name(s)")
+                        && warning.contains("\"\\u{1}\"")
+                        && warning.contains("\"FCS0528\"")
+                })
+        }));
+        assert!(error.is_none());
+    }
+
+    #[test]
+    fn da2_branch_navigation_propagates_non_invalidarg_errors() {
+        let server = InvalidDa2BranchServer::default();
+        server
+            .change_browse_position(OPC_BROWSE_DOWN.0.cast_unsigned(), "FCS0528")
+            .unwrap();
+
+        assert!(matches!(
+            classify_da2_branch(&server, "Denied"),
+            Err(OpcError::Com { source }) if source.code().0.cast_unsigned() == 0x8007_0005
+        ));
+    }
+
     struct DuplicateDa3Server;
 
     impl ConnectedServer for DuplicateDa3Server {
@@ -1051,6 +1273,147 @@ mod tests {
                 _ => Vec::new(),
             };
             Ok(Box::new(values.into_iter().map(str::to_string).map(Ok)))
+        }
+
+        fn add_group(
+            &self,
+            _name: &str,
+            _active: bool,
+            _update_rate: u32,
+            _client_handle: GroupHandle,
+            _time_bias: i32,
+            _percent_deadband: f32,
+            _locale_id: u32,
+            _revised_update_rate: &mut u32,
+            _server_handle: &mut GroupHandle,
+        ) -> OpcResult<Self::Group> {
+            Err(OpcError::NotImplemented("test".to_string()))
+        }
+
+        fn remove_group(&self, _server_group: GroupHandle, _force: bool) -> OpcResult<()> {
+            Ok(())
+        }
+    }
+
+    #[derive(Default)]
+    struct InvalidDa2BranchServer {
+        position: Mutex<Vec<String>>,
+    }
+
+    impl ConnectedServer for InvalidDa2BranchServer {
+        type Group = TestGroup;
+
+        fn query_organization(&self) -> OpcResult<u32> {
+            Ok(OPC_NS_HIERARCHIAL.0.cast_unsigned())
+        }
+
+        fn browse_opc_item_ids(
+            &self,
+            _browse_type: u32,
+            _filter: Option<&str>,
+            _data_type: u16,
+            _access_rights: u32,
+        ) -> OpcResult<crate::backend::connector::StringIterator> {
+            Err(OpcError::NotImplemented("test".to_string()))
+        }
+
+        fn change_browse_position(&self, direction: u32, name: &str) -> OpcResult<()> {
+            if direction == OPC_BROWSE_DOWN.0.cast_unsigned() {
+                if matches!(name, "\u{1}" | "LeafOnly") {
+                    return Err(OpcError::Com {
+                        source: windows::core::Error::from_hresult(HRESULT(
+                            E_INVALIDARG_HRESULT.cast_signed(),
+                        )),
+                    });
+                }
+                if name == "Denied" {
+                    return Err(OpcError::Com {
+                        source: windows::core::Error::from_hresult(HRESULT(
+                            0x8007_0005_u32.cast_signed(),
+                        )),
+                    });
+                }
+            }
+            let mut position = self.position.lock().unwrap();
+            if direction == OPC_BROWSE_DOWN.0.cast_unsigned() {
+                position.push(name.to_string());
+            } else if direction == OPC_BROWSE_UP.0.cast_unsigned() {
+                position.pop();
+            }
+            drop(position);
+            Ok(())
+        }
+
+        fn get_item_id(&self, item_name: &str) -> OpcResult<String> {
+            let position = self.position.lock().unwrap();
+            match (position.as_slice(), item_name) {
+                ([], "FCS0528") => Err(OpcError::Com {
+                    source: windows::core::Error::from_hresult(HRESULT(
+                        0xC004_0007_u32.cast_signed(),
+                    )),
+                }),
+                ([area], "PV") if area == "FCS0528" => Ok("FCS0528.PV".to_string()),
+                ([area], "LeafOnly") if area == "FCS0528" => Ok("FCS0528.LeafOnly".to_string()),
+                ([area], "\u{1}" | "Denied") if area == "FCS0528" => Err(OpcError::Com {
+                    source: windows::core::Error::from_hresult(HRESULT(
+                        0xC004_0007_u32.cast_signed(),
+                    )),
+                }),
+                ([area], "Odd") if area == "FCS0528" => Err(OpcError::Com {
+                    source: windows::core::Error::from_hresult(HRESULT(
+                        E_INVALIDARG_HRESULT.cast_signed(),
+                    )),
+                }),
+                ([area, branch], "PV") if area == "FCS0528" && branch == "Odd" => {
+                    Ok("FCS0528!Odd.PV".to_string())
+                }
+                _ => Err(OpcError::InvalidState("not an item".to_string())),
+            }
+        }
+
+        fn da2_name_has_children(&self, item_name: &str) -> OpcResult<bool> {
+            let position = self.position.lock().unwrap();
+            Ok(position.as_slice() == ["FCS0528"] && item_name == "Odd")
+        }
+
+        fn supports_da3_browse(&self) -> bool {
+            false
+        }
+
+        fn begin_da2_browse(
+            &self,
+            browse_type: u32,
+            _filter: Option<&str>,
+            _data_type: u16,
+            _access_rights: u32,
+        ) -> OpcResult<Box<dyn BrowseStringIterator>> {
+            let position = self.position.lock().unwrap().clone();
+            let values = if browse_type == OPC_BRANCH.0.cast_unsigned() {
+                match position.as_slice() {
+                    [] => vec!["FCS0528".to_string()],
+                    [area] if area == "FCS0528" => {
+                        vec![
+                            "\u{1}".to_string(),
+                            "Odd".to_string(),
+                            "LeafOnly".to_string(),
+                        ]
+                    }
+                    _ => Vec::new(),
+                }
+            } else if browse_type == OPC_LEAF.0.cast_unsigned() {
+                match position.as_slice() {
+                    [area] if area == "FCS0528" => {
+                        vec!["PV".to_string(), "LeafOnly".to_string()]
+                    }
+                    [area, branch] if area == "FCS0528" && branch == "Odd" => {
+                        vec!["PV".to_string()]
+                    }
+                    _ => Vec::new(),
+                }
+            } else {
+                Vec::new()
+            };
+            Ok(Box::new(values.into_iter().map(Ok)))
         }
 
         fn add_group(

@@ -195,7 +195,8 @@ by OPC DA. If that first call still returns `RPC_X_NULL_REF_POINTER` or
 `E_NOTIMPL` and the server exposes DA 2.x browsing, the session logs the
 compatibility failure and continues through DA 2.x. Access, transport,
 disconnect, timeout, and other COM failures remain visible and never trigger a
-fallback.
+fallback. After the first DA 3.0 root page succeeds, the session remains on DA
+3.0 so existing node and continuation tokens cannot be mixed with DA 2.x state.
 
 For large namespaces, `start_inventory` streams a bounded inventory without
 persisting browse-session or continuation tokens:
@@ -244,6 +245,8 @@ names that resolve to exact items remain selectable even when they are not
 navigable. Other COM and transport failures remain visible errors.
 Inventory uses the same first-root-page DA 3.0 negotiation as interactive
 browsing and reports DA 2.x as its source when compatibility fallback is used.
+Completion warnings are cumulative, so an entry limit or skipped branch does
+not erase the compatibility diagnostic.
 
 ## Architecture
 

@@ -205,7 +205,10 @@ pub fn run_inventory<C: ServerConnector>(
                 {
                     terminal.complete = false;
                     terminal.truncated = true;
-                    terminal.warning = Some("inventory entry limit reached".to_string());
+                    merge_warning(
+                        &mut terminal.warning,
+                        "inventory entry limit reached".to_string(),
+                    );
                     break;
                 }
             }
@@ -1138,6 +1141,47 @@ mod tests {
             Err(OpcError::Internal(message))
                 if message.contains("0x80070005") || message.contains("Access is denied")
         ));
+    }
+
+    #[test]
+    fn inventory_limit_preserves_da3_fallback_warning() {
+        let connector = Arc::new(SharedConnector {
+            server: Arc::new(Mutex::new(Some(Da3Server {
+                total: 0,
+                browse_calls: Arc::new(AtomicUsize::new(0)),
+                fail: false,
+                da3_hresult: Some(RPC_X_NULL_REF_POINTER_HRESULT),
+                supports_da2: true,
+                da2_items: vec!["Channel.Device.Tag".to_string()],
+            }))),
+        });
+        let (sender, mut receiver) = mpsc::channel(16);
+
+        run_inventory(
+            connector.as_ref(),
+            "test",
+            InventoryOptions {
+                batch_size: 100,
+                max_entries: Some(1),
+            },
+            &InventoryControl::new(),
+            &sender,
+        )
+        .unwrap();
+
+        let (entries, completed, error) = collect(&mut receiver);
+        assert_eq!(entries.len(), 1);
+        assert!(completed.is_some_and(|value| {
+            !value.complete
+                && value.truncated
+                && !value.capabilities.supports_da3
+                && value.warning.is_some_and(|warning| {
+                    warning.contains("0x800706F4")
+                        && warning.contains("continued through OPC DA 2.x")
+                        && warning.contains("inventory entry limit reached")
+                })
+        }));
+        assert!(error.is_none());
     }
 
     #[test]

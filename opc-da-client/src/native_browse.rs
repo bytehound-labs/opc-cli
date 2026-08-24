@@ -95,6 +95,7 @@ impl<S: ConnectedServer> BrowseSessions<S> {
                 server,
                 capabilities,
                 backend,
+                da3_root_succeeded: false,
                 nodes: HashMap::new(),
                 continuations: HashMap::new(),
                 last_used: Instant::now(),
@@ -177,9 +178,16 @@ impl<S: ConnectedServer> BrowseSessions<S> {
     ) -> OpcResult<BrowsePage> {
         match session.backend {
             BrowseBackend::Da3 => {
+                let can_fallback = parent.is_none() && !session.da3_root_succeeded;
                 match Self::browse_da3(session, parent, filter, max_elements, None) {
+                    Ok(page) => {
+                        if parent.is_none() {
+                            session.da3_root_succeeded = true;
+                        }
+                        Ok(page)
+                    }
                     Err(error)
-                        if parent.is_none()
+                        if can_fallback
                             && session.capabilities.supports_da2
                             && is_da3_browse_compatibility_error(&error) =>
                     {
@@ -573,6 +581,7 @@ struct BrowseSessionState<S: ConnectedServer> {
     server: S,
     capabilities: BrowseCapabilities,
     backend: BrowseBackend,
+    da3_root_succeeded: bool,
     nodes: HashMap<BrowseNodeToken, NodeState>,
     continuations: HashMap<BrowsePageToken, BrowseContinuation>,
     last_used: Instant,
@@ -1149,6 +1158,40 @@ mod tests {
             Err(OpcError::Com { source })
                 if source.code().0.cast_unsigned() == 0x8007_0005
         ));
+    }
+
+    #[test]
+    fn da3_root_compatibility_failure_after_success_does_not_change_backend() {
+        let mut server = MockServer::da3(vec![NativeBrowsePage {
+            elements: Vec::new(),
+            more_elements: false,
+            continuation: None,
+        }]);
+        server.namespace = BrowseNamespace::Flat;
+        server.da2 = true;
+        server.flat_items = Arc::new(vec!["must-not-be-returned".to_string()]);
+        let mut sessions = BrowseSessions::default();
+        let session = sessions.open(server).unwrap();
+
+        sessions
+            .page(&session, request(None, BrowseNodeFilter::All, 10, None))
+            .unwrap();
+        sessions
+            .sessions
+            .get_mut(&session)
+            .unwrap()
+            .server
+            .da3_error = Some(RPC_X_NULL_REF_POINTER_HRESULT);
+
+        assert!(matches!(
+            sessions.page(&session, request(None, BrowseNodeFilter::All, 10, None)),
+            Err(OpcError::Com { source })
+                if source.code().0.cast_unsigned() == RPC_X_NULL_REF_POINTER_HRESULT
+        ));
+        let state = sessions.sessions.get(&session).unwrap();
+        assert!(state.da3_root_succeeded);
+        assert!(state.capabilities.supports_da3);
+        assert!(matches!(state.backend, BrowseBackend::Da3));
     }
 
     #[test]

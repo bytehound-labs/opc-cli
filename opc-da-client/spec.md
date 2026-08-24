@@ -59,7 +59,7 @@ All methods use `#[async_trait]`.
 *   Native session, node, and page tokens are random UUIDs with string encode/parse support for transport adapters. Raw COM pointers and DA continuation strings never cross the public API boundary.
 *   Native browse sessions own their server connection, expire after five minutes of inactivity, and keep DA 2.x mutable browse positions isolated.
 *   DA 3.0 root and unused-filter strings are always represented by non-null NUL-terminated UTF-16 values. The initial continuation pointer itself is non-null and contains a null value.
-*   A first-root-page `RPC_X_NULL_REF_POINTER` or `E_NOTIMPL` response falls back to DA 2.x only when DA 2.x is available. Other COM failures do not change browse strategy.
+*   A first-root-page `RPC_X_NULL_REF_POINTER` or `E_NOTIMPL` response falls back to DA 2.x only when DA 2.x is available. Other COM failures do not change browse strategy, and a successful root page locks the session to DA 3.0.
 *   `start_inventory` requests no more than `batch_size` native entries per operation and never exposes
     browse-session or continuation tokens.
 *   Inventory cancellation is observed before the next bounded native operation; a cancelled or
@@ -259,6 +259,8 @@ required root/filter strings are non-null empty UTF-16 values, and a
 `RPC_X_NULL_REF_POINTER` or `E_NOTIMPL` response falls back to DA 2.x when that
 interface is available. This narrow compatibility fallback is logged; access,
 transport, disconnect, timeout, and unrelated COM failures remain terminal.
+After a root page succeeds, the session stays on DA 3.0 so later requests
+cannot invalidate existing DA 3.0 node or continuation tokens.
 When DA 3.0 browsing is unavailable or this compatibility fallback is selected, hierarchical DA 2.x
 sessions enumerate immediate `OPC_BRANCH` and `OPC_LEAF` children and resolve
 leaf names through `GetItemID`; flat sessions page `OPC_FLAT` results. The DA
@@ -268,7 +270,8 @@ both a branch and a leaf, it is emitted once as `BranchAndItem` with the exact
 
 `start_inventory` uses the same negotiation and returns capabilities with DA 3.0
 disabled when the effective inventory source is DA 2.x. Its completion warning
-records the compatibility HRESULT.
+records the compatibility HRESULT and is merged with later truncation or
+malformed-branch diagnostics.
 
 The compatibility `browse_tags` method retains recursive discovery for the TUI.
 Hierarchical namespaces do not use `OPC_FLAT`, because some servers return

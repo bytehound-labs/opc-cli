@@ -6,10 +6,10 @@
 | :--- | :--- |
 | **Package** | `bytehound-opc-da-client` |
 | **Rust library** | `opc_da_client` |
-| **Version** | `0.2.0` |
+| **Version** | `0.2.2` |
 | **Purpose** | Backend-agnostic Rust library for interacting with OPC DA (Data Access) servers |
 | **Spec** | [spec.md](file:///c:/Users/WSALIGAN/code/opc-cli/opc-da-client/spec.md) |
-| **Status** | ✅ 0.2.0 baseline (Crates.io) |
+| **Status** | ✅ 0.2.2 release candidate |
 
 The library provides an async, trait-based API that abstracts away the complexities of Windows COM/DCOM and the underlying OPC implementation. It follows a layered architecture: a **stable public API** (trait + data types) and **feature-gated backend implementations** that can be swapped without affecting consumer code.
 
@@ -39,6 +39,7 @@ opc-da-client/
     ├── lib.rs              # Crate root: module declarations, public re-exports
     ├── com_guard.rs        # Public RAII guard for caller-owned COM threads
     ├── provider.rs         # OpcProvider trait + public Rust-native data types
+    ├── inventory.rs        # Bounded cancellable namespace inventory traversal
     ├── native_browse.rs    # Bounded session/page state machine
     ├── helpers.rs          # COM utilities: friendly_com_hint, variant/quality/time converters
     ├── opc_da/             # Merged from vendor/opc_da (Phase 2)
@@ -119,7 +120,7 @@ The verification script ([verify.ps1](file:///c:/Users/WSALIGAN/code/opc-cli/scr
 ### Mock-Backend Integration Tests
 - **Location**: Co-located `#[cfg(test)] mod tests` in `com_worker.rs` and `native_browse.rs`.
 - **Mechanism**: In-process `MockGroup` / `MockServer` / `MockConnector` implementing `ConnectedGroup`, `ConnectedServer`, and `ServerConnector` traits.
-- **Coverage**: `read_tag_values` (happy, partial reject, all reject), `write_tag_value` (happy, add fail), `list_servers` (happy).
+- **Coverage**: `read_tag_values` (semantic/display intent, happy, partial reject, all reject), `write_tag_value` (happy, add fail), `list_servers` (happy).
 - **Browse Coverage**: DA 3.0 page mapping and continuation, DA 2.x immediate branches/leaves, exact item IDs, flat paging, isolated sessions, invalid/closed sessions, and the hierarchical branch-only `OPC_FLAT` regression.
 
 ### Doc Tests
@@ -214,7 +215,7 @@ graph TD
 OPC DA relies on Windows COM, which requires per-thread initialization and strict thread affinity for proxy pointers.
 The `OpcDaClient` handles this using a dedicated **Worker Thread** and **Connection Pooling**:
 1. **`ComWorker` Thread:** Initialized once via `ComWorker::start()`, it spawns a dedicated `std::thread` that calls `CoInitializeEx` in MTA mode. This thread stays alive for the lifetime of the client, exclusively owning all COM pointers.
-2. **Message Passing:** The async `OpcProvider` trait functions convert caller requests into `ComRequest` elements, sending them over a Tokio `mpsc` channel to the worker. Execution results are returned via `oneshot::Sender`.
+2. **Message Passing:** The async `OpcProvider` trait functions convert caller requests into `ComRequest` elements, sending them over a Tokio `mpsc` channel to the worker. Read requests carry an explicit semantic-or-display presentation intent: semantic reads preserve exact BSTR contents, while display reads add the TUI's intentional quotes. Execution results are returned via `oneshot::Sender`.
 3. **Connection Pooling:** Read, write, capability, and recursive browse operations share a cache (`HashMap<String, C::Server>`) of active server connections mapped by ProgID.
 4. **Resilience & Retry:** If a cached connection becomes stale or the remote server restarts (e.g. `RPC_S_SERVER_UNAVAILABLE`), the `dispatch_with_retry` logic transparently evicts the corrupted proxy, reconnects, and retries the operation.
 5. **Browse Session Isolation:** Native browse sessions own separate server connections on the worker. This prevents the mutable DA 2.x browse position of one session from affecting another session.

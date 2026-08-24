@@ -1,7 +1,8 @@
 use crate::opc_da::errors::{OpcError, OpcResult};
 use async_trait::async_trait;
 use std::sync::Arc;
-use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use tokio::sync::mpsc;
 use uuid::Uuid;
 
 #[cfg(feature = "test-support")]
@@ -9,7 +10,8 @@ use mockall::automock;
 
 /// A single tag's read result.
 ///
-/// Returned by [`OpcProvider::read_tag_values`].
+/// Returned by [`OpcProvider::read_tag_values`] and
+/// [`OpcProvider::read_tag_values_for_display`].
 ///
 /// # Examples
 ///
@@ -28,7 +30,11 @@ use mockall::automock;
 pub struct TagValue {
     /// The fully qualified tag identifier (e.g., `"Channel1.Device1.Tag1"`).
     pub tag_id: String,
-    /// The current value as a display string.
+    /// The current value as a string representation.
+    ///
+    /// [`OpcProvider::read_tag_values`] preserves `VT_BSTR` contents exactly.
+    /// [`OpcProvider::read_tag_values_for_display`] may add presentation quotes
+    /// around BSTR values.
     pub value: String,
     /// OPC quality indicator (e.g., `"Good"`, `"Bad"`, or `"Uncertain"`).
     pub quality: String,
@@ -181,6 +187,11 @@ impl BrowseNodeKind {
     pub fn has_children(self) -> bool {
         matches!(self, Self::Branch | Self::BranchAndItem)
     }
+
+    /// Returns whether the node identifies a selectable OPC item.
+    pub fn is_item(self) -> bool {
+        matches!(self, Self::Item | Self::BranchAndItem)
+    }
 }
 
 /// Node-kind filter for a one-level browse request.
@@ -227,6 +238,262 @@ pub struct BrowsePage {
     pub nodes: Vec<BrowseNode>,
     /// Opaque token for the next page, or `None` when enumeration is complete.
     pub continuation: Option<BrowsePageToken>,
+}
+
+/// Options controlling one bounded namespace inventory.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct InventoryOptions {
+    /// Maximum number of native entries requested per browse operation.
+    pub batch_size: u32,
+    /// Optional safety cap for a deliberately bounded inventory.
+    pub max_entries: Option<u64>,
+}
+
+impl Default for InventoryOptions {
+    fn default() -> Self {
+        Self {
+            batch_size: 100,
+            max_entries: None,
+        }
+    }
+}
+
+/// One selectable OPC DA item discovered during inventory.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InventoryEntry {
+    /// Local display name returned by the server.
+    pub display_name: String,
+    /// Exact ItemID returned by the server.
+    pub item_id: String,
+    /// Whether the item is also a browsable branch.
+    pub kind: BrowseNodeKind,
+    /// Stable display labels for the item's ancestors.
+    pub breadcrumbs: Vec<String>,
+}
+
+/// Progress emitted between bounded inventory operations.
+#[derive(Debug, Clone, PartialEq)]
+pub struct InventoryProgress {
+    pub branches_visited: u64,
+    pub entries_seen: u64,
+    pub unique_items: u64,
+    pub active_time_ms: u64,
+    pub paused_time_ms: u64,
+    pub items_per_second: f64,
+    pub estimated_remaining_ms: Option<u64>,
+}
+
+/// Terminal result for one inventory operation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InventoryCompleted {
+    pub complete: bool,
+    pub cancelled: bool,
+    pub truncated: bool,
+    pub warning: Option<String>,
+    pub capabilities: BrowseCapabilities,
+}
+
+/// Event emitted by [`InventoryStream`].
+#[derive(Debug, Clone, PartialEq)]
+pub enum InventoryEvent {
+    Entry(InventoryEntry),
+    Progress(InventoryProgress),
+    Completed(InventoryCompleted),
+}
+
+#[derive(Debug)]
+struct InventoryControlState {
+    cancelled: AtomicBool,
+    paused: AtomicBool,
+}
+
+/// Control handle for a running inventory.
+#[derive(Clone, Debug)]
+pub struct InventoryControl {
+    state: Arc<InventoryControlState>,
+}
+
+impl InventoryControl {
+    pub(crate) fn new() -> Self {
+        Self {
+            state: Arc::new(InventoryControlState {
+                cancelled: AtomicBool::new(false),
+                paused: AtomicBool::new(false),
+            }),
+        }
+    }
+
+    /// Request cancellation at the next bounded COM boundary.
+    pub fn cancel(&self) {
+        self.state.cancelled.store(true, Ordering::Release);
+    }
+
+    /// Pause before the next bounded COM operation.
+    pub fn pause(&self) {
+        self.state.paused.store(true, Ordering::Release);
+    }
+
+    /// Resume a paused inventory.
+    pub fn resume(&self) {
+        self.state.paused.store(false, Ordering::Release);
+    }
+
+    /// Return whether cancellation has been requested.
+    pub fn is_cancelled(&self) -> bool {
+        self.state.cancelled.load(Ordering::Acquire)
+    }
+
+    pub(crate) fn is_paused(&self) -> bool {
+        self.state.paused.load(Ordering::Acquire)
+    }
+}
+
+/// Cancellable stream of bounded inventory events.
+pub struct InventoryStream {
+    receiver: mpsc::Receiver<OpcResult<InventoryEvent>>,
+    control: InventoryControl,
+    worker: Option<std::thread::JoinHandle<()>>,
+}
+
+impl InventoryStream {
+    pub(crate) fn new(
+        receiver: mpsc::Receiver<OpcResult<InventoryEvent>>,
+        control: InventoryControl,
+        worker: std::thread::JoinHandle<()>,
+    ) -> Self {
+        Self {
+            receiver,
+            control,
+            worker: Some(worker),
+        }
+    }
+
+    /// Wait for the next inventory event.
+    ///
+    /// A failed inventory is delivered as `Some(Err(_))`, which is the
+    /// terminal event for the stream. A successful or cancelled inventory
+    /// ends with an [`InventoryEvent::Completed`] message.
+    pub async fn message(&mut self) -> Option<OpcResult<InventoryEvent>> {
+        self.receiver.recv().await
+    }
+
+    /// Return a control handle for this inventory.
+    pub fn control(&self) -> InventoryControl {
+        self.control.clone()
+    }
+
+    /// Request cancellation of this inventory.
+    pub fn cancel(&self) {
+        self.control.cancel();
+    }
+
+    /// Pause this inventory before its next bounded operation.
+    pub fn pause(&self) {
+        self.control.pause();
+    }
+
+    /// Resume this inventory.
+    pub fn resume(&self) {
+        self.control.resume();
+    }
+}
+
+impl Drop for InventoryStream {
+    fn drop(&mut self) {
+        // Close the receiver before joining so a worker blocked on a full
+        // event channel can observe the disconnect and finish.
+        self.receiver.close();
+        self.control.cancel();
+        if let Some(worker) = self.worker.take() {
+            let _ = worker.join();
+        }
+    }
+}
+
+#[cfg(test)]
+mod inventory_stream_tests {
+    use super::*;
+
+    #[test]
+    fn dropping_inventory_stream_cancels_and_joins_worker() {
+        let control = InventoryControl::new();
+        let worker_control = control.clone();
+        let finished = Arc::new(AtomicBool::new(false));
+        let worker_finished = Arc::clone(&finished);
+        let (_sender, receiver) = mpsc::channel(1);
+        let worker = std::thread::spawn(move || {
+            while !worker_control.is_cancelled() {
+                std::thread::yield_now();
+            }
+            worker_finished.store(true, Ordering::Release);
+        });
+
+        drop(InventoryStream::new(receiver, control, worker));
+        assert!(finished.load(Ordering::Acquire));
+    }
+}
+
+#[cfg(test)]
+mod read_display_fallback_tests {
+    use super::*;
+
+    struct FallbackProvider;
+
+    #[async_trait]
+    impl OpcProvider for FallbackProvider {
+        async fn list_servers(&self, _host: &str) -> OpcResult<Vec<String>> {
+            Ok(Vec::new())
+        }
+
+        async fn browse_tags(
+            &self,
+            _server: &str,
+            _max_tags: usize,
+            _progress: Arc<AtomicUsize>,
+            _tags_sink: Arc<std::sync::Mutex<Vec<String>>>,
+        ) -> OpcResult<Vec<String>> {
+            Ok(Vec::new())
+        }
+
+        async fn read_tag_values(
+            &self,
+            _server: &str,
+            tag_ids: Vec<String>,
+        ) -> OpcResult<Vec<TagValue>> {
+            Ok(tag_ids
+                .into_iter()
+                .map(|tag_id| TagValue {
+                    tag_id,
+                    value: "AUT".to_string(),
+                    quality: "Good".to_string(),
+                    timestamp: String::new(),
+                })
+                .collect())
+        }
+
+        async fn write_tag_value(
+            &self,
+            _server: &str,
+            tag_id: &str,
+            _value: OpcValue,
+        ) -> OpcResult<WriteResult> {
+            Ok(WriteResult {
+                tag_id: tag_id.to_string(),
+                success: true,
+                error: None,
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn display_read_defaults_to_semantic_read() {
+        let values = FallbackProvider
+            .read_tag_values_for_display("Server", vec!["Tag".to_string()])
+            .await
+            .unwrap();
+
+        assert_eq!(values[0].value, "AUT");
+    }
 }
 
 /// Async trait for OPC DA operations.
@@ -307,13 +574,49 @@ pub trait OpcProvider: Send + Sync {
         ))
     }
 
+    /// Start a cancellable, bounded namespace inventory on a separate
+    /// connection from foreground operations.
+    ///
+    /// The returned stream never exposes interactive browse-session tokens;
+    /// all traversal state remains private to the inventory worker.
+    async fn start_inventory(
+        &self,
+        server: &str,
+        options: InventoryOptions,
+    ) -> OpcResult<InventoryStream> {
+        let _ = (server, options);
+        Err(OpcError::NotImplemented(
+            "Namespace inventory is not implemented by this provider".to_string(),
+        ))
+    }
+
     /// Read current values for the given tag IDs.
+    ///
+    /// `VT_BSTR` values preserve their exact COM contents. No quote characters
+    /// are added or removed, so this method is suitable for machine consumers.
     ///
     /// # Errors
     /// Returns `Err` if the server connection fails, no items can be added
     /// to the OPC group, or the synchronous read operation fails.
     async fn read_tag_values(&self, server: &str, tag_ids: Vec<String>)
     -> OpcResult<Vec<TagValue>>;
+
+    /// Read current values formatted for human-readable display.
+    ///
+    /// The native provider wraps `VT_BSTR` contents in quote characters while
+    /// leaving all other value formatting unchanged. The default implementation
+    /// delegates to [`Self::read_tag_values`] so third-party providers remain
+    /// source-compatible.
+    ///
+    /// # Errors
+    /// Returns the same errors as [`Self::read_tag_values`].
+    async fn read_tag_values_for_display(
+        &self,
+        server: &str,
+        tag_ids: Vec<String>,
+    ) -> OpcResult<Vec<TagValue>> {
+        self.read_tag_values(server, tag_ids).await
+    }
 
     /// Write a value to a single OPC DA tag.
     ///

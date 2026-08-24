@@ -34,6 +34,8 @@ mod com_guard;
 pub use com_guard::ComGuard;
 mod helpers;
 #[cfg(feature = "opc-da-backend")]
+mod inventory;
+#[cfg(feature = "opc-da-backend")]
 mod native_browse;
 mod provider;
 
@@ -54,7 +56,8 @@ pub use helpers::{format_hresult, friendly_com_hint, log_opc_error};
 pub use provider::{
     BrowseCapabilities, BrowseNamespace, BrowseNode, BrowseNodeFilter, BrowseNodeKind,
     BrowseNodeToken, BrowsePage, BrowsePageRequest, BrowsePageToken, BrowseSessionToken,
-    OpcProvider, OpcValue, TagValue, WriteResult,
+    InventoryCompleted, InventoryControl, InventoryEntry, InventoryEvent, InventoryOptions,
+    InventoryProgress, InventoryStream, OpcProvider, OpcValue, TagValue, WriteResult,
 };
 
 #[cfg(feature = "opc-da-backend")]

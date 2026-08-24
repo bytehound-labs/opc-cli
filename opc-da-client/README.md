@@ -13,6 +13,7 @@ Backend-agnostic OPC DA client library for Rust — async, trait-based, with tra
 - **Transparent COM Management**: Handles COM initialization (`CoInitializeEx`) and apartment thread affinity automatically in the background.
 - **Read & Write Support**: Read tag values and write typed values (`Int`, `Float`, `Bool`, `String`) to OPC tags.
 - **Scalable Native Browsing**: Open isolated sessions and request bounded, one-level pages through OPC DA 3.0 with an automatic OPC DA 2.x fallback.
+- **Bounded Namespace Inventory**: Stream exact ItemIDs with breadcrumb labels through a cancellable, bounded DA 3.0/2.x traversal.
 - **Windows COM/DCOM Support**: Native OPC DA backend via `windows-rs` — no external OPC crates needed.
 - **Robust Error Handling**: Leverages `thiserror` for the `OpcError` domain type and `friendly_com_hint()` for human-readable HRESULT explanations.
 - **Test-Friendly**: Built-in `MockOpcProvider` via the `test-support` feature.
@@ -23,7 +24,7 @@ Add this to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-opc-da-client = { package = "bytehound-opc-da-client", version = "0.2.0" }
+opc-da-client = { package = "bytehound-opc-da-client", version = "0.2.2" }
 ```
 
 ## Prerequisites
@@ -80,6 +81,12 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 ```
+
+`read_tag_values` is the machine-facing read API. For `VT_BSTR` values, `TagValue::value`
+contains the exact COM string contents: no quote characters are added or removed. Consumers
+that intentionally want the historical quoted string presentation can call
+`read_tag_values_for_display`; its default trait implementation falls back to
+`read_tag_values` for third-party providers.
 
 ### Writing a Value
 
@@ -179,6 +186,47 @@ encode tokens with `to_string()` and restore them with each token type's
 The DA 2.x fallback merges a same-named branch and leaf into one
 `BrowseNodeKind::BranchAndItem` node and resolves its exact item ID through
 `GetItemID`.
+
+For large namespaces, `start_inventory` streams a bounded inventory without
+persisting browse-session or continuation tokens:
+
+```rust,no_run
+use opc_da_client::{
+    InventoryEvent, InventoryOptions, OpcDaClient, OpcProvider,
+};
+
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
+    let client = OpcDaClient::default();
+    let mut inventory = client
+        .start_inventory(
+            "Matrikon.OPC.Simulation.1",
+            InventoryOptions {
+                batch_size: 100,
+                max_entries: None,
+            },
+        )
+        .await?;
+
+    while let Some(event) = inventory.message().await {
+        match event? {
+            InventoryEvent::Entry(entry) => println!("{}: {}", entry.display_name, entry.item_id),
+            InventoryEvent::Progress(progress) => {
+                println!("{} items discovered", progress.unique_items);
+            }
+            InventoryEvent::Completed(result) => {
+                println!("complete: {}", result.complete);
+                break;
+            }
+        }
+    }
+    Ok(())
+}
+```
+
+The returned `InventoryStream` exposes pause, resume, and cancellation controls.
+Each native browse call is bounded by `InventoryOptions::batch_size`, and
+`max_entries` can cap a deliberately limited inventory.
 
 ## Architecture
 

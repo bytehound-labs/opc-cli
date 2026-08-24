@@ -50,9 +50,28 @@ pub fn guid_to_progid(guid: &windows::core::GUID) -> OpcResult<String> {
     }
 }
 
-/// Convert OPC DA VARIANT to a displayable string.
+/// Convert an OPC DA `VARIANT` to its semantic string representation.
+///
+/// `VT_BSTR` values are returned exactly as stored by COM, without adding or
+/// removing quote characters. Other variant types retain their established
+/// human-readable formatting.
 #[allow(clippy::too_many_lines)]
 pub fn variant_to_string(variant: &VARIANT) -> String {
+    variant_to_string_with_bstr_quotes(variant, false)
+}
+
+/// Convert an OPC DA `VARIANT` to a display string.
+///
+/// This preserves the historical TUI representation by wrapping `VT_BSTR`
+/// contents in quote characters. Quote characters already present in the BSTR
+/// remain part of the displayed contents.
+#[allow(clippy::too_many_lines)]
+pub fn variant_to_display_string(variant: &VARIANT) -> String {
+    variant_to_string_with_bstr_quotes(variant, true)
+}
+
+#[allow(clippy::too_many_lines)]
+fn variant_to_string_with_bstr_quotes(variant: &VARIANT, quote_bstr: bool) -> String {
     // SAFETY: Accessing the VARIANT union fields. Caller guarantees VARIANT was produced by COM.
     // SAFETY: The `vt` discriminant correctly identifies which union arm is active.
     unsafe {
@@ -86,7 +105,10 @@ pub fn variant_to_string(variant: &VARIANT) -> String {
                             std::slice::from_raw_parts(data_ptr as *const VARIANT, count as usize);
                         for i in 0..display_count {
                             #[allow(clippy::cast_sign_loss)]
-                            elements.push(variant_to_string(&vars[i as usize]));
+                            elements.push(variant_to_string_with_bstr_quotes(
+                                &vars[i as usize],
+                                quote_bstr,
+                            ));
                         }
                         let _ = SafeArrayUnaccessData(parray);
                     }
@@ -107,7 +129,8 @@ pub fn variant_to_string(variant: &VARIANT) -> String {
 
                             std::ptr::copy_nonoverlapping(src_ptr, dst_ptr, elem_size.min(16));
 
-                            elements.push(variant_to_string(&temp_var));
+                            elements
+                                .push(variant_to_string_with_bstr_quotes(&temp_var, quote_bstr));
                         }
                         let _ = SafeArrayUnaccessData(parray);
                     }
@@ -147,10 +170,10 @@ pub fn variant_to_string(variant: &VARIANT) -> String {
             8 => {
                 // VT_BSTR - string
                 let bstr = &variant.Anonymous.Anonymous.Anonymous.bstrVal;
-                if bstr.is_empty() {
-                    "\"\"".to_string()
-                } else {
+                if quote_bstr {
                     format!("\"{}\"", **bstr)
+                } else {
+                    bstr.to_string()
                 }
             }
             10 => {
@@ -488,7 +511,35 @@ mod tests {
 
         // String roundtrip
         let v = opc_value_to_variant(&OpcValue::String("world".into()));
-        assert_eq!(variant_to_string(&v), "\"world\"");
+        assert_eq!(variant_to_string(&v), "world");
+        assert_eq!(variant_to_display_string(&v), "\"world\"");
+    }
+
+    #[test]
+    fn test_bstr_semantic_and_display_formatting() {
+        fn raw_bstr_variant(contents: &str) -> VARIANT {
+            let mut variant = VARIANT::default();
+            // SAFETY: The VT_BSTR discriminant and matching union field are set together.
+            unsafe {
+                (*variant.Anonymous.Anonymous).vt = VT_BSTR;
+                (*variant.Anonymous.Anonymous).Anonymous.bstrVal =
+                    std::mem::ManuallyDrop::new(BSTR::from(contents));
+            }
+            variant
+        }
+
+        let cases = [
+            ("AUT", "AUT", "\"AUT\""),
+            ("", "", "\"\""),
+            ("A\"B", "A\"B", "\"A\"B\""),
+            ("\"AUT\"", "\"AUT\"", "\"\"AUT\"\""),
+        ];
+
+        for (contents, semantic, display) in cases {
+            let variant = raw_bstr_variant(contents);
+            assert_eq!(variant_to_string(&variant), semantic);
+            assert_eq!(variant_to_display_string(&variant), display);
+        }
     }
 
     #[test]

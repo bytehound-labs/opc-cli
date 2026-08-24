@@ -486,7 +486,7 @@ impl App {
         tokio::spawn(async move {
             let result = tokio::time::timeout(
                 std::time::Duration::from_secs(OPC_TIMEOUT_SECS),
-                provider.read_tag_values(&server, selected_tag_ids),
+                provider.read_tag_values_for_display(&server, selected_tag_ids),
             )
             .await;
 
@@ -725,7 +725,7 @@ impl App {
         tokio::spawn(async move {
             let result = tokio::time::timeout(
                 std::time::Duration::from_secs(OPC_TIMEOUT_SECS),
-                provider.read_tag_values(&server_name, tag_ids),
+                provider.read_tag_values_for_display(&server_name, tag_ids),
             )
             .await;
 
@@ -1305,7 +1305,7 @@ mod tests {
     async fn test_start_read_values_success() {
         use mockall::predicate::eq;
         let mut mock = MockOpcProvider::new();
-        mock.expect_read_tag_values()
+        mock.expect_read_tag_values_for_display()
             .with(eq("TestServer"), eq(vec!["Tag1".to_string()]))
             .returning(|_, _| Ok(vec![]));
 
@@ -1320,6 +1320,30 @@ mod tests {
         assert_eq!(app.current_screen, CurrentScreen::Loading);
         assert!(app.read_result_rx.is_some());
         assert_eq!(app.refresh_server, Some("TestServer".into()));
+
+        let result = app.read_result_rx.take().unwrap().await.unwrap();
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_auto_refresh_uses_display_read() {
+        use mockall::predicate::eq;
+        let mut mock = MockOpcProvider::new();
+        mock.expect_read_tag_values_for_display()
+            .with(eq("TestServer"), eq(vec!["Tag1".to_string()]))
+            .returning(|_, _| Ok(vec![]));
+
+        let mut app = App::new(Arc::new(mock));
+        app.current_screen = CurrentScreen::TagValues;
+        app.refresh_server = Some("TestServer".into());
+        app.refresh_tag_ids = vec!["Tag1".into()];
+        app.last_read_time =
+            std::time::Instant::now().checked_sub(std::time::Duration::from_secs(2));
+
+        app.maybe_auto_refresh();
+
+        let result = app.read_result_rx.take().unwrap().await.unwrap();
+        assert!(result.is_ok());
     }
 
     #[test]

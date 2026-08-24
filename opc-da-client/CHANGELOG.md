@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- report inventory worker panics and failures as terminal stream errors
+- reject malformed native enumerator counts before indexing fixed-size buffers
+
 ## [0.2.3] - 2026-08-24
 
 ### Fixed

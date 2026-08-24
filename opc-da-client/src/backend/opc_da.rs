@@ -6,6 +6,7 @@ use crate::provider::{
     InventoryOptions, InventoryStream, OpcProvider, OpcValue, TagValue, WriteResult,
 };
 use async_trait::async_trait;
+use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use tokio::sync::mpsc;
@@ -182,7 +183,7 @@ impl<C: ServerConnector + 'static> OpcProvider for OpcDaClient<C> {
             .name("opc-da-inventory".to_string())
             .spawn(move || {
                 let _active_guard = InventoryActiveGuard(active);
-                let result = (|| {
+                let result = catch_unwind(AssertUnwindSafe(|| {
                     let _guard = crate::ComGuard::new().map_err(|error| {
                         crate::opc_da::errors::OpcError::Internal(error.to_string())
                     })?;
@@ -193,9 +194,35 @@ impl<C: ServerConnector + 'static> OpcProvider for OpcDaClient<C> {
                         &worker_control,
                         &sender,
                     )
-                })();
-                if let Err(error) = result {
-                    let _ = sender.blocking_send(Err(error));
+                }));
+                match result {
+                    Ok(Ok(())) => {}
+                    Ok(Err(error)) => {
+                        tracing::error!(server = %server, error = %error, "OPC namespace inventory failed");
+                        if sender.blocking_send(Err(error)).is_err() {
+                            tracing::debug!(
+                                server = %server,
+                                "OPC namespace inventory receiver was closed before failure could be delivered"
+                            );
+                        }
+                    }
+                    Err(payload) => {
+                        let payload_type = panic_payload_type(&*payload);
+                        tracing::error!(
+                            server = %server,
+                            payload_type,
+                            "OPC namespace inventory worker panicked"
+                        );
+                        let error = crate::opc_da::errors::OpcError::Internal(
+                            "OPC namespace inventory worker panicked".to_string(),
+                        );
+                        if sender.blocking_send(Err(error)).is_err() {
+                            tracing::debug!(
+                                server = %server,
+                                "OPC namespace inventory receiver was closed before panic could be delivered"
+                            );
+                        }
+                    }
                 }
             });
 
@@ -246,5 +273,15 @@ impl<C: ServerConnector + 'static> OpcProvider for OpcDaClient<C> {
                 reply,
             })
             .await
+    }
+}
+
+fn panic_payload_type(payload: &(dyn std::any::Any + Send)) -> &'static str {
+    if payload.is::<&'static str>() {
+        "&str"
+    } else if payload.is::<String>() {
+        "String"
+    } else {
+        "other"
     }
 }

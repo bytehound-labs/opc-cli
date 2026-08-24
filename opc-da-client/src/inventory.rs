@@ -8,7 +8,9 @@ use crate::bindings::da::{
     OPC_BRANCH, OPC_BROWSE_DOWN, OPC_BROWSE_UP, OPC_FLAT, OPC_LEAF, OPC_NS_FLAT,
 };
 use crate::native_browse::capabilities_for_server;
-use crate::opc_da::errors::{OpcError, OpcResult, contextual_browse_error};
+use crate::opc_da::errors::{
+    OpcError, OpcResult, com_hresult, contextual_browse_error, is_da3_browse_compatibility_error,
+};
 use crate::provider::{
     BrowseCapabilities, BrowseNodeFilter, BrowseNodeKind, InventoryCompleted, InventoryControl,
     InventoryEntry, InventoryEvent, InventoryOptions, InventoryProgress,
@@ -119,16 +121,43 @@ pub fn run_inventory<C: ServerConnector>(
             branches_visited = branches_visited.saturating_add(1);
         }
         let call_started = Instant::now();
-        let page = match next_page(
+        let page_result = next_page(
             &connected,
             &mut work,
             options.batch_size,
             &mut current_da2_path,
             &mut skipped_invalid_branches,
             &mut first_skipped_invalid_branch,
-        ) {
+        );
+        active_time += call_started.elapsed();
+        let page = match page_result {
             Ok(page) => page,
             Err(error) => {
+                if is_initial_da3_root(&work)
+                    && terminal.capabilities.supports_da2
+                    && is_da3_browse_compatibility_error(&error)
+                {
+                    let hresult = com_hresult(&error)
+                        .map_or_else(|| "N/A".to_string(), |value| format!("0x{value:08X}"));
+                    tracing::warn!(
+                        hresult = %hresult,
+                        error = %error,
+                        "OPC DA 3.0 root inventory is incompatible; falling back to OPC DA 2.x"
+                    );
+                    merge_warning(
+                        &mut terminal.warning,
+                        format!(
+                            "OPC DA 3.0 root browse returned compatibility HRESULT {hresult}; \
+                             inventory continued through OPC DA 2.x"
+                        ),
+                    );
+                    terminal.capabilities.supports_da3 = false;
+                    branches_visited = branches_visited.saturating_sub(1);
+                    queue.clear();
+                    queue.push_back(initial_work(terminal.capabilities));
+                    current_da2_path.clear();
+                    continue;
+                }
                 let _ = send_event(
                     sender,
                     InventoryEvent::Progress(progress(
@@ -142,7 +171,6 @@ pub fn run_inventory<C: ServerConnector>(
                 return Err(error);
             }
         };
-        active_time += call_started.elapsed();
         entries_seen = entries_seen.saturating_add(page.nodes.len() as u64);
 
         for node in page.nodes {
@@ -238,10 +266,7 @@ pub fn run_inventory<C: ServerConnector>(
                 .as_deref()
                 .unwrap_or("<unknown>")
         );
-        terminal.warning = Some(match terminal.warning.take() {
-            Some(existing) => format!("{existing}; {warning}"),
-            None => warning,
-        });
+        merge_warning(&mut terminal.warning, warning);
     }
     let _ = send_event(sender, InventoryEvent::Completed(terminal));
     Ok(())
@@ -261,6 +286,22 @@ fn initial_work(capabilities: BrowseCapabilities) -> BranchWork {
     }
 }
 
+fn is_initial_da3_root(work: &BranchWork) -> bool {
+    matches!(work.location, BranchLocation::Da3(None))
+        && work.da3_continuation.is_none()
+        && work.breadcrumbs.is_empty()
+}
+
+fn merge_warning(existing: &mut Option<String>, warning: String) {
+    match existing {
+        Some(existing) => {
+            existing.push_str("; ");
+            existing.push_str(&warning);
+        }
+        None => *existing = Some(warning),
+    }
+}
+
 fn next_page<S: ConnectedServer>(
     server: &S,
     work: &mut BranchWork,
@@ -271,6 +312,7 @@ fn next_page<S: ConnectedServer>(
 ) -> OpcResult<InventoryPage> {
     match &work.location {
         BranchLocation::Da3(item_id) => {
+            let is_root = item_id.is_none() && work.breadcrumbs.is_empty();
             let page = server
                 .browse_da3(
                     item_id.as_deref(),
@@ -279,12 +321,16 @@ fn next_page<S: ConnectedServer>(
                     BrowseNodeFilter::All,
                 )
                 .map_err(|error| {
-                    contextual_browse_error(
-                        error,
-                        "browse_da3",
-                        &work.breadcrumbs,
-                        item_id.as_deref(),
-                    )
+                    if is_root && is_da3_browse_compatibility_error(&error) {
+                        error
+                    } else {
+                        contextual_browse_error(
+                            error,
+                            "browse_da3",
+                            &work.breadcrumbs,
+                            item_id.as_deref(),
+                        )
+                    }
                 })?;
             let nodes = page
                 .elements
@@ -717,7 +763,7 @@ mod tests {
     use crate::bindings::da::{
         OPC_NS_HIERARCHIAL, tagOPCDATASOURCE, tagOPCITEMDEF, tagOPCITEMRESULT, tagOPCITEMSTATE,
     };
-    use crate::opc_da::errors::E_INVALIDARG_HRESULT;
+    use crate::opc_da::errors::{E_INVALIDARG_HRESULT, RPC_X_NULL_REF_POINTER_HRESULT};
     use crate::opc_da::typedefs::{GroupHandle, ItemHandle};
     use std::sync::Arc;
     use std::sync::Mutex;
@@ -756,6 +802,9 @@ mod tests {
         total: usize,
         browse_calls: Arc<AtomicUsize>,
         fail: bool,
+        da3_hresult: Option<u32>,
+        supports_da2: bool,
+        da2_items: Vec<String>,
     }
 
     impl ConnectedServer for Da3Server {
@@ -784,11 +833,26 @@ mod tests {
         }
 
         fn supports_da2_browse(&self) -> bool {
-            false
+            self.supports_da2
         }
 
         fn supports_da3_browse(&self) -> bool {
             true
+        }
+
+        fn begin_da2_browse(
+            &self,
+            browse_type: u32,
+            _filter: Option<&str>,
+            _data_type: u16,
+            _access_rights: u32,
+        ) -> OpcResult<Box<dyn BrowseStringIterator>> {
+            if browse_type != OPC_FLAT.0.cast_unsigned() {
+                return Err(OpcError::InvalidState(
+                    "fallback test expected a flat DA2 browse".to_string(),
+                ));
+            }
+            Ok(Box::new(self.da2_items.clone().into_iter().map(Ok)))
         }
 
         fn browse_da3(
@@ -799,6 +863,11 @@ mod tests {
             _filter: BrowseNodeFilter,
         ) -> OpcResult<crate::backend::connector::NativeBrowsePage> {
             self.browse_calls.fetch_add(1, Ordering::Relaxed);
+            if let Some(hresult) = self.da3_hresult {
+                return Err(OpcError::Com {
+                    source: windows::core::Error::from_hresult(HRESULT(hresult.cast_signed())),
+                });
+            }
             if self.fail {
                 return Err(OpcError::Internal("synthetic browse failure".to_string()));
             }
@@ -892,6 +961,9 @@ mod tests {
                 total: 100_001,
                 browse_calls: Arc::new(AtomicUsize::new(0)),
                 fail: false,
+                da3_hresult: None,
+                supports_da2: false,
+                da2_items: Vec::new(),
             }))),
         });
         let (sender, mut receiver) = mpsc::channel(100_200);
@@ -920,6 +992,9 @@ mod tests {
                 total: 1,
                 browse_calls: Arc::clone(&calls),
                 fail: false,
+                da3_hresult: None,
+                supports_da2: false,
+                da2_items: Vec::new(),
             }))),
         });
         let (sender, mut receiver) = mpsc::channel(8);
@@ -948,6 +1023,9 @@ mod tests {
                 total: 10,
                 browse_calls: Arc::new(AtomicUsize::new(0)),
                 fail: false,
+                da3_hresult: None,
+                supports_da2: false,
+                da2_items: Vec::new(),
             }))),
         });
         let control = InventoryControl::new();
@@ -974,6 +1052,9 @@ mod tests {
                 total: 1,
                 browse_calls: Arc::new(AtomicUsize::new(0)),
                 fail: true,
+                da3_hresult: None,
+                supports_da2: false,
+                da2_items: Vec::new(),
             }))),
         });
         let (sender, mut receiver) = mpsc::channel(8);
@@ -991,6 +1072,71 @@ mod tests {
         assert!(matches!(
             receiver.try_recv(),
             Ok(Ok(InventoryEvent::Progress(_)))
+        ));
+    }
+
+    #[test]
+    fn da3_root_compatibility_failure_falls_back_to_da2_inventory() {
+        let connector = Arc::new(SharedConnector {
+            server: Arc::new(Mutex::new(Some(Da3Server {
+                total: 0,
+                browse_calls: Arc::new(AtomicUsize::new(0)),
+                fail: false,
+                da3_hresult: Some(RPC_X_NULL_REF_POINTER_HRESULT),
+                supports_da2: true,
+                da2_items: vec!["Channel.Device.Tag".to_string()],
+            }))),
+        });
+        let (sender, mut receiver) = mpsc::channel(16);
+
+        run_inventory(
+            connector.as_ref(),
+            "test",
+            InventoryOptions::default(),
+            &InventoryControl::new(),
+            &sender,
+        )
+        .unwrap();
+
+        let (entries, completed, error) = collect(&mut receiver);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].item_id, "Channel.Device.Tag");
+        assert!(completed.is_some_and(|value| {
+            value.complete
+                && !value.capabilities.supports_da3
+                && value.capabilities.supports_da2
+                && value.warning.is_some_and(|warning| {
+                    warning.contains("0x800706F4")
+                        && warning.contains("continued through OPC DA 2.x")
+                })
+        }));
+        assert!(error.is_none());
+    }
+
+    #[test]
+    fn da3_root_operational_failure_does_not_fall_back_to_da2_inventory() {
+        let connector = Arc::new(SharedConnector {
+            server: Arc::new(Mutex::new(Some(Da3Server {
+                total: 0,
+                browse_calls: Arc::new(AtomicUsize::new(0)),
+                fail: false,
+                da3_hresult: Some(0x8007_0005),
+                supports_da2: true,
+                da2_items: vec!["must-not-be-returned".to_string()],
+            }))),
+        });
+        let (sender, _receiver) = mpsc::channel(16);
+
+        assert!(matches!(
+            run_inventory(
+                connector.as_ref(),
+                "test",
+                InventoryOptions::default(),
+                &InventoryControl::new(),
+                &sender,
+            ),
+            Err(OpcError::Internal(message))
+                if message.contains("0x80070005") || message.contains("Access is denied")
         ));
     }
 

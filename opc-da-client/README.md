@@ -12,7 +12,7 @@ Backend-agnostic OPC DA client library for Rust — async, trait-based, with tra
 - **Trait-Based Abstraction**: The `OpcProvider` trait allows for easy mocking and backend swapping.
 - **Transparent COM Management**: Handles COM initialization (`CoInitializeEx`) and apartment thread affinity automatically in the background.
 - **Read & Write Support**: Read tag values and write typed values (`Int`, `Float`, `Bool`, `String`) to OPC tags.
-- **Scalable Native Browsing**: Open isolated sessions and request bounded, one-level pages through OPC DA 3.0 with an automatic OPC DA 2.x fallback.
+- **Scalable Native Browsing**: Open isolated sessions and request bounded, one-level pages through OPC DA 3.0, with a narrowly negotiated OPC DA 2.x compatibility fallback.
 - **Bounded Namespace Inventory**: Stream exact ItemIDs with breadcrumb labels through a cancellable, bounded DA 3.0/2.x traversal.
 - **Failure-safe Inventory Worker**: Converts worker panics and inventory errors into terminal stream errors instead of silently ending the stream.
 - **Defensive COM Iterators**: Rejects native enumerator counts that exceed the fixed cache capacity before indexing the returned buffer.
@@ -26,7 +26,7 @@ Add this to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-opc-da-client = { package = "bytehound-opc-da-client", version = "0.2.4" }
+opc-da-client = { package = "bytehound-opc-da-client", version = "0.2.5" }
 ```
 
 ## Prerequisites
@@ -189,6 +189,14 @@ The DA 2.x fallback merges a same-named branch and leaf into one
 `BrowseNodeKind::BranchAndItem` node and resolves its exact item ID through
 `GetItemID`.
 
+The first root page is also the DA 3.0 compatibility check. Required root and
+unused-filter arguments are sent as non-null empty UTF-16 strings, as specified
+by OPC DA. If that first call still returns `RPC_X_NULL_REF_POINTER` or
+`E_NOTIMPL` and the server exposes DA 2.x browsing, the session logs the
+compatibility failure and continues through DA 2.x. Access, transport,
+disconnect, timeout, and other COM failures remain visible and never trigger a
+fallback.
+
 For large namespaces, `start_inventory` streams a bounded inventory without
 persisting browse-session or continuation tokens:
 
@@ -234,6 +242,8 @@ a bounded native navigation probe. Branch-only names rejected with
 `E_INVALIDARG` are skipped and reported in the inventory completion warning;
 names that resolve to exact items remain selectable even when they are not
 navigable. Other COM and transport failures remain visible errors.
+Inventory uses the same first-root-page DA 3.0 negotiation as interactive
+browsing and reports DA 2.x as its source when compatibility fallback is used.
 
 ## Architecture
 

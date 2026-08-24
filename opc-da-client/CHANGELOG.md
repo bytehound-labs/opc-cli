@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.6] - 2026-08-24
+
+### Fixed
+
+- lock an interactive browse session to DA 3.0 after its first successful root
+  page so later compatibility errors cannot invalidate existing DA 3.0 node or
+  continuation tokens
+- retain the DA 3.0 compatibility diagnostic when a fallback inventory also
+  reaches its configured entry limit
+
 ## [0.2.5] - 2026-08-24
 
 ### Fixed

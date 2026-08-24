@@ -236,7 +236,7 @@ The library exposes two browse surfaces:
    - `browse_capabilities`, `open_browse_session`, `browse_page`, and `close_browse_session` expose bounded one-level enumeration.
    - DA 3.0 servers use native `IOPCBrowse::Browse`, including branch/item/all filters and private continuation strings.
    - DA 3.0 root and unused-filter arguments are non-null empty UTF-16 strings. The initial continuation uses a non-null outer pointer whose value is null, and a zero property count retains the generated binding's valid reference pointer.
-   - The first real DA 3.0 root page negotiates usability without consuming a separate continuation. `RPC_X_NULL_REF_POINTER` and `E_NOTIMPL` fall back to DA 2.x only when that interface is available; other COM failures remain terminal.
+   - The first real DA 3.0 root page negotiates usability without consuming a separate continuation. `RPC_X_NULL_REF_POINTER` and `E_NOTIMPL` fall back to DA 2.x only when that interface is available; other COM failures remain terminal. A successful root page locks the session to DA 3.0 so later errors cannot invalidate previously issued node or continuation tokens.
    - DA 2.x hierarchical servers enumerate only immediate `OPC_BRANCH` and/or `OPC_LEAF` children and resolve leaves with exact `GetItemID` values.
    - A DA 2.x browse name present as both a branch and a leaf is emitted once as `BranchAndItem`, with its exact `GetItemID` value.
    - DA 2.x flat servers page `OPC_FLAT` results without recursive traversal.
@@ -248,7 +248,7 @@ The library exposes two browse surfaces:
    - `progress` (`Arc<AtomicUsize>`) reports discovered tag count in real-time.
    - Native pages are capped at 1,000 nodes, sessions expire after five minutes of inactivity, and per-session node/page token counts are bounded.
    - Closing or expiring a session drops its dedicated connection and continuation enumerators on the COM worker. A cancelled open/page request avoids or closes the associated session.
-   - Inventory shares the same DA 3.0 root negotiation and records DA 2.x as the effective source when compatibility fallback occurs.
+   - Inventory shares the same DA 3.0 root negotiation and records DA 2.x as the effective source when compatibility fallback occurs. Terminal warnings are merged so later truncation or malformed-branch diagnostics do not replace the fallback warning.
 
 ---
 

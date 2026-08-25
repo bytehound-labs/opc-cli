@@ -1537,7 +1537,9 @@ mod tests {
         });
 
         let deadline = Instant::now() + Duration::from_secs(1);
-        while calls.load(Ordering::Acquire) < 1 {
+        // The first call is the DA3 capability probe; wait for the first
+        // inventory slice before changing the batch size.
+        while calls.load(Ordering::Acquire) < 2 {
             assert!(Instant::now() < deadline);
             std::thread::yield_now();
         }

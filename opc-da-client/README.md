@@ -207,8 +207,9 @@ persisting browse-session or continuation tokens:
 
 ```rust,no_run
 use opc_da_client::{
-    InventoryEvent, InventoryOptions, OpcDaClient, OpcProvider,
+    InventoryEvent, InventoryOptions, InventoryPacing, OpcDaClient, OpcProvider,
 };
+use std::time::Duration;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -222,10 +223,16 @@ async fn main() -> anyhow::Result<()> {
             },
         )
         .await?;
+    inventory.set_pacing(InventoryPacing {
+        min_interval: Duration::from_millis(25),
+    });
 
     while let Some(event) = inventory.message().await {
         match event? {
             InventoryEvent::Entry(entry) => println!("{}: {}", entry.display_name, entry.item_id),
+            InventoryEvent::Slice(slice) => {
+                println!("slice {}: {} native operations", slice.sequence, slice.native_operations);
+            }
             InventoryEvent::Progress(progress) => {
                 println!("{} items discovered", progress.unique_items);
             }
@@ -242,6 +249,10 @@ async fn main() -> anyhow::Result<()> {
 The returned `InventoryStream` exposes pause, resume, and cancellation controls.
 Each native browse call is bounded by `InventoryOptions::batch_size`, and
 `max_entries` can cap a deliberately limited inventory.
+Use `InventoryStream::set_pacing(InventoryPacing { min_interval })` to
+dynamically set the minimum interval between bounded native operation starts.
+Each completed slice emits an `InventoryEvent::Slice` observation with its
+backend, result count, operation count, and cumulative progress totals.
 For DA2 hierarchical namespaces, every server-reported branch is validated with
 a bounded native navigation probe. Branch-only names rejected with
 `E_INVALIDARG` are skipped and reported in the inventory completion warning;

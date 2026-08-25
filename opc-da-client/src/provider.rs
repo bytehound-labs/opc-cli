@@ -1,7 +1,8 @@
 use crate::opc_da::errors::{OpcError, OpcResult};
 use async_trait::async_trait;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::time::Duration;
 use tokio::sync::mpsc;
 use uuid::Uuid;
 
@@ -283,6 +284,40 @@ pub struct InventoryProgress {
     pub estimated_remaining_ms: Option<u64>,
 }
 
+/// Transport used for one bounded inventory slice.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InventorySliceBackend {
+    /// OPC DA 3.0 `IOPCBrowse`.
+    Da3,
+    /// OPC DA 2.x `IOPCBrowseServerAddressSpace`.
+    Da2,
+}
+
+/// Observation emitted after each bounded inventory slice.
+///
+/// A slice is one page-sized inventory step. Native DA2 enumeration may use
+/// several COM calls to produce one slice; `native_operations` reports that
+/// bounded work without exposing COM implementation details.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InventorySliceObservation {
+    /// Monotonically increasing slice number, starting at one.
+    pub sequence: u64,
+    /// Native browsing protocol used by the slice.
+    pub backend: InventorySliceBackend,
+    /// Number of nodes returned by the slice.
+    pub nodes_returned: u64,
+    /// Whether another slice remains for the same branch.
+    pub has_more: bool,
+    /// Number of bounded native operations performed for this slice.
+    pub native_operations: u64,
+    /// Wall-clock duration of the slice, including pacing waits.
+    pub elapsed_ms: u64,
+    /// Total native nodes observed through this slice.
+    pub entries_seen: u64,
+    /// Total unique item IDs observed through this slice.
+    pub unique_items: u64,
+}
+
 /// Terminal result for one inventory operation.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InventoryCompleted {
@@ -298,6 +333,7 @@ pub struct InventoryCompleted {
 pub enum InventoryEvent {
     Entry(InventoryEntry),
     Progress(InventoryProgress),
+    Slice(InventorySliceObservation),
     Completed(InventoryCompleted),
 }
 
@@ -305,6 +341,22 @@ pub enum InventoryEvent {
 struct InventoryControlState {
     cancelled: AtomicBool,
     paused: AtomicBool,
+    pacing_interval_ns: AtomicU64,
+}
+
+/// Dynamic delay enforced before each bounded native inventory operation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct InventoryPacing {
+    /// Minimum interval between the starts of bounded native operations.
+    pub min_interval: Duration,
+}
+
+impl Default for InventoryPacing {
+    fn default() -> Self {
+        Self {
+            min_interval: Duration::ZERO,
+        }
+    }
 }
 
 /// Control handle for a running inventory.
@@ -319,6 +371,7 @@ impl InventoryControl {
             state: Arc::new(InventoryControlState {
                 cancelled: AtomicBool::new(false),
                 paused: AtomicBool::new(false),
+                pacing_interval_ns: AtomicU64::new(0),
             }),
         }
     }
@@ -336,6 +389,26 @@ impl InventoryControl {
     /// Resume a paused inventory.
     pub fn resume(&self) {
         self.state.paused.store(false, Ordering::Release);
+    }
+
+    /// Replace the pacing applied before the next bounded native operation.
+    ///
+    /// Updates are observed by a running inventory without restarting it.
+    pub fn set_pacing(&self, pacing: InventoryPacing) {
+        let nanos = u64::try_from(pacing.min_interval.as_nanos().min(u128::from(u64::MAX)))
+            .unwrap_or(u64::MAX);
+        self.state
+            .pacing_interval_ns
+            .store(nanos, Ordering::Release);
+    }
+
+    /// Return the pacing currently applied to this inventory.
+    pub fn pacing(&self) -> InventoryPacing {
+        InventoryPacing {
+            min_interval: Duration::from_nanos(
+                self.state.pacing_interval_ns.load(Ordering::Acquire),
+            ),
+        }
     }
 
     /// Return whether cancellation has been requested.
@@ -395,6 +468,11 @@ impl InventoryStream {
     /// Resume this inventory.
     pub fn resume(&self) {
         self.control.resume();
+    }
+
+    /// Replace the pacing applied before the next bounded native operation.
+    pub fn set_pacing(&self, pacing: InventoryPacing) {
+        self.control.set_pacing(pacing);
     }
 }
 

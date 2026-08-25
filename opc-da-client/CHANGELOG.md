@@ -15,6 +15,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   exposing them as selectable tag ItemIDs; item and branch-and-item nodes
   continue to return their exact selectable ItemIDs
 
+### Added
+
+- Inventory pacing can be updated while a run is active through
+  `InventoryControl::set_pacing` or `InventoryStream::set_pacing`.
+- Every bounded DA2/DA3 inventory operation checks cancellation and pause state
+  before applying the current pacing interval.
+- Inventory streams emit typed `InventoryEvent::Slice` observations for each
+  bounded inventory slice.
+
 ## [0.2.6] - 2026-08-24
 
 ### Fixed

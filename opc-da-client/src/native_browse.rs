@@ -300,9 +300,7 @@ impl<S: ConnectedServer> BrowseSessions<S> {
                     )));
                 }
             };
-            if matches!(kind, BrowseNodeKind::Item | BrowseNodeKind::BranchAndItem)
-                && element.item_id.is_none()
-            {
+            if kind.is_item() && element.item_id.is_none() {
                 return Err(OpcError::Internal(format!(
                     "DA3 item '{}' did not include an item ID",
                     element.name
@@ -319,10 +317,15 @@ impl<S: ConnectedServer> BrowseSessions<S> {
                 NodeLocation::Item
             };
             let token = insert_node(session, kind, location)?;
+            let item_id = if kind.is_item() {
+                element.item_id
+            } else {
+                None
+            };
             nodes.push(BrowseNode {
                 token,
                 name: element.name,
-                item_id: element.item_id,
+                item_id,
                 kind,
             });
         }
@@ -1252,6 +1255,9 @@ mod tests {
                 BrowseNodeKind::BranchAndItem
             ]
         );
+        assert_eq!(first.nodes[0].item_id, None);
+        assert_eq!(first.nodes[1].item_id.as_deref(), Some("raw.item"));
+        assert_eq!(first.nodes[2].item_id.as_deref(), Some("raw.both"));
         let continuation = first.continuation.unwrap();
         assert_ne!(continuation.to_string(), "raw-da3-continuation");
         assert_eq!(

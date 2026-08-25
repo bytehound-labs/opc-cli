@@ -261,6 +261,9 @@ interface is available. This narrow compatibility fallback is logged; access,
 transport, disconnect, timeout, and unrelated COM failures remain terminal.
 After a root page succeeds, the session stays on DA 3.0 so later requests
 cannot invalidate existing DA 3.0 node or continuation tokens.
+Only selectable `Item` and `BranchAndItem` nodes expose exact ItemIDs.
+Branch-only DA 3.0 nodes retain their native ItemID solely as private session
+navigation state and return no public ItemID.
 When DA 3.0 browsing is unavailable or this compatibility fallback is selected, hierarchical DA 2.x
 sessions enumerate immediate `OPC_BRANCH` and `OPC_LEAF` children and resolve
 leaf names through `GetItemID`; flat sessions page `OPC_FLAT` results. The DA
@@ -439,7 +442,7 @@ Defined in § 1.1. See table above.
 - [x] Hierarchical branch-only `OPC_FLAT` results are never treated as item IDs.
 - [x] `test_browse_tags_hierarchical_recursive` — recursive browse traverses hierarchy.
 - [x] `test_browse_tags_max_tags_limit` — max_tags cap works on all paths.
-- [x] DA 3.0 pages map branch/item/both flags and hide native continuations behind opaque tokens.
+- [x] DA 3.0 pages map branch/item/both flags, expose ItemIDs only for selectable nodes, and hide native continuations behind opaque tokens.
 - [x] DA 2.x pages return immediate branches/leaves and exact `GetItemID` values.
 - [x] Same-named DA 2.x branches and leaves merge into one `BranchAndItem`, including across page boundaries.
 - [x] Flat namespaces page `OPC_FLAT` results.

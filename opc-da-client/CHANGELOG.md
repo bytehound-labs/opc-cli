@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.7] - 2026-08-25
+
+### Fixed
+
+- keep DA 3.0 branch-only ItemIDs private as navigation state instead of
+  exposing them as selectable tag ItemIDs; item and branch-and-item nodes
+  continue to return their exact selectable ItemIDs
+
 ## [0.2.6] - 2026-08-24
 
 ### Fixed

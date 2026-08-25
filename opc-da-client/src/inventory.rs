@@ -1551,7 +1551,9 @@ mod tests {
         control.set_pacing(crate::provider::InventoryPacing::default());
         worker.join().unwrap();
 
-        assert_eq!(*batch_sizes.lock().unwrap(), vec![1, 2]);
+        // The capability probe is the first bounded DA3 call; the following
+        // two values are the inventory slices before and after the update.
+        assert_eq!(*batch_sizes.lock().unwrap(), vec![1, 1, 2]);
     }
 
     #[test]

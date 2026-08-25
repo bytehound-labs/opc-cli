@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- DA 3.0 `IOPCBrowse::Browse` sends a true null property-ID pointer when
+  `dwPropertyCount` is zero, while retaining the generated binding path for
+  non-empty property-ID lists.
+
 ## [0.2.7] - 2026-08-25
 
 ### Fixed

@@ -195,7 +195,9 @@ child navigation inside the session and return `item_id: None` to callers.
 
 The first root page is also the DA 3.0 compatibility check. Required root and
 unused-filter arguments are sent as non-null empty UTF-16 strings, as specified
-by OPC DA. If that first call still returns `RPC_X_NULL_REF_POINTER` or
+by OPC DA. The initial continuation is a non-null outer pointer containing a
+null inner pointer, and an empty property-ID list is sent as a null pointer.
+If that first call still returns `RPC_X_NULL_REF_POINTER` or
 `E_NOTIMPL` and the server exposes DA 2.x browsing, the session logs the
 compatibility failure and continues through DA 2.x. Access, transport,
 disconnect, timeout, and other COM failures remain visible and never trigger a

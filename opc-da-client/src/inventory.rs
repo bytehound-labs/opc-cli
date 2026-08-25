@@ -1076,7 +1076,9 @@ mod tests {
     use crate::bindings::da::{
         OPC_NS_HIERARCHIAL, tagOPCDATASOURCE, tagOPCITEMDEF, tagOPCITEMRESULT, tagOPCITEMSTATE,
     };
-    use crate::opc_da::errors::{E_INVALIDARG_HRESULT, RPC_X_NULL_REF_POINTER_HRESULT};
+    use crate::opc_da::errors::{
+        E_INVALIDARG_HRESULT, E_NOTIMPL_HRESULT, RPC_X_NULL_REF_POINTER_HRESULT,
+    };
     use crate::opc_da::typedefs::{GroupHandle, ItemHandle};
     use std::sync::Arc;
     use std::sync::Mutex;
@@ -1397,42 +1399,44 @@ mod tests {
     }
 
     #[test]
-    fn da3_root_compatibility_failure_falls_back_to_da2_inventory() {
-        let connector = Arc::new(SharedConnector {
-            server: Arc::new(Mutex::new(Some(Da3Server {
-                total: 0,
-                browse_calls: Arc::new(AtomicUsize::new(0)),
-                batch_sizes: Arc::new(Mutex::new(Vec::new())),
-                fail: false,
-                da3_hresult: Some(RPC_X_NULL_REF_POINTER_HRESULT),
-                supports_da2: true,
-                da2_items: vec!["Channel.Device.Tag".to_string()],
-            }))),
-        });
-        let (sender, mut receiver) = mpsc::channel(16);
+    fn da3_root_compatibility_failures_fall_back_to_da2_inventory() {
+        for hresult in [RPC_X_NULL_REF_POINTER_HRESULT, E_NOTIMPL_HRESULT] {
+            let connector = Arc::new(SharedConnector {
+                server: Arc::new(Mutex::new(Some(Da3Server {
+                    total: 0,
+                    browse_calls: Arc::new(AtomicUsize::new(0)),
+                    batch_sizes: Arc::new(Mutex::new(Vec::new())),
+                    fail: false,
+                    da3_hresult: Some(hresult),
+                    supports_da2: true,
+                    da2_items: vec!["Channel.Device.Tag".to_string()],
+                }))),
+            });
+            let (sender, mut receiver) = mpsc::channel(16);
 
-        run_inventory(
-            connector.as_ref(),
-            "test",
-            InventoryOptions::default(),
-            &InventoryControl::new(),
-            &sender,
-        )
-        .unwrap();
+            run_inventory(
+                connector.as_ref(),
+                "test",
+                InventoryOptions::default(),
+                &InventoryControl::new(),
+                &sender,
+            )
+            .unwrap();
 
-        let (entries, completed, error) = collect(&mut receiver);
-        assert_eq!(entries.len(), 1);
-        assert_eq!(entries[0].item_id, "Channel.Device.Tag");
-        assert!(completed.is_some_and(|value| {
-            value.complete
-                && !value.capabilities.supports_da3
-                && value.capabilities.supports_da2
-                && value.warning.is_some_and(|warning| {
-                    warning.contains("0x800706F4")
-                        && warning.contains("continued through OPC DA 2.x")
-                })
-        }));
-        assert!(error.is_none());
+            let (entries, completed, error) = collect(&mut receiver);
+            assert_eq!(entries.len(), 1);
+            assert_eq!(entries[0].item_id, "Channel.Device.Tag");
+            assert!(completed.is_some_and(|value| {
+                value.complete
+                    && !value.capabilities.supports_da3
+                    && value.capabilities.supports_da2
+                    && value.warning.is_some_and(|warning| {
+                        warning.contains(&format!("0x{hresult:08X}"))
+                            && warning.contains("continued through OPC DA 2.x")
+                    })
+            }));
+            assert!(error.is_none());
+        }
     }
 
     #[test]

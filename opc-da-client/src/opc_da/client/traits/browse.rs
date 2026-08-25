@@ -3,6 +3,51 @@ use crate::bindings::da::{
 };
 use crate::opc_da::com_utils::{LocalPointer, RemoteArray, RemotePointer};
 use crate::opc_da::errors::{OpcError, OpcResult};
+use windows::core::{Interface, PCWSTR, PWSTR};
+
+/// Calls `IOPCBrowse::Browse` with the ABI-required null property-ID pointer.
+///
+/// The generated binding accurately marshals all `Browse` parameters except an
+/// empty property-ID slice: its slice pointer is non-null even when
+/// `dwPropertyCount` is zero. OPC DA requires a true null pointer in that case.
+#[allow(clippy::too_many_arguments)]
+fn browse_with_null_property_ids(
+    browse: &IOPCBrowse,
+    item_id: PCWSTR,
+    continuation_point: *mut PWSTR,
+    max_elements: u32,
+    browse_filter: tagOPCBROWSEFILTER,
+    element_name_filter: PCWSTR,
+    vendor_filter: PCWSTR,
+    return_all_properties: bool,
+    return_property_values: bool,
+    more_elements: *mut windows::core::BOOL,
+    count: *mut u32,
+    elements: *mut *mut tagOPCBROWSEELEMENT,
+) -> windows::core::Result<()> {
+    // SAFETY: All pointers have the same valid lifetimes and ABI as the generated
+    // `Browse` call. This narrow path differs only by passing a null property-ID
+    // pointer while its corresponding count is zero.
+    unsafe {
+        (Interface::vtable(browse).Browse)(
+            Interface::as_raw(browse),
+            item_id,
+            continuation_point,
+            max_elements,
+            browse_filter,
+            element_name_filter,
+            vendor_filter,
+            return_all_properties.into(),
+            return_property_values.into(),
+            0,
+            core::ptr::null(),
+            more_elements,
+            count,
+            elements,
+        )
+        .ok()
+    }
+}
 
 /// Server address space browsing functionality (OPC DA 3.0).
 ///
@@ -101,9 +146,9 @@ pub trait BrowseTrait {
         let mut count = 0;
         let mut elements = RemoteArray::empty();
 
-        // SAFETY: Calling COM interface method Browse with valid strings and output pointers.
-        unsafe {
-            self.interface()?.Browse(
+        if property_ids.is_empty() {
+            browse_with_null_property_ids(
+                self.interface()?,
                 item_id.as_pcwstr(),
                 continuation_point.as_mut_pwstr_ptr(),
                 max_elements,
@@ -112,11 +157,29 @@ pub trait BrowseTrait {
                 vendor_filter.as_pcwstr(),
                 return_all_properties,
                 return_property_values,
-                property_ids,
                 &mut more_elements,
                 &mut count,
                 elements.as_mut_ptr(),
             )?;
+        } else {
+            // SAFETY: Calling the generated COM interface method with valid strings,
+            // property IDs, and output pointers.
+            unsafe {
+                self.interface()?.Browse(
+                    item_id.as_pcwstr(),
+                    continuation_point.as_mut_pwstr_ptr(),
+                    max_elements,
+                    browse_filter,
+                    element_name_filter.as_pcwstr(),
+                    vendor_filter.as_pcwstr(),
+                    return_all_properties,
+                    return_property_values,
+                    property_ids,
+                    &mut more_elements,
+                    &mut count,
+                    elements.as_mut_ptr(),
+                )?;
+            }
         }
 
         if count > 0 {
@@ -257,7 +320,7 @@ mod tests {
     }
 
     #[test]
-    fn browse_marshals_absent_required_strings_as_non_null_empty_strings() {
+    fn browse_marshals_root_initial_request_with_null_property_ids() {
         let calls = Arc::new(Mutex::new(Vec::new()));
         let interface: IOPCBrowse = BrowseRecorder {
             calls: Arc::clone(&calls),
@@ -292,14 +355,14 @@ mod tests {
                 vendor_filter_pointer_is_null: false,
                 vendor_filter: Some(String::new()),
                 property_count: 0,
-                property_pointer_is_null: false,
+                property_pointer_is_null: true,
                 property_ids: Vec::new(),
             }]
         );
     }
 
     #[test]
-    fn browse_preserves_non_empty_strings_continuation_and_property_ids() {
+    fn browse_marshals_non_root_resumed_request_with_property_ids() {
         let calls = Arc::new(Mutex::new(Vec::new()));
         let interface: IOPCBrowse = BrowseRecorder {
             calls: Arc::clone(&calls),

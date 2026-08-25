@@ -345,20 +345,28 @@ struct InventoryControlState {
     cancelled: AtomicBool,
     paused: AtomicBool,
     pacing_interval_ns: AtomicU64,
+    pacing_item_rate_per_second: AtomicU64,
     batch_size: AtomicUsize,
 }
 
-/// Dynamic delay enforced before each bounded native inventory operation.
+/// Dynamic pacing enforced before each bounded native inventory operation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct InventoryPacing {
     /// Minimum interval between the starts of bounded native operations.
     pub min_interval: Duration,
+    /// Maximum number of inventory items requested per second.
+    ///
+    /// The inventory worker applies this cost to the requested size of each
+    /// native operation, so a page requesting 100 items consumes 100 items
+    /// of the pacing budget even when the server returns fewer entries.
+    pub item_rate_per_second: Option<u32>,
 }
 
 impl Default for InventoryPacing {
     fn default() -> Self {
         Self {
             min_interval: Duration::ZERO,
+            item_rate_per_second: None,
         }
     }
 }
@@ -376,6 +384,7 @@ impl InventoryControl {
                 cancelled: AtomicBool::new(false),
                 paused: AtomicBool::new(false),
                 pacing_interval_ns: AtomicU64::new(0),
+                pacing_item_rate_per_second: AtomicU64::new(0),
                 batch_size: AtomicUsize::new(0),
             }),
         }
@@ -415,6 +424,10 @@ impl InventoryControl {
         self.state
             .pacing_interval_ns
             .store(nanos, Ordering::Release);
+        self.state.pacing_item_rate_per_second.store(
+            u64::from(pacing.item_rate_per_second.unwrap_or(0)),
+            Ordering::Release,
+        );
     }
 
     /// Return the pacing currently applied to this inventory.
@@ -423,6 +436,14 @@ impl InventoryControl {
             min_interval: Duration::from_nanos(
                 self.state.pacing_interval_ns.load(Ordering::Acquire),
             ),
+            item_rate_per_second: match self
+                .state
+                .pacing_item_rate_per_second
+                .load(Ordering::Acquire)
+            {
+                0 => None,
+                rate => Some(u32::try_from(rate).unwrap_or(u32::MAX)),
+            },
         }
     }
 

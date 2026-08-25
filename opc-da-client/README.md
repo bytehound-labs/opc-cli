@@ -227,6 +227,7 @@ async fn main() -> anyhow::Result<()> {
         .await?;
     inventory.set_pacing(InventoryPacing {
         min_interval: Duration::from_millis(25),
+        item_rate_per_second: Some(50),
     });
     inventory.set_batch_size(50)?;
 
@@ -252,8 +253,11 @@ async fn main() -> anyhow::Result<()> {
 The returned `InventoryStream` exposes pause, resume, and cancellation controls.
 Each native browse call is bounded by `InventoryOptions::batch_size`, and
 `max_entries` can cap a deliberately limited inventory.
-Use `InventoryStream::set_pacing(InventoryPacing { min_interval })` to
-dynamically set the minimum interval between bounded native operation starts.
+Use `InventoryStream::set_pacing(InventoryPacing { min_interval, item_rate_per_second })` to
+dynamically set the minimum interval between bounded native operation starts
+and the maximum requested item rate. The item-rate budget is charged for the
+requested batch size before each native call, even when the server returns
+fewer entries.
 Use `InventoryStream::set_batch_size(batch_size)` to change the bounded request
 size before the next slice; values must be between 1 and
 `MAX_INVENTORY_BATCH_SIZE` (1000).

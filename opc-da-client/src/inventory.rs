@@ -94,6 +94,16 @@ struct InventoryBoundary<'a> {
     native_operations: u64,
 }
 
+fn pacing_interval(pacing: crate::provider::InventoryPacing, item_cost: u32) -> Duration {
+    let item_interval = pacing
+        .item_rate_per_second
+        .filter(|rate| *rate > 0)
+        .map_or(Duration::ZERO, |rate| {
+            Duration::from_secs_f64(f64::from(item_cost.max(1)) / f64::from(rate))
+        });
+    pacing.min_interval.max(item_interval)
+}
+
 impl<'a> InventoryBoundary<'a> {
     fn new(control: &'a InventoryControl) -> Self {
         Self {
@@ -105,6 +115,10 @@ impl<'a> InventoryBoundary<'a> {
     }
 
     fn before_operation(&mut self) -> BoundaryResult {
+        self.before_operation_with_cost(1)
+    }
+
+    fn before_operation_with_cost(&mut self, item_cost: u32) -> BoundaryResult {
         loop {
             if self.control.is_cancelled() {
                 return BoundaryResult::Cancelled;
@@ -119,7 +133,7 @@ impl<'a> InventoryBoundary<'a> {
                 continue;
             }
 
-            let interval = self.control.pacing().min_interval;
+            let interval = pacing_interval(self.control.pacing(), item_cost);
             if let Some(last_started) = self.last_started {
                 let elapsed = last_started.elapsed();
                 if let Some(remaining) = interval.checked_sub(elapsed) {
@@ -510,7 +524,7 @@ fn next_page<S: ConnectedServer>(
     match &work.location {
         BranchLocation::Da3(item_id) => {
             let is_root = item_id.is_none() && work.breadcrumbs.is_empty();
-            let page = match boundary.before_operation() {
+            let page = match boundary.before_operation_with_cost(batch_size) {
                 BoundaryResult::Proceed => server.browse_da3(
                     item_id.as_deref(),
                     work.da3_continuation.as_deref(),
@@ -1487,6 +1501,7 @@ mod tests {
         let control = InventoryControl::new();
         control.set_pacing(crate::provider::InventoryPacing {
             min_interval: Duration::from_millis(100),
+            ..Default::default()
         });
         let mut boundary = InventoryBoundary::new(&control);
         assert_eq!(boundary.before_operation(), BoundaryResult::Proceed);
@@ -1496,6 +1511,7 @@ mod tests {
                 std::thread::sleep(Duration::from_millis(20));
                 control.set_pacing(crate::provider::InventoryPacing {
                     min_interval: Duration::ZERO,
+                    ..Default::default()
                 });
             })
         };
@@ -1503,6 +1519,26 @@ mod tests {
         assert_eq!(boundary.before_operation(), BoundaryResult::Proceed);
         updater.join().unwrap();
         assert!(started.elapsed() < Duration::from_millis(90));
+    }
+
+    #[test]
+    fn item_rate_pacing_charges_the_requested_native_batch() {
+        let pacing = crate::provider::InventoryPacing {
+            min_interval: Duration::ZERO,
+            item_rate_per_second: Some(50),
+        };
+        assert_eq!(pacing_interval(pacing, 100), Duration::from_secs(2));
+        assert_eq!(pacing_interval(pacing, 0), Duration::from_millis(20));
+        assert_eq!(
+            pacing_interval(
+                crate::provider::InventoryPacing {
+                    min_interval: Duration::from_millis(100),
+                    item_rate_per_second: Some(50),
+                },
+                1,
+            ),
+            Duration::from_millis(100)
+        );
     }
 
     #[test]
@@ -1523,6 +1559,7 @@ mod tests {
         let control = InventoryControl::new();
         control.set_pacing(crate::provider::InventoryPacing {
             min_interval: Duration::from_millis(500),
+            ..Default::default()
         });
         let worker_control = control.clone();
         let (sender, _receiver) = mpsc::channel(16);

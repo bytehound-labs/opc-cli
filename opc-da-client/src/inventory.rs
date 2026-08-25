@@ -1282,7 +1282,7 @@ mod tests {
                 da2_items: Vec::new(),
             }))),
         });
-        let (sender, mut receiver) = mpsc::channel(100_200);
+        let (sender, mut receiver) = mpsc::channel(100_300);
         run_inventory(
             connector.as_ref(),
             "test",

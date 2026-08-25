@@ -18,7 +18,7 @@ See **[bytehound-opc-da-client architecture.md](./opc-da-client/architecture.md)
 ## ✨ Features
 
 - **Server Discovery**: Enumerate OPC DA servers on local or remote hosts.
-- **Hierarchical Browsing**: Recursive tag discovery for the TUI plus bounded, one-level native browse pages with OPC DA 3.0 support and a one-time, narrowly classified DA 2.x compatibility fallback before the first successful root page.
+- **Hierarchical Browsing**: Recursive tag discovery for the TUI plus bounded, one-level native browse pages with OPC DA 3.0 support, selectable-only ItemIDs, and a one-time, narrowly classified DA 2.x compatibility fallback before the first successful root page.
 - **Real-time Monitoring**: Live tag value updates with 1-second auto-refresh.
 - **Tag Write Support**: Write typed values (int, float, bool, string) to individual tags.
 - **Search & Filter**: Substring search with `Tab`/`Shift+Tab` cycling through matches.

@@ -189,6 +189,10 @@ The DA 2.x fallback merges a same-named branch and leaf into one
 `BrowseNodeKind::BranchAndItem` node and resolves its exact item ID through
 `GetItemID`.
 
+For both DA 3.0 and DA 2.x, only selectable `Item` and `BranchAndItem`
+nodes expose `item_id`. Branch-only nodes retain any native ItemID needed for
+child navigation inside the session and return `item_id: None` to callers.
+
 The first root page is also the DA 3.0 compatibility check. Required root and
 unused-filter arguments are sent as non-null empty UTF-16 strings, as specified
 by OPC DA. If that first call still returns `RPC_X_NULL_REF_POINTER` or

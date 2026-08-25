@@ -57,7 +57,8 @@ pub use provider::{
     BrowseCapabilities, BrowseNamespace, BrowseNode, BrowseNodeFilter, BrowseNodeKind,
     BrowseNodeToken, BrowsePage, BrowsePageRequest, BrowsePageToken, BrowseSessionToken,
     InventoryCompleted, InventoryControl, InventoryEntry, InventoryEvent, InventoryOptions,
-    InventoryProgress, InventoryStream, OpcProvider, OpcValue, TagValue, WriteResult,
+    InventoryPacing, InventoryProgress, InventorySliceBackend, InventorySliceObservation,
+    InventoryStream, MAX_INVENTORY_BATCH_SIZE, OpcProvider, OpcValue, TagValue, WriteResult,
 };
 
 #[cfg(feature = "opc-da-backend")]

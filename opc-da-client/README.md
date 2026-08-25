@@ -226,6 +226,7 @@ async fn main() -> anyhow::Result<()> {
     inventory.set_pacing(InventoryPacing {
         min_interval: Duration::from_millis(25),
     });
+    inventory.set_batch_size(50)?;
 
     while let Some(event) = inventory.message().await {
         match event? {
@@ -251,6 +252,9 @@ Each native browse call is bounded by `InventoryOptions::batch_size`, and
 `max_entries` can cap a deliberately limited inventory.
 Use `InventoryStream::set_pacing(InventoryPacing { min_interval })` to
 dynamically set the minimum interval between bounded native operation starts.
+Use `InventoryStream::set_batch_size(batch_size)` to change the bounded request
+size before the next slice; values must be between 1 and
+`MAX_INVENTORY_BATCH_SIZE` (1000).
 Each completed slice emits an `InventoryEvent::Slice` observation with its
 backend, result count, operation count, and cumulative progress totals.
 For DA2 hierarchical namespaces, every server-reported branch is validated with

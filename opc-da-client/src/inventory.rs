@@ -165,10 +165,11 @@ pub fn run_inventory<C: ServerConnector>(
     control: &InventoryControl,
     sender: &mpsc::Sender<OpcResult<InventoryEvent>>,
 ) -> OpcResult<()> {
-    if options.batch_size == 0 || options.batch_size > 1_000 {
-        return Err(OpcError::InvalidState(
-            "Inventory batch size must be between 1 and 1000".to_string(),
-        ));
+    if options.batch_size == 0 || options.batch_size > crate::provider::MAX_INVENTORY_BATCH_SIZE {
+        return Err(OpcError::InvalidState(format!(
+            "Inventory batch size must be between 1 and {}",
+            crate::provider::MAX_INVENTORY_BATCH_SIZE
+        )));
     }
 
     let mut active_time = Duration::ZERO;
@@ -237,11 +238,12 @@ pub fn run_inventory<C: ServerConnector>(
         }
         let call_started = Instant::now();
         let paused_before = boundary.paused_time();
+        let batch_size = control.batch_size().unwrap_or(options.batch_size);
         let operations_before = boundary.operations();
         let page_result = next_page(
             &connected,
             &mut work,
-            options.batch_size,
+            batch_size,
             &mut current_da2_path,
             &mut skipped_invalid_branches,
             &mut first_skipped_invalid_branch,
@@ -1112,6 +1114,7 @@ mod tests {
     struct Da3Server {
         total: usize,
         browse_calls: Arc<AtomicUsize>,
+        batch_sizes: Arc<Mutex<Vec<u32>>>,
         fail: bool,
         da3_hresult: Option<u32>,
         supports_da2: bool,
@@ -1159,6 +1162,7 @@ mod tests {
             _filter: BrowseNodeFilter,
         ) -> OpcResult<crate::backend::connector::NativeBrowsePage> {
             self.browse_calls.fetch_add(1, Ordering::Relaxed);
+            self.batch_sizes.lock().unwrap().push(max_elements);
             if let Some(hresult) = self.da3_hresult {
                 return Err(OpcError::Com {
                     source: windows::core::Error::from_hresult(HRESULT(hresult.cast_signed())),
@@ -1271,6 +1275,7 @@ mod tests {
             server: Arc::new(Mutex::new(Some(Da3Server {
                 total: 100_001,
                 browse_calls: Arc::new(AtomicUsize::new(0)),
+                batch_sizes: Arc::new(Mutex::new(Vec::new())),
                 fail: false,
                 da3_hresult: None,
                 supports_da2: false,
@@ -1302,6 +1307,7 @@ mod tests {
             server: Arc::new(Mutex::new(Some(Da3Server {
                 total: 1,
                 browse_calls: Arc::clone(&calls),
+                batch_sizes: Arc::new(Mutex::new(Vec::new())),
                 fail: false,
                 da3_hresult: None,
                 supports_da2: false,
@@ -1334,6 +1340,7 @@ mod tests {
             server: Arc::new(Mutex::new(Some(Da3Server {
                 total: 10,
                 browse_calls: Arc::clone(&calls),
+                batch_sizes: Arc::new(Mutex::new(Vec::new())),
                 fail: false,
                 da3_hresult: None,
                 supports_da2: false,
@@ -1364,6 +1371,7 @@ mod tests {
             server: Arc::new(Mutex::new(Some(Da3Server {
                 total: 1,
                 browse_calls: Arc::new(AtomicUsize::new(0)),
+                batch_sizes: Arc::new(Mutex::new(Vec::new())),
                 fail: true,
                 da3_hresult: None,
                 supports_da2: false,
@@ -1394,6 +1402,7 @@ mod tests {
             server: Arc::new(Mutex::new(Some(Da3Server {
                 total: 0,
                 browse_calls: Arc::new(AtomicUsize::new(0)),
+                batch_sizes: Arc::new(Mutex::new(Vec::new())),
                 fail: false,
                 da3_hresult: Some(RPC_X_NULL_REF_POINTER_HRESULT),
                 supports_da2: true,
@@ -1433,6 +1442,7 @@ mod tests {
             server: Arc::new(Mutex::new(Some(Da3Server {
                 total: 1,
                 browse_calls: Arc::clone(&calls),
+                batch_sizes: Arc::new(Mutex::new(Vec::new())),
                 fail: false,
                 da3_hresult: None,
                 supports_da2: false,
@@ -1492,11 +1502,65 @@ mod tests {
     }
 
     #[test]
+    fn batch_size_updates_are_seen_at_the_next_slice_boundary() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let batch_sizes = Arc::new(Mutex::new(Vec::new()));
+        let connector = Arc::new(SharedConnector {
+            server: Arc::new(Mutex::new(Some(Da3Server {
+                total: 3,
+                browse_calls: Arc::clone(&calls),
+                batch_sizes: Arc::clone(&batch_sizes),
+                fail: false,
+                da3_hresult: None,
+                supports_da2: false,
+                da2_items: Vec::new(),
+            }))),
+        });
+        let control = InventoryControl::new();
+        control.set_pacing(crate::provider::InventoryPacing {
+            min_interval: Duration::from_millis(500),
+        });
+        let worker_control = control.clone();
+        let (sender, _receiver) = mpsc::channel(16);
+        let worker = std::thread::spawn(move || {
+            run_inventory(
+                connector.as_ref(),
+                "test",
+                InventoryOptions {
+                    batch_size: 1,
+                    max_entries: None,
+                },
+                &worker_control,
+                &sender,
+            )
+            .unwrap();
+        });
+
+        let deadline = Instant::now() + Duration::from_secs(1);
+        while calls.load(Ordering::Acquire) < 1 {
+            assert!(Instant::now() < deadline);
+            std::thread::yield_now();
+        }
+        assert!(control.set_batch_size(0).is_err());
+        assert!(
+            control
+                .set_batch_size(crate::provider::MAX_INVENTORY_BATCH_SIZE + 1)
+                .is_err()
+        );
+        control.set_batch_size(2).unwrap();
+        control.set_pacing(crate::provider::InventoryPacing::default());
+        worker.join().unwrap();
+
+        assert_eq!(*batch_sizes.lock().unwrap(), vec![1, 2]);
+    }
+
+    #[test]
     fn each_native_page_emits_a_typed_slice_observation() {
         let connector = Arc::new(SharedConnector {
             server: Arc::new(Mutex::new(Some(Da3Server {
                 total: 3,
                 browse_calls: Arc::new(AtomicUsize::new(0)),
+                batch_sizes: Arc::new(Mutex::new(Vec::new())),
                 fail: false,
                 da3_hresult: None,
                 supports_da2: false,

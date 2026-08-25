@@ -241,6 +241,9 @@ pub struct BrowsePage {
     pub continuation: Option<BrowsePageToken>,
 }
 
+/// Maximum number of native entries requested for one inventory slice.
+pub const MAX_INVENTORY_BATCH_SIZE: u32 = 1_000;
+
 /// Options controlling one bounded namespace inventory.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct InventoryOptions {
@@ -342,6 +345,7 @@ struct InventoryControlState {
     cancelled: AtomicBool,
     paused: AtomicBool,
     pacing_interval_ns: AtomicU64,
+    batch_size: AtomicUsize,
 }
 
 /// Dynamic delay enforced before each bounded native inventory operation.
@@ -372,8 +376,19 @@ impl InventoryControl {
                 cancelled: AtomicBool::new(false),
                 paused: AtomicBool::new(false),
                 pacing_interval_ns: AtomicU64::new(0),
+                batch_size: AtomicUsize::new(0),
             }),
         }
+    }
+
+    pub(crate) fn new_with_batch_size(batch_size: u32) -> Self {
+        debug_assert!((1..=MAX_INVENTORY_BATCH_SIZE).contains(&batch_size));
+        let control = Self::new();
+        control
+            .state
+            .batch_size
+            .store(batch_size as usize, Ordering::Release);
+        control
     }
 
     /// Request cancellation at the next bounded COM boundary.
@@ -409,6 +424,26 @@ impl InventoryControl {
                 self.state.pacing_interval_ns.load(Ordering::Acquire),
             ),
         }
+    }
+
+    /// Replace the batch size used for the next inventory slice.
+    ///
+    /// The value must be between 1 and [`MAX_INVENTORY_BATCH_SIZE`].
+    pub fn set_batch_size(&self, batch_size: u32) -> OpcResult<()> {
+        if !(1..=MAX_INVENTORY_BATCH_SIZE).contains(&batch_size) {
+            return Err(OpcError::InvalidState(format!(
+                "Inventory batch size must be between 1 and {MAX_INVENTORY_BATCH_SIZE}"
+            )));
+        }
+        self.state
+            .batch_size
+            .store(batch_size as usize, Ordering::Release);
+        Ok(())
+    }
+
+    pub(crate) fn batch_size(&self) -> Option<u32> {
+        let batch_size = self.state.batch_size.load(Ordering::Acquire);
+        u32::try_from(batch_size).ok().filter(|value| *value != 0)
     }
 
     /// Return whether cancellation has been requested.
@@ -473,6 +508,11 @@ impl InventoryStream {
     /// Replace the pacing applied before the next bounded native operation.
     pub fn set_pacing(&self, pacing: InventoryPacing) {
         self.control.set_pacing(pacing);
+    }
+
+    /// Replace the batch size used for the next inventory slice.
+    pub fn set_batch_size(&self, batch_size: u32) -> OpcResult<()> {
+        self.control.set_batch_size(batch_size)
     }
 }
 

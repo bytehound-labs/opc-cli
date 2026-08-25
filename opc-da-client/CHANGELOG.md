@@ -23,6 +23,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   before applying the current pacing interval.
 - Inventory streams emit typed `InventoryEvent::Slice` observations for each
   bounded inventory slice.
+- Inventory batch sizes can be changed safely for the next slice through
+  `InventoryControl::set_batch_size` or `InventoryStream::set_batch_size`.
 
 ## [0.2.6] - 2026-08-24
 

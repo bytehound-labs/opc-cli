@@ -3,7 +3,8 @@ use crate::com_worker::{ComRequest, ComWorker, ReadPresentation};
 use crate::opc_da::errors::OpcResult;
 use crate::provider::{
     BrowseCapabilities, BrowsePage, BrowsePageRequest, BrowseSessionToken, InventoryControl,
-    InventoryOptions, InventoryStream, OpcProvider, OpcValue, TagValue, WriteResult,
+    InventoryOptions, InventoryStream, MAX_INVENTORY_BATCH_SIZE, OpcProvider, OpcValue, TagValue,
+    WriteResult,
 };
 use async_trait::async_trait;
 use std::panic::{AssertUnwindSafe, catch_unwind};
@@ -162,10 +163,10 @@ impl<C: ServerConnector + 'static> OpcProvider for OpcDaClient<C> {
         server: &str,
         options: InventoryOptions,
     ) -> OpcResult<InventoryStream> {
-        if options.batch_size == 0 || options.batch_size > 1_000 {
-            return Err(crate::opc_da::errors::OpcError::InvalidState(
-                "Inventory batch size must be between 1 and 1000".to_string(),
-            ));
+        if options.batch_size == 0 || options.batch_size > MAX_INVENTORY_BATCH_SIZE {
+            return Err(crate::opc_da::errors::OpcError::InvalidState(format!(
+                "Inventory batch size must be between 1 and {MAX_INVENTORY_BATCH_SIZE}"
+            )));
         }
         if self.inventory_active.swap(true, Ordering::AcqRel) {
             return Err(crate::opc_da::errors::OpcError::InvalidState(
@@ -174,7 +175,7 @@ impl<C: ServerConnector + 'static> OpcProvider for OpcDaClient<C> {
         }
 
         let (sender, receiver) = mpsc::channel(64);
-        let control = InventoryControl::new();
+        let control = InventoryControl::new_with_batch_size(options.batch_size);
         let worker_control = control.clone();
         let active = Arc::clone(&self.inventory_active);
         let connector = Arc::clone(&self.connector);

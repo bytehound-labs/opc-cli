@@ -58,7 +58,7 @@ All methods use `#[async_trait]`.
 *   Native browse pages contain at most 1,000 nodes and never recursively enumerate descendants.
 *   Native session, node, and page tokens are random UUIDs with string encode/parse support for transport adapters. Raw COM pointers and DA continuation strings never cross the public API boundary.
 *   Native browse sessions own their server connection, expire after five minutes of inactivity, and keep DA 2.x mutable browse positions isolated.
-*   DA 3.0 root and unused-filter strings are always represented by non-null NUL-terminated UTF-16 values. The initial continuation pointer itself is non-null and contains a null value.
+*   DA 3.0 root and unused-filter strings are always represented by non-null NUL-terminated UTF-16 values. The initial continuation pointer itself is non-null and contains a null value. A zero property count uses a true null property-ID pointer.
 *   A first-root-page `RPC_X_NULL_REF_POINTER` or `E_NOTIMPL` response falls back to DA 2.x only when DA 2.x is available. Other COM failures do not change browse strategy, and a successful root page locks the session to DA 3.0.
 *   `start_inventory` requests no more than `batch_size` native entries per operation and never exposes
     browse-session or continuation tokens.

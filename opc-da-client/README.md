@@ -195,7 +195,9 @@ child navigation inside the session and return `item_id: None` to callers.
 
 The first root page is also the DA 3.0 compatibility check. Required root and
 unused-filter arguments are sent as non-null empty UTF-16 strings, as specified
-by OPC DA. If that first call still returns `RPC_X_NULL_REF_POINTER` or
+by OPC DA. The initial continuation is a non-null outer pointer containing a
+null inner pointer, and an empty property-ID list is sent as a null pointer.
+If that first call still returns `RPC_X_NULL_REF_POINTER` or
 `E_NOTIMPL` and the server exposes DA 2.x browsing, the session logs the
 compatibility failure and continues through DA 2.x. Access, transport,
 disconnect, timeout, and other COM failures remain visible and never trigger a
@@ -225,6 +227,7 @@ async fn main() -> anyhow::Result<()> {
         .await?;
     inventory.set_pacing(InventoryPacing {
         min_interval: Duration::from_millis(25),
+        item_rate_per_second: Some(50),
     });
     inventory.set_batch_size(50)?;
 
@@ -250,8 +253,11 @@ async fn main() -> anyhow::Result<()> {
 The returned `InventoryStream` exposes pause, resume, and cancellation controls.
 Each native browse call is bounded by `InventoryOptions::batch_size`, and
 `max_entries` can cap a deliberately limited inventory.
-Use `InventoryStream::set_pacing(InventoryPacing { min_interval })` to
-dynamically set the minimum interval between bounded native operation starts.
+Use `InventoryStream::set_pacing(InventoryPacing { min_interval, item_rate_per_second })` to
+dynamically set the minimum interval between bounded native operation starts
+and the maximum requested item rate. The item-rate budget is charged for the
+requested batch size before each native call, even when the server returns
+fewer entries.
 Use `InventoryStream::set_batch_size(batch_size)` to change the bounded request
 size before the next slice; values must be between 1 and
 `MAX_INVENTORY_BATCH_SIZE` (1000).

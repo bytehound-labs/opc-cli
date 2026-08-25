@@ -94,6 +94,16 @@ struct InventoryBoundary<'a> {
     native_operations: u64,
 }
 
+fn pacing_interval(pacing: crate::provider::InventoryPacing, item_cost: u32) -> Duration {
+    let item_interval = pacing
+        .item_rate_per_second
+        .filter(|rate| *rate > 0)
+        .map_or(Duration::ZERO, |rate| {
+            Duration::from_secs_f64(f64::from(item_cost.max(1)) / f64::from(rate))
+        });
+    pacing.min_interval.max(item_interval)
+}
+
 impl<'a> InventoryBoundary<'a> {
     fn new(control: &'a InventoryControl) -> Self {
         Self {
@@ -105,6 +115,10 @@ impl<'a> InventoryBoundary<'a> {
     }
 
     fn before_operation(&mut self) -> BoundaryResult {
+        self.before_operation_with_cost(1)
+    }
+
+    fn before_operation_with_cost(&mut self, item_cost: u32) -> BoundaryResult {
         loop {
             if self.control.is_cancelled() {
                 return BoundaryResult::Cancelled;
@@ -119,7 +133,7 @@ impl<'a> InventoryBoundary<'a> {
                 continue;
             }
 
-            let interval = self.control.pacing().min_interval;
+            let interval = pacing_interval(self.control.pacing(), item_cost);
             if let Some(last_started) = self.last_started {
                 let elapsed = last_started.elapsed();
                 if let Some(remaining) = interval.checked_sub(elapsed) {
@@ -510,7 +524,7 @@ fn next_page<S: ConnectedServer>(
     match &work.location {
         BranchLocation::Da3(item_id) => {
             let is_root = item_id.is_none() && work.breadcrumbs.is_empty();
-            let page = match boundary.before_operation() {
+            let page = match boundary.before_operation_with_cost(batch_size) {
                 BoundaryResult::Proceed => server.browse_da3(
                     item_id.as_deref(),
                     work.da3_continuation.as_deref(),
@@ -1076,7 +1090,9 @@ mod tests {
     use crate::bindings::da::{
         OPC_NS_HIERARCHIAL, tagOPCDATASOURCE, tagOPCITEMDEF, tagOPCITEMRESULT, tagOPCITEMSTATE,
     };
-    use crate::opc_da::errors::{E_INVALIDARG_HRESULT, RPC_X_NULL_REF_POINTER_HRESULT};
+    use crate::opc_da::errors::{
+        E_INVALIDARG_HRESULT, E_NOTIMPL_HRESULT, RPC_X_NULL_REF_POINTER_HRESULT,
+    };
     use crate::opc_da::typedefs::{GroupHandle, ItemHandle};
     use std::sync::Arc;
     use std::sync::Mutex;
@@ -1397,42 +1413,44 @@ mod tests {
     }
 
     #[test]
-    fn da3_root_compatibility_failure_falls_back_to_da2_inventory() {
-        let connector = Arc::new(SharedConnector {
-            server: Arc::new(Mutex::new(Some(Da3Server {
-                total: 0,
-                browse_calls: Arc::new(AtomicUsize::new(0)),
-                batch_sizes: Arc::new(Mutex::new(Vec::new())),
-                fail: false,
-                da3_hresult: Some(RPC_X_NULL_REF_POINTER_HRESULT),
-                supports_da2: true,
-                da2_items: vec!["Channel.Device.Tag".to_string()],
-            }))),
-        });
-        let (sender, mut receiver) = mpsc::channel(16);
+    fn da3_root_compatibility_failures_fall_back_to_da2_inventory() {
+        for hresult in [RPC_X_NULL_REF_POINTER_HRESULT, E_NOTIMPL_HRESULT] {
+            let connector = Arc::new(SharedConnector {
+                server: Arc::new(Mutex::new(Some(Da3Server {
+                    total: 0,
+                    browse_calls: Arc::new(AtomicUsize::new(0)),
+                    batch_sizes: Arc::new(Mutex::new(Vec::new())),
+                    fail: false,
+                    da3_hresult: Some(hresult),
+                    supports_da2: true,
+                    da2_items: vec!["Channel.Device.Tag".to_string()],
+                }))),
+            });
+            let (sender, mut receiver) = mpsc::channel(16);
 
-        run_inventory(
-            connector.as_ref(),
-            "test",
-            InventoryOptions::default(),
-            &InventoryControl::new(),
-            &sender,
-        )
-        .unwrap();
+            run_inventory(
+                connector.as_ref(),
+                "test",
+                InventoryOptions::default(),
+                &InventoryControl::new(),
+                &sender,
+            )
+            .unwrap();
 
-        let (entries, completed, error) = collect(&mut receiver);
-        assert_eq!(entries.len(), 1);
-        assert_eq!(entries[0].item_id, "Channel.Device.Tag");
-        assert!(completed.is_some_and(|value| {
-            value.complete
-                && !value.capabilities.supports_da3
-                && value.capabilities.supports_da2
-                && value.warning.is_some_and(|warning| {
-                    warning.contains("0x800706F4")
-                        && warning.contains("continued through OPC DA 2.x")
-                })
-        }));
-        assert!(error.is_none());
+            let (entries, completed, error) = collect(&mut receiver);
+            assert_eq!(entries.len(), 1);
+            assert_eq!(entries[0].item_id, "Channel.Device.Tag");
+            assert!(completed.is_some_and(|value| {
+                value.complete
+                    && !value.capabilities.supports_da3
+                    && value.capabilities.supports_da2
+                    && value.warning.is_some_and(|warning| {
+                        warning.contains(&format!("0x{hresult:08X}"))
+                            && warning.contains("continued through OPC DA 2.x")
+                    })
+            }));
+            assert!(error.is_none());
+        }
     }
 
     #[test]
@@ -1483,6 +1501,7 @@ mod tests {
         let control = InventoryControl::new();
         control.set_pacing(crate::provider::InventoryPacing {
             min_interval: Duration::from_millis(100),
+            ..Default::default()
         });
         let mut boundary = InventoryBoundary::new(&control);
         assert_eq!(boundary.before_operation(), BoundaryResult::Proceed);
@@ -1492,6 +1511,7 @@ mod tests {
                 std::thread::sleep(Duration::from_millis(20));
                 control.set_pacing(crate::provider::InventoryPacing {
                     min_interval: Duration::ZERO,
+                    ..Default::default()
                 });
             })
         };
@@ -1499,6 +1519,26 @@ mod tests {
         assert_eq!(boundary.before_operation(), BoundaryResult::Proceed);
         updater.join().unwrap();
         assert!(started.elapsed() < Duration::from_millis(90));
+    }
+
+    #[test]
+    fn item_rate_pacing_charges_the_requested_native_batch() {
+        let pacing = crate::provider::InventoryPacing {
+            min_interval: Duration::ZERO,
+            item_rate_per_second: Some(50),
+        };
+        assert_eq!(pacing_interval(pacing, 100), Duration::from_secs(2));
+        assert_eq!(pacing_interval(pacing, 0), Duration::from_millis(20));
+        assert_eq!(
+            pacing_interval(
+                crate::provider::InventoryPacing {
+                    min_interval: Duration::from_millis(100),
+                    item_rate_per_second: Some(50),
+                },
+                1,
+            ),
+            Duration::from_millis(100)
+        );
     }
 
     #[test]
@@ -1519,6 +1559,7 @@ mod tests {
         let control = InventoryControl::new();
         control.set_pacing(crate::provider::InventoryPacing {
             min_interval: Duration::from_millis(500),
+            ..Default::default()
         });
         let worker_control = control.clone();
         let (sender, _receiver) = mpsc::channel(16);

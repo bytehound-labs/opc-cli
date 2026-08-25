@@ -784,7 +784,9 @@ mod tests {
     use super::*;
     use crate::backend::connector::{ConnectedGroup, RemoteArray};
     use crate::bindings::da::{tagOPCDATASOURCE, tagOPCITEMDEF, tagOPCITEMRESULT, tagOPCITEMSTATE};
-    use crate::opc_da::errors::{E_INVALIDARG_HRESULT, RPC_X_NULL_REF_POINTER_HRESULT};
+    use crate::opc_da::errors::{
+        E_INVALIDARG_HRESULT, E_NOTIMPL_HRESULT, RPC_X_NULL_REF_POINTER_HRESULT,
+    };
     use crate::opc_da::typedefs::{GroupHandle, ItemHandle};
     use std::collections::VecDeque;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -1122,31 +1124,31 @@ mod tests {
     }
 
     #[test]
-    fn da3_root_compatibility_failure_falls_back_to_da2_for_the_session() {
-        let server = MockServer::da3(Vec::new()).with_da2_fallback(
-            RPC_X_NULL_REF_POINTER_HRESULT,
-            vec!["Channel.Device.Tag".to_string()],
-        );
-        let calls = Arc::clone(&server.da3_calls);
-        let mut sessions = BrowseSessions::default();
-        let session = sessions.open(server).unwrap();
+    fn da3_root_compatibility_failures_fall_back_to_da2_for_the_session() {
+        for hresult in [RPC_X_NULL_REF_POINTER_HRESULT, E_NOTIMPL_HRESULT] {
+            let server = MockServer::da3(Vec::new())
+                .with_da2_fallback(hresult, vec!["Channel.Device.Tag".to_string()]);
+            let calls = Arc::clone(&server.da3_calls);
+            let mut sessions = BrowseSessions::default();
+            let session = sessions.open(server).unwrap();
 
-        let first = sessions
-            .page(&session, request(None, BrowseNodeFilter::All, 10, None))
-            .unwrap();
-        assert_eq!(first.nodes.len(), 1);
-        assert_eq!(first.nodes[0].name, "Channel.Device.Tag");
-        assert_eq!(
-            first.nodes[0].item_id.as_deref(),
-            Some("Channel.Device.Tag")
-        );
-        assert_eq!(first.nodes[0].kind, BrowseNodeKind::Item);
+            let first = sessions
+                .page(&session, request(None, BrowseNodeFilter::All, 10, None))
+                .unwrap();
+            assert_eq!(first.nodes.len(), 1);
+            assert_eq!(first.nodes[0].name, "Channel.Device.Tag");
+            assert_eq!(
+                first.nodes[0].item_id.as_deref(),
+                Some("Channel.Device.Tag")
+            );
+            assert_eq!(first.nodes[0].kind, BrowseNodeKind::Item);
 
-        let second = sessions
-            .page(&session, request(None, BrowseNodeFilter::All, 10, None))
-            .unwrap();
-        assert_eq!(second.nodes.len(), 1);
-        assert_eq!(calls.lock().unwrap().len(), 1);
+            let second = sessions
+                .page(&session, request(None, BrowseNodeFilter::All, 10, None))
+                .unwrap();
+            assert_eq!(second.nodes.len(), 1);
+            assert_eq!(calls.lock().unwrap().len(), 1);
+        }
     }
 
     #[test]

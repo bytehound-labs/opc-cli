@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- DA 3.0 `IOPCBrowse::Browse` sends a true null property-ID pointer when
+  `dwPropertyCount` is zero, while retaining the generated binding path for
+  non-empty property-ID lists.
+
+### Added
+
+- Inventory pacing can cap the requested item rate in addition to the minimum
+  interval between native operation starts. A bounded operation is charged
+  for its requested batch size before the COM call begins.
+
 ## [0.2.7] - 2026-08-25
 
 ### Fixed

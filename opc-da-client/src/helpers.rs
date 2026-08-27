@@ -2,6 +2,7 @@
 use crate::opc_da::client::ClientTrait;
 use crate::opc_da::errors::{OpcError, OpcResult};
 use crate::provider::OpcValue;
+use std::time::Instant;
 use windows::Win32::Foundation::{FILETIME, VARIANT_BOOL};
 use windows::Win32::System::Com::{CLSIDFromProgID, CoTaskMemFree, ProgIDFromCLSID};
 use windows::Win32::System::Ole::{
@@ -309,6 +310,8 @@ pub fn opc_value_to_variant(value: &OpcValue) -> VARIANT {
 /// Returns `Err` if the `ProgID` cannot be resolved or the server
 /// cannot be instantiated.
 pub fn connect_server(server_name: &str) -> OpcResult<crate::bindings::da::IOPCServer> {
+    let started = Instant::now();
+    tracing::info!(server = %server_name, "Resolving OPC DA server ProgID");
     // SAFETY: `server_wide` is null-terminated and lives until end of scope.
     let clsid_raw = unsafe {
         let server_wide: Vec<u16> = server_name
@@ -321,10 +324,16 @@ pub fn connect_server(server_name: &str) -> OpcResult<crate::bindings::da::IOPCS
             ))
         })?
     };
+    tracing::info!(
+        server = %server_name,
+        elapsed_ms = started.elapsed().as_millis(),
+        "Resolved OPC DA server ProgID to CLSID"
+    );
     // SAFETY: `opc_da::GUID` and `windows::core::GUID` are binary compatible.
     let clsid = unsafe { std::mem::transmute_copy(&clsid_raw) };
 
     let client = crate::opc_da::client::v2::Client;
+    tracing::info!(server = %server_name, "Creating OPC DA server instance via COM");
     let server = client
         .create_server(clsid, crate::opc_da::typedefs::ClassContext::All)
         .map_err(|e| {
@@ -337,7 +346,11 @@ pub fn connect_server(server_name: &str) -> OpcResult<crate::bindings::da::IOPCS
             tracing::error!(error = ?e, server = %server_name, hint, "create_server failed");
             e
         })?;
-    tracing::debug!(server = %server_name, "Connected to OPC DA server");
+    tracing::info!(
+        server = %server_name,
+        elapsed_ms = started.elapsed().as_millis(),
+        "Created OPC DA server instance via COM"
+    );
     Ok(server.server)
 }
 

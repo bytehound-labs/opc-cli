@@ -187,7 +187,9 @@ pub fn run_inventory<C: ServerConnector>(
     }
 
     let mut active_time = Duration::ZERO;
+    tracing::info!(server = %server_name, "Connecting native OPC DA inventory session");
     let connected = connector.connect(server_name)?;
+    tracing::info!(server = %server_name, "Native OPC DA inventory session connected");
     let mut boundary = InventoryBoundary::new(control);
     let capabilities = if control.is_cancelled() {
         crate::provider::BrowseCapabilities {
@@ -197,6 +199,7 @@ pub fn run_inventory<C: ServerConnector>(
             max_page_size: 1_000,
         }
     } else {
+        tracing::info!(server = %server_name, "Probing native OPC DA inventory capabilities");
         match capabilities_for_inventory(&connected, &mut boundary) {
             Ok(capabilities) => capabilities,
             Err(InventoryError::Cancelled) => crate::provider::BrowseCapabilities {
@@ -208,6 +211,13 @@ pub fn run_inventory<C: ServerConnector>(
             Err(InventoryError::Failed(error)) => return Err(error),
         }
     };
+    tracing::info!(
+        server = %server_name,
+        namespace = ?capabilities.namespace,
+        supports_da2 = capabilities.supports_da2,
+        supports_da3 = capabilities.supports_da3,
+        "Native OPC DA inventory capabilities resolved"
+    );
     let mut queue = VecDeque::from([initial_work(capabilities)]);
     let mut seen_items = HashSet::new();
     let mut current_da2_path = Vec::new();
@@ -237,6 +247,7 @@ pub fn run_inventory<C: ServerConnector>(
     ) {
         return Ok(());
     }
+    tracing::info!(server = %server_name, "Native OPC DA inventory emitted initial progress");
 
     if options.max_entries == Some(0) {
         terminal.complete = false;
@@ -1283,6 +1294,99 @@ mod tests {
                 .take()
                 .ok_or_else(|| OpcError::Internal("server already connected".to_string()))
         }
+    }
+
+    struct FailingConnector;
+
+    impl ServerConnector for FailingConnector {
+        type Server = Da3Server;
+
+        fn enumerate_servers(&self) -> OpcResult<Vec<String>> {
+            Ok(Vec::new())
+        }
+
+        fn connect(&self, _server_name: &str) -> OpcResult<Self::Server> {
+            Err(OpcError::Internal(
+                "synthetic inventory connection failure".to_string(),
+            ))
+        }
+    }
+
+    struct CancelOnConnectConnector {
+        server: Arc<Mutex<Option<Da3Server>>>,
+        control: InventoryControl,
+    }
+
+    impl ServerConnector for CancelOnConnectConnector {
+        type Server = Da3Server;
+
+        fn enumerate_servers(&self) -> OpcResult<Vec<String>> {
+            Ok(Vec::new())
+        }
+
+        fn connect(&self, _server_name: &str) -> OpcResult<Self::Server> {
+            self.control.cancel();
+            self.server
+                .lock()
+                .unwrap()
+                .take()
+                .ok_or_else(|| OpcError::Internal("server already connected".to_string()))
+        }
+    }
+
+    #[test]
+    fn inventory_connection_failure_is_terminal_without_progress() {
+        let (sender, mut receiver) = mpsc::channel(8);
+        let result = run_inventory(
+            &FailingConnector,
+            "test",
+            InventoryOptions::default(),
+            &InventoryControl::new(),
+            &sender,
+        );
+
+        assert!(matches!(
+            result,
+            Err(OpcError::Internal(message))
+                if message.contains("synthetic inventory connection failure")
+        ));
+        assert!(receiver.try_recv().is_err());
+    }
+
+    #[test]
+    fn cancellation_after_connection_skips_capability_probe() {
+        let connector = CancelOnConnectConnector {
+            server: Arc::new(Mutex::new(Some(Da3Server {
+                total: 1,
+                browse_calls: Arc::new(AtomicUsize::new(0)),
+                batch_sizes: Arc::new(Mutex::new(Vec::new())),
+                fail: false,
+                da3_hresult: None,
+                supports_da2: false,
+                da2_items: Vec::new(),
+            }))),
+            control: InventoryControl::new(),
+        };
+        let control = connector.control.clone();
+        let (sender, mut receiver) = mpsc::channel(8);
+
+        run_inventory(
+            &connector,
+            "test",
+            InventoryOptions::default(),
+            &control,
+            &sender,
+        )
+        .unwrap();
+
+        let (_, completed, error) = collect(&mut receiver);
+        assert!(error.is_none());
+        assert!(completed.is_some_and(|value| {
+            value.cancelled
+                && value.capabilities.namespace == BrowseNamespace::Unknown
+                && !value.capabilities.supports_da2
+                && !value.capabilities.supports_da3
+        }));
     }
 
     #[test]

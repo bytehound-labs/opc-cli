@@ -10,6 +10,7 @@ use async_trait::async_trait;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::time::Instant;
 use tokio::sync::mpsc;
 
 /// Concrete [`OpcProvider`] implementation for Windows OPC DA.
@@ -26,6 +27,7 @@ struct InventoryActiveGuard(Arc<AtomicBool>);
 impl Drop for InventoryActiveGuard {
     fn drop(&mut self) {
         self.0.store(false, Ordering::Release);
+        tracing::info!("OPC namespace inventory worker released its active state");
     }
 }
 
@@ -174,6 +176,12 @@ impl<C: ServerConnector + 'static> OpcProvider for OpcDaClient<C> {
             ));
         }
 
+        tracing::info!(
+            server = %server,
+            batch_size = options.batch_size,
+            max_entries = ?options.max_entries,
+            "Starting OPC namespace inventory worker"
+        );
         let (sender, receiver) = mpsc::channel(64);
         let control = InventoryControl::new_with_batch_size(options.batch_size);
         let worker_control = control.clone();
@@ -183,11 +191,25 @@ impl<C: ServerConnector + 'static> OpcProvider for OpcDaClient<C> {
         let spawn_result = std::thread::Builder::new()
             .name("opc-da-inventory".to_string())
             .spawn(move || {
+                let worker_started = Instant::now();
                 let _active_guard = InventoryActiveGuard(active);
+                tracing::info!(
+                    server = %server,
+                    "OPC namespace inventory worker started; initializing COM"
+                );
                 let result = catch_unwind(AssertUnwindSafe(|| {
                     let _guard = crate::ComGuard::new().map_err(|error| {
                         crate::opc_da::errors::OpcError::Internal(error.to_string())
                     })?;
+                    tracing::info!(
+                        server = %server,
+                        elapsed_ms = worker_started.elapsed().as_millis(),
+                        "OPC namespace inventory worker initialized COM"
+                    );
+                    tracing::info!(
+                        server = %server,
+                        "OPC namespace inventory worker entering native inventory startup"
+                    );
                     crate::inventory::run_inventory(
                         &*connector,
                         &server,
@@ -196,6 +218,11 @@ impl<C: ServerConnector + 'static> OpcProvider for OpcDaClient<C> {
                         &sender,
                     )
                 }));
+                tracing::info!(
+                    server = %server,
+                    elapsed_ms = worker_started.elapsed().as_millis(),
+                    "OPC namespace inventory worker left native inventory startup"
+                );
                 match result {
                     Ok(Ok(())) => {}
                     Ok(Err(error)) => {
@@ -284,5 +311,69 @@ fn panic_payload_type(payload: &(dyn std::any::Any + Send)) -> &'static str {
         "String"
     } else {
         "other"
+    }
+}
+
+#[cfg(test)]
+mod lifecycle_tests {
+    use super::*;
+    use crate::backend::connector::ServerConnector;
+    use crate::opc_da::errors::OpcError;
+
+    struct StartupFailureConnector;
+
+    impl ServerConnector for StartupFailureConnector {
+        type Server = crate::backend::connector::ComServer;
+
+        fn enumerate_servers(&self) -> OpcResult<Vec<String>> {
+            Ok(Vec::new())
+        }
+
+        fn connect(&self, _server_name: &str) -> OpcResult<Self::Server> {
+            Err(OpcError::Internal(
+                "synthetic inventory connection failure".to_string(),
+            ))
+        }
+    }
+
+    #[test]
+    fn active_state_guard_clears_state_during_unwind() {
+        let active = Arc::new(AtomicBool::new(true));
+        let result = catch_unwind(AssertUnwindSafe(|| {
+            let _guard = InventoryActiveGuard(Arc::clone(&active));
+            panic!("synthetic inventory panic");
+        }));
+
+        assert!(result.is_err());
+        assert!(!active.load(Ordering::Acquire));
+    }
+
+    #[tokio::test]
+    async fn startup_failure_releases_active_state_and_allows_retry() {
+        let client = OpcDaClient::new(StartupFailureConnector).unwrap();
+
+        let mut first = client
+            .start_inventory("missing.server", InventoryOptions::default())
+            .await
+            .unwrap();
+        let first_event = first.message().await.expect("startup failure event");
+        assert!(matches!(
+            first_event,
+            Err(OpcError::Internal(message))
+                if message.contains("synthetic inventory connection failure")
+        ));
+        drop(first);
+
+        let mut retry = client
+            .start_inventory("missing.server", InventoryOptions::default())
+            .await
+            .unwrap();
+        let retry_event = retry.message().await.expect("retry failure event");
+        assert!(matches!(
+            retry_event,
+            Err(OpcError::Internal(message))
+                if message.contains("synthetic inventory connection failure")
+        ));
+        drop(retry);
     }
 }

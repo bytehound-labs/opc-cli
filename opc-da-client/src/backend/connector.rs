@@ -12,6 +12,7 @@ use crate::opc_da::errors::{E_INVALIDARG_HRESULT, is_com_hresult};
 pub use crate::opc_da::errors::{OpcError, OpcResult};
 use crate::provider::BrowseNodeFilter;
 use anyhow::Context;
+use std::time::Instant;
 pub use windows::Win32::System::Variant::VARIANT;
 use windows::core::Interface;
 
@@ -339,17 +340,87 @@ impl ServerConnector for ComConnector {
     }
 
     fn connect(&self, server_name: &str) -> OpcResult<Self::Server> {
+        tracing::info!(server = %server_name, "Acquiring OPC DA server interfaces");
         let opc_server = crate::helpers::connect_server(server_name)?;
+        tracing::info!(server = %server_name, "Acquiring IUnknown interface");
         let unknown: windows::core::IUnknown = opc_server.cast()?;
 
+        tracing::info!(server = %server_name, "Acquiring required IOPCCommon interface");
+        let common = unknown.cast()?;
+        tracing::info!(
+            server = %server_name,
+            "Acquiring required IConnectionPointContainer interface"
+        );
+        let connection_point_container = unknown.cast()?;
+        tracing::info!(server = %server_name, "Acquiring required IOPCItemProperties interface");
+        let item_properties = unknown.cast()?;
+
+        tracing::info!(
+            server = %server_name,
+            "Probing optional IOPCServerPublicGroups interface"
+        );
+        let server_public_groups = match unknown.cast() {
+            Ok(value) => {
+                tracing::info!(server = %server_name, "IOPCServerPublicGroups is supported");
+                Some(value)
+            }
+            Err(error) => {
+                tracing::info!(
+                    server = %server_name,
+                    error = ?error,
+                    "IOPCServerPublicGroups is not supported"
+                );
+                None
+            }
+        };
+
+        tracing::info!(
+            server = %server_name,
+            "Probing optional IOPCBrowseServerAddressSpace interface"
+        );
+        let browse_server_address_space = match unknown.cast() {
+            Ok(value) => {
+                tracing::info!(
+                    server = %server_name,
+                    "IOPCBrowseServerAddressSpace is supported"
+                );
+                Some(value)
+            }
+            Err(error) => {
+                tracing::info!(
+                    server = %server_name,
+                    error = ?error,
+                    "IOPCBrowseServerAddressSpace is not supported"
+                );
+                None
+            }
+        };
+
+        tracing::info!(server = %server_name, "Probing optional IOPCBrowse interface");
+        let browse = match unknown.cast() {
+            Ok(value) => {
+                tracing::info!(server = %server_name, "IOPCBrowse is supported");
+                Some(value)
+            }
+            Err(error) => {
+                tracing::info!(
+                    server = %server_name,
+                    error = ?error,
+                    "IOPCBrowse is not supported"
+                );
+                None
+            }
+        };
+
+        tracing::info!(server = %server_name, "OPC DA server interface acquisition completed");
         Ok(ComServer {
             server: opc_server,
-            common: unknown.cast()?,
-            connection_point_container: unknown.cast()?,
-            item_properties: unknown.cast()?,
-            server_public_groups: unknown.cast().ok(),
-            browse_server_address_space: unknown.cast().ok(),
-            browse: unknown.cast().ok(),
+            common,
+            connection_point_container,
+            item_properties,
+            server_public_groups,
+            browse_server_address_space,
+            browse,
         })
     }
 }
@@ -418,8 +489,23 @@ impl ConnectedServer for ComServer {
     type Group = ComGroup;
 
     fn query_organization(&self) -> OpcResult<u32> {
-        let org = BrowseServerAddressSpaceTrait::query_organization(self)?;
-        Ok(org.0.cast_unsigned())
+        let started = Instant::now();
+        tracing::info!("Querying OPC DA namespace organization");
+        let result = BrowseServerAddressSpaceTrait::query_organization(self)
+            .map(|org| org.0.cast_unsigned());
+        match &result {
+            Ok(value) => tracing::info!(
+                organization = *value,
+                elapsed_ms = started.elapsed().as_millis(),
+                "OPC DA namespace organization query completed"
+            ),
+            Err(error) => tracing::info!(
+                error = ?error,
+                elapsed_ms = started.elapsed().as_millis(),
+                "OPC DA namespace organization query failed"
+            ),
+        }
+        result
     }
 
     fn browse_opc_item_ids(

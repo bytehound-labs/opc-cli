@@ -2,7 +2,7 @@ use crate::opc_da::errors::{OpcError, OpcResult};
 use async_trait::async_trait;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 use uuid::Uuid;
 
@@ -539,6 +539,8 @@ impl InventoryStream {
 
 impl Drop for InventoryStream {
     fn drop(&mut self) {
+        let started = Instant::now();
+        tracing::info!("Dropping OPC namespace inventory stream; requesting worker cancellation");
         // Close the receiver before joining so a worker blocked on a full
         // event channel can observe the disconnect and finish.
         self.receiver.close();
@@ -546,6 +548,10 @@ impl Drop for InventoryStream {
         if let Some(worker) = self.worker.take() {
             let _ = worker.join();
         }
+        tracing::info!(
+            elapsed_ms = started.elapsed().as_millis(),
+            "OPC namespace inventory worker joined"
+        );
     }
 }
 

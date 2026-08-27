@@ -273,6 +273,14 @@ browsing and reports DA 2.x as its source when compatibility fallback is used.
 Completion warnings are cumulative, so an entry limit or skipped branch does
 not erase the compatibility diagnostic.
 
+Inventory startup emits structured stage logs for ProgID resolution, COM server
+creation, required and optional interface acquisition, capability detection,
+namespace-organization queries, initial progress, and worker teardown. These
+stages distinguish a server that supports ordinary reads from one that blocks
+while opening a fresh inventory connection. Startup failures, cancellations, and
+worker panics release the inventory slot before the stream is joined, so a
+subsequent inventory can be attempted safely.
+
 ## Architecture
 
 The library is split into a core trait layer and concrete implementations:

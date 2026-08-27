@@ -20,7 +20,7 @@ See **[bytehound-opc-da-client architecture.md](./opc-da-client/architecture.md)
 - **Server Discovery**: Enumerate OPC DA servers on local or remote hosts.
 - **Hierarchical Browsing**: Recursive tag discovery for the TUI plus bounded, one-level native browse pages with OPC DA 3.0 support and a one-time, narrowly classified DA 2.x compatibility fallback before the first successful root page.
 - **Inventory Telemetry**: Library consumers can pace bounded inventory operations, adjust their batch size at runtime, and receive typed observations for each completed slice.
-- **Inventory Startup Diagnostics**: Structured logs identify native COM connection and capability-detection stages when a fresh namespace inventory does not reach its first progress event.
+- **Inventory Startup Diagnostics**: Structured logs identify native COM connection, capability-detection, boundary pause/pacing, and native-operation entry/return stages when a fresh namespace inventory does not reach its first progress event.
 - **Restartable Inventory Lifecycle**: Startup failures, cancellation, and worker unwinding release the active inventory state so later inventory attempts are not blocked by stale ownership.
 - **Real-time Monitoring**: Live tag value updates with 1-second auto-refresh.
 - **Tag Write Support**: Write typed values (int, float, bool, string) to individual tags.

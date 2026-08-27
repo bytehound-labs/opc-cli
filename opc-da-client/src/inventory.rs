@@ -119,17 +119,39 @@ impl<'a> InventoryBoundary<'a> {
     }
 
     fn before_operation_with_cost(&mut self, item_cost: u32) -> BoundaryResult {
+        let operation_number = self.native_operations.saturating_add(1);
+        let trace_boundary = operation_number <= 16;
+        let boundary_started = Instant::now();
+        let mut logged_pause = false;
+        let mut logged_pacing = false;
+        let mut paused_for = Duration::ZERO;
         loop {
             if self.control.is_cancelled() {
+                if trace_boundary {
+                    tracing::info!(
+                        operation_number,
+                        boundary_wait_ms = boundary_started.elapsed().as_millis(),
+                        "Inventory operation boundary cancelled before native call"
+                    );
+                }
                 return BoundaryResult::Cancelled;
             }
 
             if self.control.is_paused() {
+                if trace_boundary && !logged_pause {
+                    tracing::info!(
+                        operation_number,
+                        "Inventory operation boundary waiting while paused"
+                    );
+                    logged_pause = true;
+                }
                 let started = Instant::now();
                 while self.control.is_paused() && !self.control.is_cancelled() {
                     std::thread::sleep(Duration::from_millis(10));
                 }
-                self.paused_time += started.elapsed();
+                let elapsed = started.elapsed();
+                paused_for += elapsed;
+                self.paused_time += elapsed;
                 continue;
             }
 
@@ -137,6 +159,15 @@ impl<'a> InventoryBoundary<'a> {
             if let Some(last_started) = self.last_started {
                 let elapsed = last_started.elapsed();
                 if let Some(remaining) = interval.checked_sub(elapsed) {
+                    if trace_boundary && !logged_pacing {
+                        tracing::info!(
+                            operation_number,
+                            remaining_ms = remaining.as_millis(),
+                            interval_ms = interval.as_millis(),
+                            "Inventory operation boundary waiting for pacing interval"
+                        );
+                        logged_pacing = true;
+                    }
                     std::thread::sleep(remaining.min(Duration::from_millis(10)));
                     continue;
                 }
@@ -147,6 +178,15 @@ impl<'a> InventoryBoundary<'a> {
             }
             self.last_started = Some(Instant::now());
             self.native_operations = self.native_operations.saturating_add(1);
+            if trace_boundary {
+                tracing::info!(
+                    operation_number,
+                    boundary_wait_ms = boundary_started.elapsed().as_millis(),
+                    paused_ms = paused_for.as_millis(),
+                    interval_ms = interval.as_millis(),
+                    "Inventory operation boundary admitted native call"
+                );
+            }
             return BoundaryResult::Proceed;
         }
     }
@@ -162,11 +202,62 @@ impl<'a> InventoryBoundary<'a> {
 
 fn paced_call<T>(
     boundary: &mut InventoryBoundary<'_>,
-    operation: impl FnOnce() -> OpcResult<T>,
+    operation: &'static str,
+    call: impl FnOnce() -> OpcResult<T>,
 ) -> Result<T, InventoryError> {
+    let operation_number = boundary.operations().saturating_add(1);
+    let trace_operation = operation_number <= 16;
+    let boundary_started = Instant::now();
+    if trace_operation {
+        tracing::info!(
+            operation,
+            operation_number,
+            "Waiting for inventory operation boundary"
+        );
+    }
     match boundary.before_operation() {
-        BoundaryResult::Proceed => operation().map_err(InventoryError::from),
-        BoundaryResult::Cancelled => Err(InventoryError::Cancelled),
+        BoundaryResult::Proceed => {
+            if trace_operation {
+                tracing::info!(
+                    operation,
+                    operation_number,
+                    boundary_wait_ms = boundary_started.elapsed().as_millis(),
+                    "Inventory operation boundary passed"
+                );
+                tracing::info!(operation, operation_number, "Starting native inventory operation");
+            }
+            let native_started = Instant::now();
+            let result = call().map_err(InventoryError::from);
+            if trace_operation {
+                match &result {
+                    Ok(_) => tracing::info!(
+                        operation,
+                        operation_number,
+                        native_elapsed_ms = native_started.elapsed().as_millis(),
+                        "Native inventory operation returned"
+                    ),
+                    Err(error) => tracing::info!(
+                        operation,
+                        operation_number,
+                        native_elapsed_ms = native_started.elapsed().as_millis(),
+                        error = ?error,
+                        "Native inventory operation failed"
+                    ),
+                }
+            }
+            result
+        }
+        BoundaryResult::Cancelled => {
+            if trace_operation {
+                tracing::info!(
+                    operation,
+                    operation_number,
+                    boundary_wait_ms = boundary_started.elapsed().as_millis(),
+                    "Inventory operation boundary cancelled"
+                );
+            }
+            Err(InventoryError::Cancelled)
+        }
     }
 }
 
@@ -493,10 +584,9 @@ fn capabilities_for_inventory<S: ConnectedServer>(
         .into());
     }
     let namespace = if supports_da2 {
-        let organization = match boundary.before_operation() {
-            BoundaryResult::Proceed => server.query_organization()?,
-            BoundaryResult::Cancelled => return Err(InventoryError::Cancelled),
-        };
+        let organization = paced_call(boundary, "capabilities.query_organization", || {
+            server.query_organization()
+        })?;
         match organization {
             value if value == OPC_NS_FLAT.0.cast_unsigned() => {
                 crate::provider::BrowseNamespace::Flat
@@ -649,7 +739,9 @@ fn start_da2_page<S: ConnectedServer>(
     boundary: &mut InventoryBoundary<'_>,
 ) -> Result<Da2PageState, InventoryError> {
     move_to_da2_path(server, current_path, parent_path, boundary)?;
-    let flat = match paced_call(boundary, || server.query_organization()) {
+    let flat = match paced_call(boundary, "start_da2_page.query_organization", || {
+        server.query_organization()
+    }) {
         Ok(value) => value == OPC_NS_FLAT.0.cast_unsigned(),
         Err(InventoryError::Failed(error)) => {
             return Err(
@@ -661,7 +753,7 @@ fn start_da2_page<S: ConnectedServer>(
     let branches = if flat {
         None
     } else {
-        let iterator = paced_call(boundary, || {
+        let iterator = paced_call(boundary, "start_da2_page.begin_da2_browse(branches)", || {
             server.begin_da2_browse(OPC_BRANCH.0.cast_unsigned(), Some(""), 0, 0)
         })
         .map_err(|error| match error {
@@ -675,7 +767,14 @@ fn start_da2_page<S: ConnectedServer>(
         })?;
         Some(BufferedBrowseIterator::new(iterator))
     };
-    let iterator = paced_call(boundary, || {
+    let iterator = paced_call(
+        boundary,
+        if flat {
+            "start_da2_page.begin_da2_browse(flat)"
+        } else {
+            "start_da2_page.begin_da2_browse(items)"
+        },
+        || {
         server.begin_da2_browse(
             if flat {
                 OPC_FLAT.0.cast_unsigned()
@@ -686,7 +785,8 @@ fn start_da2_page<S: ConnectedServer>(
             0,
             0,
         )
-    })
+        },
+    )
     .map_err(|error| match error {
         InventoryError::Failed(error) => InventoryError::Failed(contextual_browse_error(
             error,
@@ -751,7 +851,9 @@ fn browse_da2_page<S: ConnectedServer>(
                 let item_id = if state.flat {
                     name.clone()
                 } else {
-                    match paced_call(boundary, || server.get_item_id(&name)) {
+                    match paced_call(boundary, "browse_da2_page.get_item_id", || {
+                        server.get_item_id(&name)
+                    }) {
                         Ok(item_id) => item_id,
                         Err(InventoryError::Failed(error)) => {
                             return Err(contextual_browse_error(
@@ -804,7 +906,9 @@ fn map_inventory_da2_branch<S: ConnectedServer>(
 ) -> Result<Option<InventoryDa2BranchNode>, InventoryError> {
     let mut child_path = state.parent_path.clone();
     child_path.push(name.to_string());
-    let item_id = match paced_call(boundary, || server.resolve_da2_item_id(name)) {
+    let item_id = match paced_call(boundary, "classify_da2_branch.resolve_item_id", || {
+        server.resolve_da2_item_id(name)
+    }) {
         Ok(item_id) => item_id,
         Err(InventoryError::Failed(error))
             if crate::opc_da::errors::is_com_hresult(&error, E_INVALIDARG_HRESULT) =>
@@ -824,9 +928,14 @@ fn map_inventory_da2_branch<S: ConnectedServer>(
     };
     let down = OPC_BROWSE_DOWN.0.cast_unsigned();
     let up = OPC_BROWSE_UP.0.cast_unsigned();
-    let navigation = match paced_call(boundary, || server.change_browse_position(down, name)) {
+    let navigation = match paced_call(boundary, "classify_da2_branch.down", || {
+        server.change_browse_position(down, name)
+    }) {
         Ok(()) => {
-            paced_call(boundary, || server.change_browse_position(up, "")).map_err(|error| {
+            paced_call(boundary, "classify_da2_branch.up", || {
+                server.change_browse_position(up, "")
+            })
+            .map_err(|error| {
                 contextual_inventory_error(
                     error,
                     "classify_da2_branch(up)",
@@ -907,9 +1016,14 @@ fn probe_da2_name_has_children<S: ConnectedServer>(
 ) -> Result<bool, InventoryError> {
     let down = OPC_BROWSE_DOWN.0.cast_unsigned();
     let up = OPC_BROWSE_UP.0.cast_unsigned();
-    match paced_call(boundary, || server.change_browse_position(down, item_name)) {
+    match paced_call(boundary, "probe_da2_branch.down", || {
+        server.change_browse_position(down, item_name)
+    }) {
         Ok(()) => {
-            paced_call(boundary, || server.change_browse_position(up, "")).map_err(|error| {
+            paced_call(boundary, "probe_da2_branch.up", || {
+                server.change_browse_position(up, "")
+            })
+            .map_err(|error| {
                 contextual_inventory_error(error, "probe_da2_branch(up)", path, Some(item_name))
             })?;
             Ok(true)
@@ -1025,7 +1139,7 @@ fn move_to_da2_path<S: ConnectedServer>(
         .take_while(|(left, right)| left == right)
         .count();
     for _ in shared..current_path.len() {
-        paced_call(boundary, || {
+        paced_call(boundary, "move_to_da2_path.up", || {
             server.change_browse_position(OPC_BROWSE_UP.0.cast_unsigned(), "")
         })
         .map_err(|error| {
@@ -1039,7 +1153,7 @@ fn move_to_da2_path<S: ConnectedServer>(
     }
     current_path.truncate(shared);
     for branch in &target[shared..] {
-        paced_call(boundary, || {
+        paced_call(boundary, "move_to_da2_path.down", || {
             server.change_browse_position(OPC_BROWSE_DOWN.0.cast_unsigned(), branch)
         })
         .map_err(|error| {

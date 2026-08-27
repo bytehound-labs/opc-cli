@@ -21,6 +21,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Diagnostic inventory traces cover the first 128 bounded operations with
   browse-path, item, pacing, boundary, native-duration, and iterator-result
   context.
+- Inventory cancellation logs identify the requesting source and whether the
+  control was already cancelled, including explicit stream cancellation and
+  stream-drop cleanup.
 
 ## [0.2.7] - 2026-08-25
 

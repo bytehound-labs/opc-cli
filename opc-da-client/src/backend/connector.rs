@@ -515,13 +515,35 @@ impl ConnectedServer for ComServer {
         data_type: u16,
         access_rights: u32,
     ) -> OpcResult<StringIterator> {
-        BrowseServerAddressSpaceTrait::browse_opc_item_ids(
+        let started = Instant::now();
+        tracing::info!(
+            browse_type,
+            filter = ?filter,
+            data_type,
+            access_rights,
+            "Starting OPC DA BrowseOPCItemIDs"
+        );
+        let result = BrowseServerAddressSpaceTrait::browse_opc_item_ids(
             self,
             crate::bindings::da::tagOPCBROWSETYPE(browse_type.cast_signed()),
             filter,
             data_type,
             access_rights,
-        )
+        );
+        match &result {
+            Ok(_) => tracing::info!(
+                browse_type,
+                elapsed_ms = started.elapsed().as_millis(),
+                "OPC DA BrowseOPCItemIDs returned an enumerator"
+            ),
+            Err(error) => tracing::info!(
+                browse_type,
+                elapsed_ms = started.elapsed().as_millis(),
+                error = ?error,
+                "OPC DA BrowseOPCItemIDs failed"
+            ),
+        }
+        result
     }
 
     fn change_browse_position(&self, direction: u32, name: &str) -> OpcResult<()> {

@@ -1105,6 +1105,7 @@ mod tests {
         E_INVALIDARG_HRESULT, E_NOTIMPL_HRESULT, RPC_X_NULL_REF_POINTER_HRESULT,
     };
     use crate::opc_da::typedefs::{GroupHandle, ItemHandle};
+    use crate::provider::BrowseNamespace;
     use std::sync::Arc;
     use std::sync::Mutex;
     use std::sync::atomic::{AtomicUsize, Ordering};

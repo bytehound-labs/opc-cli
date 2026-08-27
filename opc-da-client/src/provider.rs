@@ -402,7 +402,20 @@ impl InventoryControl {
 
     /// Request cancellation at the next bounded COM boundary.
     pub fn cancel(&self) {
-        self.state.cancelled.store(true, Ordering::Release);
+        self.cancel_with_reason("unspecified");
+    }
+
+    /// Request cancellation with a diagnostic source label.
+    ///
+    /// The label is intentionally diagnostic-only and does not change the
+    /// cancellation semantics or the public stream result.
+    pub fn cancel_with_reason(&self, reason: &str) {
+        let already_cancelled = self.state.cancelled.swap(true, Ordering::Release);
+        tracing::warn!(
+            cancellation_source = %reason,
+            already_cancelled,
+            "OPC namespace inventory cancellation requested"
+        );
     }
 
     /// Pause before the next bounded COM operation.
@@ -513,7 +526,7 @@ impl InventoryStream {
 
     /// Request cancellation of this inventory.
     pub fn cancel(&self) {
-        self.control.cancel();
+        self.control.cancel_with_reason("stream_cancel");
     }
 
     /// Pause this inventory before its next bounded operation.
@@ -542,7 +555,7 @@ impl Drop for InventoryStream {
         // Close the receiver before joining so a worker blocked on a full
         // event channel can observe the disconnect and finish.
         self.receiver.close();
-        self.control.cancel();
+        self.control.cancel_with_reason("stream_drop");
         if let Some(worker) = self.worker.take() {
             let _ = worker.join();
         }

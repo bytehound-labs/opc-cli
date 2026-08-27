@@ -61,6 +61,7 @@ enum BoundaryResult {
     Cancelled,
 }
 
+#[derive(Debug)]
 enum InventoryError {
     Cancelled,
     Failed(OpcError),

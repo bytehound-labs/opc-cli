@@ -249,6 +249,10 @@ fn browse_recursive(
 4.  Enumerates `OPC_LEAF` items (soft-fail: errors logged and skipped).
 5.  Converts browse names to fully-qualified item IDs via `get_item_id()`; falls back to browse name on failure.
 6.  Each discovered tag is pushed to both `tags` and `tags_sink`, and `progress` is incremented.
+7.  A native or compatibility browse iterator that returns the same successful value 64
+    consecutive times terminates with `OpcError::BrowseNonProgress`; the error includes the
+    iterator type, browse path, repeated value, consecutive count, and total yielded count.
+    Short duplicate sequences remain valid.
 
 #### Native paged browsing
 
@@ -379,12 +383,16 @@ Defined in § 1.1. See table above.
 *   All `opc_da` errors are wrapped with `anyhow::Context` to add operation context.
 *   `create_server` failures additionally log a `friendly_com_hint` before propagating.
 *   `E_POINTER` errors from `StringIterator` are now handled internally by the iterator (null-PWSTR skip + `debug!` log).
+*   Native and compatibility browse iterators terminate after 64 consecutive identical successful
+    values with contextual `BrowseNonProgress` errors rather than waiting indefinitely for an
+    unprogressing OPC enumerator to finish.
 
 **Known Upstream Bugs:**
 
 | ID | Bug | Workaround |
 | :--- | :--- | :--- |
 | OPC-BUG-001 | `StringIterator` produces 16 phantom `E_POINTER` errors per iterator | **FIXED**: cache zeroing + null-PWSTR skip in `StringIterator::next()` |
+| OPC-BUG-002 | A browse enumerator can return the same value indefinitely | **FIXED**: native and compatibility iterators stop after 64 consecutive identical values and preserve browse context |
 
 ### 3.2 Downstream: `opc-cli` (Consumer)
 
@@ -408,6 +416,7 @@ Defined in § 1.1. See table above.
 - [x] `filetime_to_string` produces valid date string for non-zero FILETIME.
 - [x] `StringIterator` skips null PWSTR entries without producing `E_POINTER`.
 - [x] `StringIterator` handles empty enumeration (0 items).
+- [x] Repeated browse values terminate with contextual progress counters.
 - [x] `opc_value_to_variant` correctly converts `Int` variant.
 - [x] `variant_to_string` roundtrips through `VT_I4` and `VT_R4`.
 - [x] `variant_to_string` handles `VT_EMPTY` and `VT_NULL`.

@@ -1,6 +1,6 @@
 use crate::backend::connector::{
     BrowseStringIterator, ConnectedServer, Da2BranchNavigation, NativeBrowseElement,
-    NativeBrowsePage, classify_da2_branch,
+    NativeBrowsePage, classify_da2_branch, guard_browse_iterator,
 };
 use crate::bindings::da::{
     OPC_BRANCH, OPC_BROWSE_DOWN, OPC_BROWSE_UP, OPC_FLAT, OPC_LEAF, OPC_NS_FLAT, OPC_NS_HIERARCHIAL,
@@ -395,6 +395,8 @@ impl<S: ConnectedServer> BrowseSessions<S> {
                     session
                         .server
                         .begin_da2_browse(OPC_FLAT.0.cast_unsigned(), Some(""), 0, 0)?,
+                    "native DA2 flat iterator",
+                    &parent_path,
                 ))
             };
             return Ok(Da2PageState {
@@ -414,6 +416,8 @@ impl<S: ConnectedServer> BrowseSessions<S> {
                 session
                     .server
                     .begin_da2_browse(OPC_BRANCH.0.cast_unsigned(), Some(""), 0, 0)?,
+                "native DA2 branch iterator",
+                &parent_path,
             ))
         };
         let items = if filter == BrowseNodeFilter::Branches {
@@ -423,6 +427,8 @@ impl<S: ConnectedServer> BrowseSessions<S> {
                 session
                     .server
                     .begin_da2_browse(OPC_LEAF.0.cast_unsigned(), Some(""), 0, 0)?,
+                "native DA2 item iterator",
+                &parent_path,
             ))
         };
         Ok(Da2PageState {
@@ -679,9 +685,13 @@ struct BufferedBrowseIterator {
 }
 
 impl BufferedBrowseIterator {
-    fn new(inner: Box<dyn BrowseStringIterator>) -> Self {
+    fn new(
+        inner: Box<dyn BrowseStringIterator>,
+        iterator_type: &str,
+        browse_path: &[String],
+    ) -> Self {
         Self {
-            inner,
+            inner: guard_browse_iterator(inner, iterator_type, browse_path),
             pending: None,
         }
     }

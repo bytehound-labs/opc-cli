@@ -1,4 +1,6 @@
-use crate::backend::connector::{ConnectedGroup, ConnectedServer, ServerConnector};
+use crate::backend::connector::{
+    ConnectedGroup, ConnectedServer, ServerConnector, guard_browse_iterator,
+};
 use crate::bindings::da::{
     OPC_BRANCH, OPC_BROWSE_DOWN, OPC_BROWSE_UP, OPC_DS_DEVICE, OPC_LEAF, OPC_NS_FLAT, tagOPCITEMDEF,
 };
@@ -7,7 +9,9 @@ use crate::helpers::{
     variant_to_display_string, variant_to_string,
 };
 use crate::native_browse::{BrowseSessions, capabilities_for_server};
-use crate::opc_da::errors::{OpcError, OpcResult};
+use crate::opc_da::errors::{
+    OpcError, OpcResult, contextual_browse_error, is_non_progress_browse_error,
+};
 use crate::opc_da::typedefs::{GroupHandle, ItemHandle};
 use crate::provider::{
     BrowseCapabilities, BrowsePage, BrowsePageRequest, BrowseSessionToken, OpcValue, TagValue,
@@ -653,7 +657,11 @@ impl<C: ServerConnector + 'static> ComWorker<C> {
         let mut tags = Vec::new();
 
         if org == OPC_NS_FLAT.0 as u32 {
-            let mut string_iter = opc_server.begin_da2_browse(OPC_LEAF.0 as u32, Some(""), 0, 0)?;
+            let mut string_iter = guard_browse_iterator(
+                opc_server.begin_da2_browse(OPC_LEAF.0 as u32, Some(""), 0, 0)?,
+                "recursive flat iterator",
+                &[],
+            );
             while let Some(tag_res) = string_iter.next_string() {
                 if tags.len() >= max_tags {
                     break;
@@ -666,7 +674,15 @@ impl<C: ServerConnector + 'static> ComWorker<C> {
                 progress.fetch_add(1, Ordering::Relaxed);
             }
         } else {
-            Self::browse_recursive(opc_server, &mut tags, max_tags, progress, tags_sink, 0)?;
+            Self::browse_recursive(
+                opc_server,
+                &mut tags,
+                max_tags,
+                progress,
+                tags_sink,
+                &mut Vec::new(),
+                0,
+            )?;
         }
         tracing::info!(
             count = tags.len(),
@@ -682,6 +698,7 @@ impl<C: ServerConnector + 'static> ComWorker<C> {
         max_tags: usize,
         progress: &Arc<AtomicUsize>,
         tags_sink: &Arc<std::sync::Mutex<Vec<String>>>,
+        browse_path: &mut Vec<String>,
         depth: usize,
     ) -> OpcResult<()> {
         const MAX_DEPTH: usize = 50;
@@ -692,18 +709,34 @@ impl<C: ServerConnector + 'static> ComWorker<C> {
             return Ok(());
         }
 
-        let mut branch_enum = server.begin_da2_browse(OPC_BRANCH.0 as u32, Some(""), 0, 0)?;
+        let mut branch_enum = guard_browse_iterator(
+            server.begin_da2_browse(OPC_BRANCH.0 as u32, Some(""), 0, 0)?,
+            "recursive branch iterator",
+            browse_path,
+        );
         let mut branches = Vec::new();
         while let Some(result) = branch_enum.next_string() {
             match result {
                 Ok(name) => branches.push(name),
+                Err(error) if is_non_progress_browse_error(&error) => {
+                    return Err(contextual_browse_error(
+                        error,
+                        "browse_recursive(branches)",
+                        browse_path,
+                        None,
+                    ));
+                }
                 Err(e) => {
                     tracing::warn!(error = ?e, "Branch iteration error, skipping");
                 }
             }
         }
 
-        let mut leaf_enum = server.begin_da2_browse(OPC_LEAF.0 as u32, Some(""), 0, 0)?;
+        let mut leaf_enum = guard_browse_iterator(
+            server.begin_da2_browse(OPC_LEAF.0 as u32, Some(""), 0, 0)?,
+            "recursive leaf iterator",
+            browse_path,
+        );
         while let Some(tag_res) = leaf_enum.next_string() {
             if tags.len() >= max_tags {
                 return Ok(());
@@ -740,13 +773,28 @@ impl<C: ServerConnector + 'static> ComWorker<C> {
                 continue;
             }
 
-            if let Err(e) =
-                Self::browse_recursive(server, tags, max_tags, progress, tags_sink, depth + 1)
-            {
+            browse_path.push(branch.clone());
+            let recurse_result = Self::browse_recursive(
+                server,
+                tags,
+                max_tags,
+                progress,
+                tags_sink,
+                browse_path,
+                depth + 1,
+            );
+
+            let up_result = server.change_browse_position(OPC_BROWSE_UP.0 as u32, "");
+            browse_path.pop();
+
+            if let Err(e) = recurse_result {
+                if is_non_progress_browse_error(&e) {
+                    return Err(e);
+                }
                 tracing::warn!(error = ?e, "browse_recursive error");
             }
 
-            if let Err(e) = server.change_browse_position(OPC_BROWSE_UP.0 as u32, "") {
+            if let Err(e) = up_result {
                 tracing::warn!(error = ?e, "Failed to browse up, stopping recursion");
                 break;
             }

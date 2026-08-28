@@ -8,7 +8,10 @@ pub use crate::bindings::da::tagOPCITEMDEF;
 pub use crate::bindings::da::{tagOPCITEMRESULT, tagOPCITEMSTATE};
 pub use crate::opc_da::client::*;
 pub use crate::opc_da::com_utils::RemoteArray;
-use crate::opc_da::errors::{E_INVALIDARG_HRESULT, is_com_hresult};
+use crate::opc_da::errors::{
+    E_INVALIDARG_HRESULT, MAX_CONSECUTIVE_IDENTICAL_BROWSE_VALUES, browse_non_progress_error,
+    is_com_hresult, is_non_progress_browse_error,
+};
 pub use crate::opc_da::errors::{OpcError, OpcResult};
 use crate::provider::BrowseNodeFilter;
 use anyhow::Context;
@@ -84,6 +87,149 @@ where
 {
     fn next_string(&mut self) -> Option<OpcResult<String>> {
         self.next()
+    }
+}
+
+struct GuardedBrowseIterator {
+    inner: Box<dyn BrowseStringIterator>,
+    iterator_type: String,
+    browse_path: Vec<String>,
+    last_value: Option<String>,
+    consecutive: usize,
+    yielded: usize,
+    done: bool,
+}
+
+pub(crate) fn guard_browse_iterator(
+    inner: Box<dyn BrowseStringIterator>,
+    iterator_type: &str,
+    browse_path: &[String],
+) -> Box<dyn BrowseStringIterator> {
+    Box::new(GuardedBrowseIterator {
+        inner,
+        iterator_type: iterator_type.to_string(),
+        browse_path: browse_path.to_vec(),
+        last_value: None,
+        consecutive: 0,
+        yielded: 0,
+        done: false,
+    })
+}
+
+impl BrowseStringIterator for GuardedBrowseIterator {
+    fn next_string(&mut self) -> Option<OpcResult<String>> {
+        if self.done {
+            return None;
+        }
+
+        let result = self.inner.next_string()?;
+        let value = match result {
+            Ok(value) => value,
+            Err(error) if is_non_progress_browse_error(&error) => {
+                self.done = true;
+                return Some(Err(error));
+            }
+            Err(error) => return Some(Err(error)),
+        };
+
+        self.yielded += 1;
+        if self.last_value.as_deref() == Some(value.as_str()) {
+            self.consecutive += 1;
+        } else {
+            self.last_value = Some(value.clone());
+            self.consecutive = 1;
+        }
+
+        if self.consecutive >= MAX_CONSECUTIVE_IDENTICAL_BROWSE_VALUES {
+            self.done = true;
+            return Some(Err(browse_non_progress_error(
+                &self.iterator_type,
+                &self.browse_path,
+                &value,
+                self.consecutive,
+                self.yielded,
+            )));
+        }
+
+        Some(Ok(value))
+    }
+}
+
+#[cfg(test)]
+mod guarded_iterator_tests {
+    use super::*;
+
+    #[test]
+    fn terminates_after_repeated_values_without_progress() {
+        let mut iterator = guard_browse_iterator(
+            Box::new(std::iter::repeat_with(|| {
+                Ok::<String, OpcError>("\u{1}".to_string())
+            })),
+            "test iterator",
+            &["SCS0130".to_string()],
+        );
+
+        for _ in 0..(MAX_CONSECUTIVE_IDENTICAL_BROWSE_VALUES - 1) {
+            assert_eq!(iterator.next_string(), Some(Ok("\u{1}".to_string())));
+        }
+
+        let error = iterator
+            .next_string()
+            .expect("the guard must report non-progress")
+            .expect_err("the repeated value must terminate the iterator");
+        assert!(matches!(
+            error,
+            OpcError::BrowseNonProgress {
+                iterator_type,
+                browse_path,
+                repeated_value,
+                consecutive,
+                yielded,
+            } if iterator_type == "test iterator"
+                && browse_path == "\"SCS0130\""
+                && repeated_value == "\u{1}"
+                && consecutive == MAX_CONSECUTIVE_IDENTICAL_BROWSE_VALUES
+                && yielded == MAX_CONSECUTIVE_IDENTICAL_BROWSE_VALUES
+        ));
+        assert_eq!(iterator.next_string(), None);
+    }
+
+    #[test]
+    fn finite_duplicate_sequence_remains_valid_and_resets_progress() {
+        let values = vec![
+            Ok("same".to_string()),
+            Ok("same".to_string()),
+            Ok("different".to_string()),
+            Ok("different".to_string()),
+        ];
+        let mut iterator =
+            guard_browse_iterator(Box::new(values.into_iter()), "test iterator", &[]);
+
+        assert_eq!(iterator.next_string(), Some(Ok("same".to_string())));
+        assert_eq!(iterator.next_string(), Some(Ok("same".to_string())));
+        assert_eq!(iterator.next_string(), Some(Ok("different".to_string())));
+        assert_eq!(iterator.next_string(), Some(Ok("different".to_string())));
+        assert_eq!(iterator.next_string(), None);
+    }
+
+    #[test]
+    fn existing_non_progress_error_is_terminal_and_preserved() {
+        let original = OpcError::BrowseNonProgress {
+            iterator_type: "native".to_string(),
+            browse_path: "\"root\"".to_string(),
+            repeated_value: "\u{1}".to_string(),
+            consecutive: 64,
+            yielded: 64,
+        };
+        let mut iterator =
+            guard_browse_iterator(Box::new(std::iter::once(Err(original))), "wrapper", &[]);
+
+        let error = iterator
+            .next_string()
+            .expect("the underlying terminal error must be returned")
+            .expect_err("the underlying error must remain an error");
+        assert!(matches!(error, OpcError::BrowseNonProgress { .. }));
+        assert_eq!(iterator.next_string(), None);
     }
 }
 

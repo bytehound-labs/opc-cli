@@ -20,6 +20,7 @@ See **[bytehound-opc-da-client architecture.md](./opc-da-client/architecture.md)
 - **Server Discovery**: Enumerate OPC DA servers on local or remote hosts.
 - **Hierarchical Browsing**: Recursive tag discovery for the TUI plus bounded, one-level native browse pages with OPC DA 3.0 support and a one-time, narrowly classified DA 2.x compatibility fallback before the first successful root page.
 - **Inventory Telemetry**: Library consumers can pace bounded inventory operations, adjust their batch size at runtime, and receive typed observations for each completed slice.
+- **Bounded Browse Safety**: Native and compatibility browse iterators stop after 64 consecutive identical values and report the iterator, browse path, repeated value, and progress counters instead of stalling indefinitely.
 - **Real-time Monitoring**: Live tag value updates with 1-second auto-refresh.
 - **Tag Write Support**: Write typed values (int, float, bool, string) to individual tags.
 - **Search & Filter**: Substring search with `Tab`/`Shift+Tab` cycling through matches.

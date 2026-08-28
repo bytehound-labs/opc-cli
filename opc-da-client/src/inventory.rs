@@ -2,7 +2,7 @@
 
 use crate::backend::connector::{
     BrowseStringIterator, ConnectedServer, Da2BranchNavigation, NativeBrowseElement,
-    ServerConnector,
+    ServerConnector, guard_browse_iterator,
 };
 use crate::bindings::da::{
     OPC_BRANCH, OPC_BROWSE_DOWN, OPC_BROWSE_UP, OPC_FLAT, OPC_LEAF, OPC_NS_FLAT,
@@ -662,7 +662,11 @@ fn start_da2_page<S: ConnectedServer>(
             )),
             InventoryError::Cancelled => InventoryError::Cancelled,
         })?;
-        Some(BufferedBrowseIterator::new(iterator))
+        Some(BufferedBrowseIterator::new(
+            iterator,
+            "inventory DA2 branch iterator",
+            parent_path,
+        ))
     };
     let iterator = paced_call(boundary, || {
         server.begin_da2_browse(
@@ -689,7 +693,15 @@ fn start_da2_page<S: ConnectedServer>(
         )),
         InventoryError::Cancelled => InventoryError::Cancelled,
     })?;
-    let items = Some(BufferedBrowseIterator::new(iterator));
+    let items = Some(BufferedBrowseIterator::new(
+        iterator,
+        if flat {
+            "inventory DA2 flat iterator"
+        } else {
+            "inventory DA2 item iterator"
+        },
+        parent_path,
+    ));
     Ok(Da2PageState {
         parent_path: parent_path.to_vec(),
         branches,
@@ -968,9 +980,13 @@ struct BufferedBrowseIterator {
 }
 
 impl BufferedBrowseIterator {
-    fn new(inner: Box<dyn BrowseStringIterator>) -> Self {
+    fn new(
+        inner: Box<dyn BrowseStringIterator>,
+        iterator_type: &str,
+        browse_path: &[String],
+    ) -> Self {
         Self {
-            inner,
+            inner: guard_browse_iterator(inner, iterator_type, browse_path),
             pending: None,
         }
     }

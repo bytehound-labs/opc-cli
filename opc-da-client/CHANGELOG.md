@@ -12,6 +12,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - DA 3.0 `IOPCBrowse::Browse` sends a true null property-ID pointer when
   `dwPropertyCount` is zero, while retaining the generated binding path for
   non-empty property-ID lists.
+- Native and compatibility browse iterators terminate after 64 consecutive
+  identical successful values with a contextual `BrowseNonProgress` error
+  instead of allowing a non-progressing OPC enumerator to run indefinitely.
+- Native string iterator entries are released safely when iteration ends early;
+  consumed pointers are cleared before conversion and remaining COM allocations
+  are released on drop.
 
 ### Added
 

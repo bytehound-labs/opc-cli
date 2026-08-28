@@ -38,6 +38,20 @@ pub enum OpcError {
     #[error("Not implemented: {0}")]
     NotImplemented(String),
 
+    /// A browse iterator returned the same value without making progress.
+    #[error(
+        "OPC DA browse iterator {iterator_type} made no progress at browse path {browse_path}: \
+         repeated value {repeated_value:?} for {consecutive} consecutive results after \
+         {yielded} values"
+    )]
+    BrowseNonProgress {
+        iterator_type: String,
+        browse_path: String,
+        repeated_value: String,
+        consecutive: usize,
+        yielded: usize,
+    },
+
     /// Catch-all for unexpected internal failures.
     #[error("Internal error: {0}")]
     Internal(String),
@@ -105,6 +119,7 @@ pub fn friendly_com_hint(error: &OpcError) -> Option<&'static str> {
 pub(crate) const E_INVALIDARG_HRESULT: u32 = 0x8007_0057;
 pub(crate) const E_NOTIMPL_HRESULT: u32 = 0x8000_4001;
 pub(crate) const RPC_X_NULL_REF_POINTER_HRESULT: u32 = 0x8007_06F4;
+pub(crate) const MAX_CONSECUTIVE_IDENTICAL_BROWSE_VALUES: usize = 64;
 
 pub(crate) fn com_hresult(error: &OpcError) -> Option<u32> {
     match error {
@@ -122,13 +137,28 @@ pub(crate) fn is_da3_browse_compatibility_error(error: &OpcError) -> bool {
         || is_com_hresult(error, E_NOTIMPL_HRESULT)
 }
 
-pub(crate) fn contextual_browse_error(
-    error: OpcError,
-    operation: &str,
+pub(crate) fn is_non_progress_browse_error(error: &OpcError) -> bool {
+    matches!(error, OpcError::BrowseNonProgress { .. })
+}
+
+pub(crate) fn browse_non_progress_error(
+    iterator_type: &str,
     browse_path: &[String],
-    item_name: Option<&str>,
+    repeated_value: &str,
+    consecutive: usize,
+    yielded: usize,
 ) -> OpcError {
-    let path = if browse_path.is_empty() {
+    OpcError::BrowseNonProgress {
+        iterator_type: iterator_type.to_string(),
+        browse_path: format_browse_path(browse_path),
+        repeated_value: repeated_value.to_string(),
+        consecutive,
+        yielded,
+    }
+}
+
+fn format_browse_path(browse_path: &[String]) -> String {
+    if browse_path.is_empty() {
         "<root>".to_string()
     } else {
         browse_path
@@ -136,7 +166,16 @@ pub(crate) fn contextual_browse_error(
             .map(|part| format!("{part:?}"))
             .collect::<Vec<_>>()
             .join(" > ")
-    };
+    }
+}
+
+pub(crate) fn contextual_browse_error(
+    error: OpcError,
+    operation: &str,
+    browse_path: &[String],
+    item_name: Option<&str>,
+) -> OpcError {
+    let path = format_browse_path(browse_path);
     let item = item_name
         .map(|name| format!(" item {name:?}"))
         .unwrap_or_default();
@@ -155,6 +194,23 @@ pub(crate) fn contextual_browse_error(
         chain = %chain,
         "OPC browse operation failed"
     );
+
+    if let OpcError::BrowseNonProgress {
+        iterator_type,
+        repeated_value,
+        consecutive,
+        yielded,
+        ..
+    } = error
+    {
+        return OpcError::BrowseNonProgress {
+            iterator_type,
+            browse_path: path,
+            repeated_value,
+            consecutive,
+            yielded,
+        };
+    }
 
     OpcError::Internal(format!(
         "OPC DA {operation} failed at browse path {path}{item}: {error}"
@@ -238,6 +294,37 @@ mod tests {
                 if message.contains("\"FCS0528\" > \"\\u{1}\"")
                     && message.contains("item \"\\u{1}\"")
                     && message.contains("synthetic")
+        ));
+    }
+
+    #[test]
+    fn contextual_browse_error_preserves_non_progress_details_and_updates_path() {
+        let error = contextual_browse_error(
+            OpcError::BrowseNonProgress {
+                iterator_type: "IEnumString".to_string(),
+                browse_path: "<root>".to_string(),
+                repeated_value: "\u{1}".to_string(),
+                consecutive: 64,
+                yielded: 147,
+            },
+            "browse_recursive(leaves)",
+            &["SCS0130".to_string(), "FCS0528".to_string()],
+            None,
+        );
+
+        assert!(matches!(
+            error,
+            OpcError::BrowseNonProgress {
+                iterator_type,
+                browse_path,
+                repeated_value,
+                consecutive,
+                yielded,
+            } if iterator_type == "IEnumString"
+                && browse_path == "\"SCS0130\" > \"FCS0528\""
+                && repeated_value == "\u{1}"
+                && consecutive == 64
+                && yielded == 147
         ));
     }
 }

@@ -1,6 +1,8 @@
 use crate::opc_da::{
     com_utils::{RemoteArray, RemotePointer, TryToLocal as _},
-    errors::{OpcError, OpcResult},
+    errors::{
+        MAX_CONSECUTIVE_IDENTICAL_BROWSE_VALUES, OpcError, OpcResult, browse_non_progress_error,
+    },
 };
 use windows::core::Interface as _;
 
@@ -91,6 +93,9 @@ pub struct StringIterator {
     index: u32,
     count: u32,
     done: bool,
+    last_value: Option<String>,
+    consecutive: usize,
+    yielded: usize,
 }
 
 impl StringIterator {
@@ -101,6 +106,22 @@ impl StringIterator {
             index: STRING_CACHE_SIZE as u32,
             count: 0,
             done: false,
+            last_value: None,
+            consecutive: 0,
+            yielded: 0,
+        }
+    }
+}
+
+impl Drop for StringIterator {
+    fn drop(&mut self) {
+        let start = usize::try_from(self.index.min(self.count)).unwrap_or(0);
+        let end = usize::try_from(self.count).unwrap_or(self.cache.len());
+        for slot in self.cache[start..end.min(self.cache.len())].iter_mut() {
+            let pwstr = std::mem::replace(slot, windows::core::PWSTR::null());
+            if !pwstr.is_null() {
+                drop(RemotePointer::from(pwstr));
+            }
         }
     }
 }
@@ -168,7 +189,10 @@ impl Iterator for StringIterator {
             }
 
             // Skip null PWSTR entries instead of producing E_POINTER (OPC-BUG-001)
-            let pwstr = self.cache[self.index as usize];
+            let pwstr = std::mem::replace(
+                &mut self.cache[self.index as usize],
+                windows::core::PWSTR::null(),
+            );
             self.index += 1;
 
             if pwstr.is_null() {
@@ -181,7 +205,30 @@ impl Iterator for StringIterator {
             }
 
             let current = RemotePointer::from(pwstr);
-            return Some(current.try_into().map_err(OpcError::from));
+            let value = match current.try_into() {
+                Ok(value) => value,
+                Err(error) => return Some(Err(OpcError::from(error))),
+            };
+
+            self.yielded += 1;
+            if self.last_value.as_deref() == Some(value.as_str()) {
+                self.consecutive += 1;
+            } else {
+                self.last_value = Some(value.clone());
+                self.consecutive = 1;
+            }
+            if self.consecutive >= MAX_CONSECUTIVE_IDENTICAL_BROWSE_VALUES {
+                self.done = true;
+                return Some(Err(browse_non_progress_error(
+                    "IEnumString",
+                    &[],
+                    &value,
+                    self.consecutive,
+                    self.yielded,
+                )));
+            }
+
+            return Some(Ok(value));
         }
     }
 }
@@ -418,6 +465,44 @@ mod tests {
         }
 
         assert_eq!(results, items);
+    }
+
+    #[test]
+    fn test_string_iterator_terminates_on_non_progress() {
+        let mock_enum: IEnumString = MockEnumString {
+            items: std::iter::repeat_n(
+                "\u{1}".to_string(),
+                MAX_CONSECUTIVE_IDENTICAL_BROWSE_VALUES,
+            )
+            .collect(),
+            index: std::sync::atomic::AtomicUsize::new(0),
+        }
+        .into();
+
+        let mut iter = StringIterator::new(mock_enum);
+        for _ in 0..(MAX_CONSECUTIVE_IDENTICAL_BROWSE_VALUES - 1) {
+            assert_eq!(iter.next(), Some(Ok("\u{1}".to_string())));
+        }
+
+        let error = iter
+            .next()
+            .expect("the iterator must report non-progress")
+            .expect_err("repeated values must terminate the iterator");
+        assert!(matches!(
+            error,
+            OpcError::BrowseNonProgress {
+                iterator_type,
+                browse_path,
+                repeated_value,
+                consecutive,
+                yielded,
+            } if iterator_type == "IEnumString"
+                && browse_path == "<root>"
+                && repeated_value == "\u{1}"
+                && consecutive == MAX_CONSECUTIVE_IDENTICAL_BROWSE_VALUES
+                && yielded == MAX_CONSECUTIVE_IDENTICAL_BROWSE_VALUES
+        ));
+        assert_eq!(iter.next(), None);
     }
 
     /// Mock that writes only `valid_count` items but claims `pceltFetched = claimed_count`,

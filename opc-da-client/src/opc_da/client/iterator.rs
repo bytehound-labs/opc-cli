@@ -116,9 +116,10 @@ impl StringIterator {
 
 impl Drop for StringIterator {
     fn drop(&mut self) {
+        let cache_len = self.cache.len();
         let start = usize::try_from(self.index.min(self.count)).unwrap_or(0);
         let end = usize::try_from(self.count).unwrap_or(self.cache.len());
-        for slot in self.cache[start..end.min(self.cache.len())].iter_mut() {
+        for slot in self.cache[start..end.min(cache_len)].iter_mut() {
             let pwstr = std::mem::replace(slot, windows::core::PWSTR::null());
             if !pwstr.is_null() {
                 drop(RemotePointer::from(pwstr));
@@ -215,7 +216,7 @@ impl Iterator for StringIterator {
             }
 
             let current = RemotePointer::from(pwstr);
-            let value = match current.try_into() {
+            let value: String = match current.try_into() {
                 Ok(value) => value,
                 Err(error) => return Some(Err(OpcError::from(error))),
             };

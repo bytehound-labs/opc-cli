@@ -18,7 +18,7 @@ Backend-agnostic OPC DA client library for Rust — async, trait-based, with tra
 - **Failure-safe Inventory Worker**: Converts worker panics and inventory errors into terminal stream errors instead of silently ending the stream.
 - **Native Inventory Diagnostics**: Diagnostic builds can trace the first 4,096 bounded DA2/DA3 inventory operations, including operation names, browse paths, item names, boundary/pacing waits, native elapsed times, iterator results, and formatted failures, to isolate native enumeration stalls.
 - **Cancellation Diagnostics**: Inventory cancellation logs identify the requesting source and whether cancellation was already pending, distinguishing explicit cancellation from stream-drop cleanup.
-- **Defensive COM Iterators**: Rejects native enumerator counts that exceed the fixed cache capacity before indexing the returned buffer.
+- **Defensive COM Iterators**: Rejects native enumerator counts that exceed the fixed cache capacity before indexing the returned buffer, and releases remaining COM-allocated strings when iteration ends early.
 - **Windows COM/DCOM Support**: Native OPC DA backend via `windows-rs` — no external OPC crates needed.
 - **Robust Error Handling**: Leverages `thiserror` for the `OpcError` domain type and `friendly_com_hint()` for human-readable HRESULT explanations.
 - **Test-Friendly**: Built-in `MockOpcProvider` via the `test-support` feature.

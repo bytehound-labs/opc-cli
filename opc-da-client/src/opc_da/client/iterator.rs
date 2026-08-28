@@ -492,7 +492,12 @@ mod tests {
 
         let mut iter = StringIterator::new(mock_enum);
         for _ in 0..(MAX_CONSECUTIVE_IDENTICAL_BROWSE_VALUES - 1) {
-            assert_eq!(iter.next(), Some(Ok("\u{1}".to_string())));
+            assert_eq!(
+                iter.next()
+                    .expect("the iterator must yield a value")
+                    .expect("the value must be valid"),
+                "\u{1}"
+            );
         }
 
         let error = iter
@@ -513,7 +518,7 @@ mod tests {
                 && consecutive == MAX_CONSECUTIVE_IDENTICAL_BROWSE_VALUES
                 && yielded == MAX_CONSECUTIVE_IDENTICAL_BROWSE_VALUES
         ));
-        assert_eq!(iter.next(), None);
+        assert!(iter.next().is_none());
     }
 
     /// Mock that writes only `valid_count` items but claims `pceltFetched = claimed_count`,

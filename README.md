@@ -22,6 +22,7 @@ See **[bytehound-opc-da-client architecture.md](./opc-da-client/architecture.md)
 - **Inventory Telemetry**: Library consumers can pace bounded inventory operations, adjust their batch size at runtime, and receive typed observations for each completed slice.
 - **Inventory Startup Diagnostics**: Structured logs identify native COM connection, capability-detection, boundary pause/pacing, and native-operation entry/return stages when a fresh namespace inventory does not reach its first progress event.
 - **Bounded Browse Safety**: Native and compatibility browse iterators stop after 64 consecutive identical values and report the iterator, browse path, repeated value, and progress counters instead of stalling indefinitely.
+- **DA2 Branch Recovery**: A non-progressing DA2 branch iterator is discarded while the independent item iterator continues; item-side non-progress and unrelated errors remain terminal, and the completion warning records the skipped branch iterator.
 - **COM Iterator Ownership**: Browse buffers are cleared as entries are consumed and remaining COM-allocated strings are released when traversal ends early.
 - **Restartable Inventory Lifecycle**: Startup failures, cancellation, and worker unwinding release the active inventory state so later inventory attempts are not blocked by stale ownership.
 - **Real-time Monitoring**: Live tag value updates with 1-second auto-refresh.

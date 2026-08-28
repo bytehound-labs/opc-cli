@@ -60,6 +60,7 @@ All methods use `#[async_trait]`.
 *   Native browse sessions own their server connection, expire after five minutes of inactivity, and keep DA 2.x mutable browse positions isolated.
 *   DA 3.0 root and unused-filter strings are always represented by non-null NUL-terminated UTF-16 values. The initial continuation pointer itself is non-null and contains a null value. A zero property count uses a true null property-ID pointer.
 *   A first-root-page `RPC_X_NULL_REF_POINTER` or `E_NOTIMPL` response falls back to DA 2.x only when DA 2.x is available. Other COM failures do not change browse strategy, and a successful root page locks the session to DA 3.0.
+*   During hierarchical DA 2.x inventory, a `BrowseNonProgress` error from the branch iterator is recoverable: the branch iterator is dropped, the independent item iterator continues, and the completion warning records the skipped iterator. The same error from the item iterator, or any unrelated error, remains terminal.
 *   `start_inventory` requests no more than `batch_size` native entries per operation and never exposes
     browse-session or continuation tokens.
 *   Inventory cancellation is observed before the next bounded native operation; a cancelled or

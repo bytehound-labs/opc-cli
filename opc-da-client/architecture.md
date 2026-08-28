@@ -240,6 +240,7 @@ The library exposes two browse surfaces:
    - DA 2.x hierarchical servers enumerate only immediate `OPC_BRANCH` and/or `OPC_LEAF` children and resolve leaves with exact `GetItemID` values.
    - A DA 2.x browse name present as both a branch and a leaf is emitted once as `BranchAndItem`, with its exact `GetItemID` value.
    - DA 2.x flat servers page `OPC_FLAT` results without recursive traversal.
+   - During hierarchical DA 2.x inventory, a branch-side `BrowseNonProgress` terminates only the malformed branch iterator; item enumeration continues and reports a cumulative completion warning. Item-side non-progress and unrelated errors remain terminal.
    - Public session, node, and continuation tokens are random UUIDs with string encode/parse support for transport adapters; raw COM pointers and DA continuation strings remain on the worker.
 3. **Safety guards**
    - `max_tags` hard cap (default 10,000) to prevent unbounded collection.
@@ -248,7 +249,7 @@ The library exposes two browse surfaces:
    - `progress` (`Arc<AtomicUsize>`) reports discovered tag count in real-time.
    - Native pages are capped at 1,000 nodes, sessions expire after five minutes of inactivity, and per-session node/page token counts are bounded.
    - Closing or expiring a session drops its dedicated connection and continuation enumerators on the COM worker. A cancelled open/page request avoids or closes the associated session.
-   - Inventory shares the same DA 3.0 root negotiation and records DA 2.x as the effective source when compatibility fallback occurs. Terminal warnings are merged so later truncation or malformed-branch diagnostics do not replace the fallback warning.
+   - Inventory shares the same DA 3.0 root negotiation and records DA 2.x as the effective source when compatibility fallback occurs. Terminal warnings are merged so later truncation or malformed-branch diagnostics do not replace the fallback warning. A non-progressing DA 2.x branch iterator is recoverable and does not prevent the independent item iterator from completing; item-side non-progress remains terminal.
 
 ---
 

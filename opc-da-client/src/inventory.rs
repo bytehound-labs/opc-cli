@@ -9,7 +9,7 @@ use crate::bindings::da::{
 };
 use crate::opc_da::errors::{
     E_INVALIDARG_HRESULT, OpcError, OpcResult, com_hresult, contextual_browse_error,
-    is_da3_browse_compatibility_error,
+    is_da3_browse_compatibility_error, is_non_progress_browse_error,
 };
 use crate::provider::{
     BrowseCapabilities, BrowseNodeFilter, BrowseNodeKind, InventoryCompleted, InventoryControl,
@@ -451,6 +451,8 @@ pub fn run_inventory<C: ServerConnector>(
     let mut entries_seen = 0_u64;
     let mut skipped_invalid_branches = 0_u64;
     let mut first_skipped_invalid_branch = None;
+    let mut skipped_non_progressing_branches = 0_u64;
+    let mut first_skipped_non_progressing_branch = None;
     let mut slice_sequence = 0_u64;
 
     let mut terminal = InventoryCompleted {
@@ -498,6 +500,8 @@ pub fn run_inventory<C: ServerConnector>(
             &mut current_da2_path,
             &mut skipped_invalid_branches,
             &mut first_skipped_invalid_branch,
+            &mut skipped_non_progressing_branches,
+            &mut first_skipped_non_progressing_branch,
             &mut boundary,
         );
         let slice_elapsed = call_started.elapsed();
@@ -672,6 +676,16 @@ pub fn run_inventory<C: ServerConnector>(
         );
         merge_warning(&mut terminal.warning, warning);
     }
+    if skipped_non_progressing_branches > 0 {
+        let warning = format!(
+            "skipped {skipped_non_progressing_branches} non-progressing DA2 branch iterator(s); \
+             first skipped iterator: {}",
+            first_skipped_non_progressing_branch
+                .as_deref()
+                .unwrap_or("<unknown>")
+        );
+        merge_warning(&mut terminal.warning, warning);
+    }
     let _ = send_event(sender, InventoryEvent::Completed(terminal));
     Ok(())
 }
@@ -759,6 +773,8 @@ fn next_page<S: ConnectedServer>(
     current_da2_path: &mut Vec<String>,
     skipped_invalid_branches: &mut u64,
     first_skipped_invalid_branch: &mut Option<String>,
+    skipped_non_progressing_branches: &mut u64,
+    first_skipped_non_progressing_branch: &mut Option<String>,
     boundary: &mut InventoryBoundary<'_>,
 ) -> Result<InventoryPage, InventoryError> {
     match &work.location {
@@ -826,6 +842,8 @@ fn next_page<S: ConnectedServer>(
                 current_da2_path,
                 skipped_invalid_branches,
                 first_skipped_invalid_branch,
+                skipped_non_progressing_branches,
+                first_skipped_non_progressing_branch,
                 boundary,
             )?;
             Ok(InventoryPage {
@@ -986,14 +1004,22 @@ fn browse_da2_page<S: ConnectedServer>(
     current_path: &mut Vec<String>,
     skipped_invalid_branches: &mut u64,
     first_skipped_invalid_branch: &mut Option<String>,
+    skipped_non_progressing_branches: &mut u64,
+    first_skipped_non_progressing_branch: &mut Option<String>,
     boundary: &mut InventoryBoundary<'_>,
 ) -> Result<(Vec<InventoryNode>, Option<Da2PageState>), InventoryError> {
     move_to_da2_path(server, current_path, &state.parent_path, boundary)?;
     let mut nodes = Vec::with_capacity(batch_size as usize);
     while nodes.len() < batch_size as usize {
-        let Some((mut kind, name)) = state.next(boundary).map_err(|error| {
-            contextual_inventory_error(error, "enumerate_da2_names", &state.parent_path, None)
-        })?
+        let Some((mut kind, name)) = state
+            .next(
+                boundary,
+                skipped_non_progressing_branches,
+                first_skipped_non_progressing_branch,
+            )
+            .map_err(|error| {
+                contextual_inventory_error(error, "enumerate_da2_names", &state.parent_path, None)
+            })?
         else {
             break;
         };
@@ -1065,7 +1091,11 @@ fn browse_da2_page<S: ConnectedServer>(
             child,
         });
     }
-    let has_more = state.has_more(boundary)?;
+    let has_more = state.has_more(
+        boundary,
+        skipped_non_progressing_branches,
+        first_skipped_non_progressing_branch,
+    )?;
     Ok((nodes, has_more.then_some(state)))
 }
 
@@ -1247,36 +1277,96 @@ impl Da2PageState {
     fn next(
         &mut self,
         boundary: &mut InventoryBoundary<'_>,
+        skipped_non_progressing_branches: &mut u64,
+        first_skipped_non_progressing_branch: &mut Option<String>,
     ) -> Result<Option<(BrowseNodeKind, String)>, InventoryError> {
-        if let Some(branches) = &mut self.branches {
-            match branches.next(boundary, &self.parent_path, "enumerate_da2_names.branches") {
-                Some(Ok(name)) => return Ok(Some((BrowseNodeKind::Branch, name))),
-                Some(Err(error)) => return Err(error),
-                None => self.branches = None,
+        let branch_result = self.branches.as_mut().map(|branches| {
+            branches.next(boundary, &self.parent_path, "enumerate_da2_names.branches")
+        });
+        match branch_result {
+            Some(Some(Ok(name))) => return Ok(Some((BrowseNodeKind::Branch, name))),
+            Some(Some(Err(InventoryError::Failed(error))))
+                if is_non_progress_browse_error(&error) =>
+            {
+                self.skip_non_progressing_branch(
+                    &error,
+                    skipped_non_progressing_branches,
+                    first_skipped_non_progressing_branch,
+                );
             }
+            Some(Some(Err(error))) => return Err(error),
+            Some(None) => self.branches = None,
+            None => {}
         }
-        if let Some(items) = &mut self.items {
-            match items.next(boundary, &self.parent_path, "enumerate_da2_names.items") {
-                Some(Ok(name)) => return Ok(Some((BrowseNodeKind::Item, name))),
-                Some(Err(error)) => return Err(error),
-                None => self.items = None,
-            }
+
+        let item_result = self
+            .items
+            .as_mut()
+            .map(|items| items.next(boundary, &self.parent_path, "enumerate_da2_names.items"));
+        match item_result {
+            Some(Some(Ok(name))) => return Ok(Some((BrowseNodeKind::Item, name))),
+            Some(Some(Err(error))) => return Err(error),
+            Some(None) => self.items = None,
+            None => {}
         }
         Ok(None)
     }
 
-    fn has_more(&mut self, boundary: &mut InventoryBoundary<'_>) -> Result<bool, InventoryError> {
-        if let Some(branches) = &mut self.branches
-            && branches.has_more(boundary, &self.parent_path, "enumerate_da2_names.branches")?
-        {
-            return Ok(true);
+    fn has_more(
+        &mut self,
+        boundary: &mut InventoryBoundary<'_>,
+        skipped_non_progressing_branches: &mut u64,
+        first_skipped_non_progressing_branch: &mut Option<String>,
+    ) -> Result<bool, InventoryError> {
+        let branch_has_more = match &mut self.branches {
+            Some(branches) => {
+                branches.has_more(boundary, &self.parent_path, "enumerate_da2_names.branches")?
+            }
+            None => false,
+        };
+        if branch_has_more {
+            if let Some(error) = self
+                .branches
+                .as_mut()
+                .and_then(BufferedBrowseIterator::take_non_progress)
+            {
+                self.skip_non_progressing_branch(
+                    &error,
+                    skipped_non_progressing_branches,
+                    first_skipped_non_progressing_branch,
+                );
+            } else {
+                return Ok(true);
+            }
         }
+
         if let Some(items) = &mut self.items
             && items.has_more(boundary, &self.parent_path, "enumerate_da2_names.items")?
         {
             return Ok(true);
         }
         Ok(false)
+    }
+
+    fn skip_non_progressing_branch(
+        &mut self,
+        error: &OpcError,
+        skipped_non_progressing_branches: &mut u64,
+        first_skipped_non_progressing_branch: &mut Option<String>,
+    ) {
+        *skipped_non_progressing_branches = skipped_non_progressing_branches.saturating_add(1);
+        if first_skipped_non_progressing_branch.is_none() {
+            *first_skipped_non_progressing_branch = Some(format!(
+                "DA2 branch iterator at {}",
+                describe_browse_path(&self.parent_path)
+            ));
+        }
+        tracing::warn!(
+            browse_path = ?self.parent_path,
+            error = ?error,
+            "skipping non-progressing DA2 branch iterator and continuing with item iterator"
+        );
+        self.branches = None;
     }
 }
 
@@ -1327,6 +1417,20 @@ impl BufferedBrowseIterator {
                 };
         }
         Ok(self.pending.is_some())
+    }
+
+    fn take_non_progress(&mut self) -> Option<OpcError> {
+        let recoverable = self
+            .pending
+            .as_ref()
+            .is_some_and(|result| result.as_ref().is_err_and(is_non_progress_browse_error));
+        if !recoverable {
+            return None;
+        }
+        match self.pending.take() {
+            Some(Err(error)) => Some(error),
+            _ => None,
+        }
     }
 }
 
@@ -2163,6 +2267,150 @@ mod tests {
     }
 
     #[test]
+    fn da2_non_progressing_branch_iterator_is_skipped_without_losing_items() {
+        let connector = Arc::new(SharedConnector {
+            server: Arc::new(Mutex::new(Some(InvalidDa2BranchServer {
+                non_progressing_branch: true,
+                ..Default::default()
+            }))),
+        });
+        let (sender, mut receiver) = mpsc::channel(128);
+        run_inventory(
+            connector.as_ref(),
+            "test",
+            InventoryOptions::default(),
+            &InventoryControl::new(),
+            &sender,
+        )
+        .unwrap();
+
+        let (entries, completed, error) = collect(&mut receiver);
+        assert_eq!(
+            entries
+                .iter()
+                .map(|entry| entry.item_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["FCS0528.PV", "FCS0528.LeafOnly"]
+        );
+        assert!(completed.is_some_and(|value| {
+            value.complete
+                && value.warning.is_some_and(|warning| {
+                    warning.contains("skipped 1 non-progressing DA2 branch iterator(s)")
+                        && warning.contains("\"FCS0528\"")
+                })
+        }));
+        assert!(error.is_none());
+    }
+
+    #[test]
+    fn da2_item_non_progress_is_terminal() {
+        let connector = Arc::new(SharedConnector {
+            server: Arc::new(Mutex::new(Some(InvalidDa2BranchServer {
+                non_progressing_items: true,
+                ..Default::default()
+            }))),
+        });
+        let (sender, mut receiver) = mpsc::channel(128);
+        let result = run_inventory(
+            connector.as_ref(),
+            "test",
+            InventoryOptions::default(),
+            &InventoryControl::new(),
+            &sender,
+        );
+
+        assert!(matches!(
+            result,
+            Err(OpcError::BrowseNonProgress { iterator_type, .. })
+                if iterator_type == "enumerate_da2_names.items"
+        ));
+        let (entries, completed, error) = collect(&mut receiver);
+        assert_eq!(entries.len(), 1);
+        assert!(completed.is_none());
+        assert!(error.is_none());
+    }
+
+    #[test]
+    fn da2_unrelated_branch_error_is_terminal() {
+        let connector = Arc::new(SharedConnector {
+            server: Arc::new(Mutex::new(Some(InvalidDa2BranchServer {
+                fatal_branch: true,
+                ..Default::default()
+            }))),
+        });
+        let (sender, mut receiver) = mpsc::channel(32);
+        let result = run_inventory(
+            connector.as_ref(),
+            "test",
+            InventoryOptions::default(),
+            &InventoryControl::new(),
+            &sender,
+        );
+
+        assert!(matches!(
+            result,
+            Err(OpcError::Com { source })
+                if source.code().0.cast_unsigned() == 0x8007_0005
+        ));
+        let (_, completed, error) = collect(&mut receiver);
+        assert!(completed.is_none());
+        assert!(error.is_none());
+    }
+
+    #[test]
+    fn da2_has_more_discards_prefetched_branch_non_progress_and_uses_items() {
+        let control = InventoryControl::new();
+        let mut boundary = InventoryBoundary::new(&control);
+        let mut state = Da2PageState {
+            parent_path: vec!["FCS0528".to_string()],
+            branches: Some(BufferedBrowseIterator::new(
+                Box::new(std::iter::repeat_with(|| {
+                    Ok::<String, OpcError>("\u{1}".to_string())
+                })),
+                "enumerate_da2_names.branches",
+                &["FCS0528".to_string()],
+            )),
+            items: Some(BufferedBrowseIterator::new(
+                Box::new(std::iter::once(Ok::<String, OpcError>("PV".to_string()))),
+                "enumerate_da2_names.items",
+                &["FCS0528".to_string()],
+            )),
+            flat: false,
+            merged_items: HashSet::new(),
+        };
+        for _ in 0..63 {
+            assert!(matches!(
+                state.branches.as_mut().unwrap().next(
+                    &mut boundary,
+                    &["FCS0528".to_string()],
+                    "enumerate_da2_names.branches",
+                ),
+                Some(Ok(value)) if value == "\u{1}"
+            ));
+        }
+        let mut skipped = 0;
+        let mut first_skipped = None;
+
+        assert!(
+            state
+                .has_more(&mut boundary, &mut skipped, &mut first_skipped)
+                .unwrap()
+        );
+        assert!(state.branches.is_none());
+        assert_eq!(skipped, 1);
+        assert_eq!(
+            first_skipped.as_deref(),
+            Some("DA2 branch iterator at \"FCS0528\"")
+        );
+        assert_eq!(
+            state
+                .next(&mut boundary, &mut skipped, &mut first_skipped)
+                .unwrap(),
+            Some((BrowseNodeKind::Item, "PV".to_string()))
+        );
+    }
+
+    #[test]
     fn da2_branch_navigation_propagates_non_invalidarg_errors() {
         let server = InvalidDa2BranchServer::default();
         server
@@ -2371,6 +2619,9 @@ mod tests {
     #[derive(Default)]
     struct InvalidDa2BranchServer {
         position: Mutex<Vec<String>>,
+        non_progressing_branch: bool,
+        non_progressing_items: bool,
+        fatal_branch: bool,
     }
 
     impl ConnectedServer for InvalidDa2BranchServer {
@@ -2464,6 +2715,14 @@ mod tests {
             let values = if browse_type == OPC_BRANCH.0.cast_unsigned() {
                 match position.as_slice() {
                     [] => vec!["FCS0528".to_string()],
+                    [area] if area == "FCS0528" && self.fatal_branch => {
+                        vec!["Denied".to_string()]
+                    }
+                    [area] if area == "FCS0528" && self.non_progressing_branch => {
+                        return Ok(Box::new(std::iter::repeat_with(|| {
+                            Ok::<String, OpcError>("\u{1}".to_string())
+                        })));
+                    }
                     [area] if area == "FCS0528" => {
                         vec![
                             "\u{1}".to_string(),
@@ -2475,6 +2734,11 @@ mod tests {
                 }
             } else if browse_type == OPC_LEAF.0.cast_unsigned() {
                 match position.as_slice() {
+                    [area] if area == "FCS0528" && self.non_progressing_items => {
+                        return Ok(Box::new(std::iter::repeat_with(|| {
+                            Ok::<String, OpcError>("PV".to_string())
+                        })));
+                    }
                     [area] if area == "FCS0528" => {
                         vec!["PV".to_string(), "LeafOnly".to_string()]
                     }

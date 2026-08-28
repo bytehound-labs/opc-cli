@@ -170,7 +170,13 @@ mod guarded_iterator_tests {
         );
 
         for _ in 0..(MAX_CONSECUTIVE_IDENTICAL_BROWSE_VALUES - 1) {
-            assert_eq!(iterator.next_string(), Some(Ok("\u{1}".to_string())));
+            assert_eq!(
+                iterator
+                    .next_string()
+                    .expect("the iterator must yield a value")
+                    .expect("the value must be valid"),
+                "\u{1}"
+            );
         }
 
         let error = iterator
@@ -191,7 +197,7 @@ mod guarded_iterator_tests {
                 && consecutive == MAX_CONSECUTIVE_IDENTICAL_BROWSE_VALUES
                 && yielded == MAX_CONSECUTIVE_IDENTICAL_BROWSE_VALUES
         ));
-        assert_eq!(iterator.next_string(), None);
+        assert!(iterator.next_string().is_none());
     }
 
     #[test]
@@ -205,11 +211,35 @@ mod guarded_iterator_tests {
         let mut iterator =
             guard_browse_iterator(Box::new(values.into_iter()), "test iterator", &[]);
 
-        assert_eq!(iterator.next_string(), Some(Ok("same".to_string())));
-        assert_eq!(iterator.next_string(), Some(Ok("same".to_string())));
-        assert_eq!(iterator.next_string(), Some(Ok("different".to_string())));
-        assert_eq!(iterator.next_string(), Some(Ok("different".to_string())));
-        assert_eq!(iterator.next_string(), None);
+        assert_eq!(
+            iterator
+                .next_string()
+                .expect("the iterator must yield a value")
+                .expect("the value must be valid"),
+            "same"
+        );
+        assert_eq!(
+            iterator
+                .next_string()
+                .expect("the iterator must yield a value")
+                .expect("the value must be valid"),
+            "same"
+        );
+        assert_eq!(
+            iterator
+                .next_string()
+                .expect("the iterator must yield a value")
+                .expect("the value must be valid"),
+            "different"
+        );
+        assert_eq!(
+            iterator
+                .next_string()
+                .expect("the iterator must yield a value")
+                .expect("the value must be valid"),
+            "different"
+        );
+        assert!(iterator.next_string().is_none());
     }
 
     #[test]
@@ -229,7 +259,7 @@ mod guarded_iterator_tests {
             .expect("the underlying terminal error must be returned")
             .expect_err("the underlying error must remain an error");
         assert!(matches!(error, OpcError::BrowseNonProgress { .. }));
-        assert_eq!(iterator.next_string(), None);
+        assert!(iterator.next_string().is_none());
     }
 }
 

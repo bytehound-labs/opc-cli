@@ -7,6 +7,7 @@ use crate::bindings::da::{
 };
 use crate::opc_da::errors::{
     OpcError, OpcResult, com_hresult, contextual_browse_error, is_da3_browse_compatibility_error,
+    is_non_progress_browse_error,
 };
 use crate::provider::{
     BrowseCapabilities, BrowseNamespace, BrowseNode, BrowseNodeFilter, BrowseNodeKind,
@@ -649,33 +650,57 @@ struct Da2PageState {
 
 impl Da2PageState {
     fn next(&mut self) -> OpcResult<Option<(BrowseNodeKind, String)>> {
-        if let Some(branches) = &mut self.branches {
-            match branches.next() {
-                Some(Ok(name)) => return Ok(Some((BrowseNodeKind::Branch, name))),
-                Some(Err(error)) => return Err(error),
-                None => self.branches = None,
+        let branch_result = self.branches.as_mut().map(BufferedBrowseIterator::next);
+        match branch_result {
+            Some(Some(Ok(name))) => return Ok(Some((BrowseNodeKind::Branch, name))),
+            Some(Some(Err(error))) if is_non_progress_browse_error(&error) => {
+                self.skip_non_progressing_branch(&error);
             }
+            Some(Some(Err(error))) => return Err(error),
+            Some(None) => self.branches = None,
+            None => {}
         }
 
-        if let Some(items) = &mut self.items {
-            match items.next() {
-                Some(Ok(name)) => return Ok(Some((BrowseNodeKind::Item, name))),
-                Some(Err(error)) => return Err(error),
-                None => self.items = None,
-            }
+        let item_result = self.items.as_mut().map(BufferedBrowseIterator::next);
+        match item_result {
+            Some(Some(Ok(name))) => return Ok(Some((BrowseNodeKind::Item, name))),
+            Some(Some(Err(error))) => return Err(error),
+            Some(None) => self.items = None,
+            None => {}
         }
 
         Ok(None)
     }
 
     fn has_more(&mut self) -> bool {
-        self.branches
+        let branch_has_more = self
+            .branches
+            .as_mut()
+            .is_some_and(BufferedBrowseIterator::has_more);
+        if branch_has_more {
+            if let Some(error) = self
+                .branches
+                .as_mut()
+                .and_then(BufferedBrowseIterator::take_non_progress)
+            {
+                self.skip_non_progressing_branch(&error);
+            } else {
+                return true;
+            }
+        }
+
+        self.items
             .as_mut()
             .is_some_and(BufferedBrowseIterator::has_more)
-            || self
-                .items
-                .as_mut()
-                .is_some_and(BufferedBrowseIterator::has_more)
+    }
+
+    fn skip_non_progressing_branch(&mut self, error: &OpcError) {
+        tracing::warn!(
+            browse_path = ?self.parent_path,
+            error = ?error,
+            "skipping non-progressing DA2 branch iterator and continuing with item iterator"
+        );
+        self.branches = None;
     }
 }
 
@@ -705,6 +730,20 @@ impl BufferedBrowseIterator {
             self.pending = self.inner.next_string();
         }
         self.pending.is_some()
+    }
+
+    fn take_non_progress(&mut self) -> Option<OpcError> {
+        let recoverable = self
+            .pending
+            .as_ref()
+            .is_some_and(|result| result.as_ref().is_err_and(is_non_progress_browse_error));
+        if !recoverable {
+            return None;
+        }
+        match self.pending.take() {
+            Some(Err(error)) => Some(error),
+            _ => None,
+        }
     }
 }
 
@@ -847,6 +886,8 @@ mod tests {
         flat_items: Arc<Vec<String>>,
         invalidarg_branches: Arc<HashSet<String>>,
         non_navigable_branches: Arc<HashSet<String>>,
+        non_progressing_branches: Arc<HashSet<Vec<String>>>,
+        non_progressing_items: Arc<HashSet<Vec<String>>>,
         navigation_errors: Arc<HashMap<String, u32>>,
         drop_count: Option<Arc<AtomicUsize>>,
     }
@@ -866,6 +907,8 @@ mod tests {
                 flat_items: Arc::default(),
                 invalidarg_branches: Arc::default(),
                 non_navigable_branches: Arc::default(),
+                non_progressing_branches: Arc::default(),
+                non_progressing_items: Arc::default(),
                 navigation_errors: Arc::default(),
                 drop_count: None,
             }
@@ -890,6 +933,8 @@ mod tests {
                 flat_items: Arc::new(flat_items),
                 invalidarg_branches: Arc::default(),
                 non_navigable_branches: Arc::default(),
+                non_progressing_branches: Arc::default(),
+                non_progressing_items: Arc::default(),
                 navigation_errors: Arc::default(),
                 drop_count: None,
             }
@@ -919,6 +964,20 @@ mod tests {
             let mut non_navigable_branches = (*self.non_navigable_branches).clone();
             non_navigable_branches.insert(name.to_string());
             self.non_navigable_branches = Arc::new(non_navigable_branches);
+            self
+        }
+
+        fn with_non_progressing_branch(mut self, path: &[&str]) -> Self {
+            let mut paths = (*self.non_progressing_branches).clone();
+            paths.insert(path.iter().map(|part| (*part).to_string()).collect());
+            self.non_progressing_branches = Arc::new(paths);
+            self
+        }
+
+        fn with_non_progressing_item(mut self, path: &[&str]) -> Self {
+            let mut paths = (*self.non_progressing_items).clone();
+            paths.insert(path.iter().map(|part| (*part).to_string()).collect());
+            self.non_progressing_items = Arc::new(paths);
             self
         }
 
@@ -967,6 +1026,14 @@ mod tests {
 
         fn change_browse_position(&self, direction: u32, name: &str) -> OpcResult<()> {
             if direction == OPC_BROWSE_DOWN.0.cast_unsigned() {
+                let position = self.position.lock().unwrap().clone();
+                if name == "\u{1}" && self.non_progressing_branches.contains(&position) {
+                    return Err(OpcError::Com {
+                        source: windows::core::Error::from_hresult(HRESULT(
+                            E_INVALIDARG_HRESULT.cast_signed(),
+                        )),
+                    });
+                }
                 if let Some(hresult) = self.navigation_errors.get(name) {
                     return Err(OpcError::Com {
                         source: windows::core::Error::from_hresult(HRESULT(
@@ -1063,6 +1130,26 @@ mod tests {
             _access_rights: u32,
         ) -> OpcResult<Box<dyn BrowseStringIterator>> {
             let position = self.position.lock().unwrap().clone();
+            if browse_type == OPC_BRANCH.0.cast_unsigned()
+                && self.non_progressing_branches.contains(&position)
+            {
+                return Ok(Box::new(std::iter::repeat_with(|| {
+                    Ok::<String, OpcError>("\u{1}".to_string())
+                })));
+            }
+            if browse_type == OPC_LEAF.0.cast_unsigned()
+                && self.non_progressing_items.contains(&position)
+            {
+                let item = self
+                    .items
+                    .get(&position)
+                    .and_then(|items| items.first())
+                    .cloned()
+                    .unwrap_or_else(|| "RepeatedItem".to_string());
+                return Ok(Box::new(std::iter::repeat_with(move || {
+                    Ok::<String, OpcError>(item.clone())
+                })));
+            }
             let values = if browse_type == OPC_BRANCH.0.cast_unsigned() {
                 self.branches.get(&position).cloned().unwrap_or_default()
             } else if browse_type == OPC_LEAF.0.cast_unsigned() {
@@ -1374,6 +1461,104 @@ mod tests {
         assert_eq!(
             children.nodes[0].item_id.as_deref(),
             Some("exact::Area.AreaTag")
+        );
+    }
+
+    #[test]
+    fn da2_recovers_non_progressing_branch_and_preserves_items_and_pagination() {
+        let mut items = HashMap::new();
+        items.insert(
+            Vec::new(),
+            vec!["FirstItem".to_string(), "SecondItem".to_string()],
+        );
+        let server = MockServer::da2(BrowseNamespace::Hierarchical, HashMap::new(), items, vec![])
+            .with_non_progressing_branch(&[]);
+        let mut sessions = BrowseSessions::default();
+        let session = sessions.open(server).unwrap();
+
+        let first = sessions
+            .page(&session, request(None, BrowseNodeFilter::All, 1, None))
+            .unwrap();
+        assert_eq!(first.nodes[0].name, "FirstItem");
+        let second = sessions
+            .page(
+                &session,
+                request(None, BrowseNodeFilter::All, 1, first.continuation),
+            )
+            .unwrap();
+        assert_eq!(second.nodes[0].name, "SecondItem");
+        assert!(second.continuation.is_none());
+    }
+
+    #[test]
+    fn da2_recovers_non_progressing_branch_for_branch_filter() {
+        let server = MockServer::da2(
+            BrowseNamespace::Hierarchical,
+            HashMap::new(),
+            HashMap::new(),
+            vec![],
+        )
+        .with_non_progressing_branch(&[]);
+        let mut sessions = BrowseSessions::default();
+        let session = sessions.open(server).unwrap();
+
+        let page = sessions
+            .page(
+                &session,
+                request(None, BrowseNodeFilter::Branches, 10, None),
+            )
+            .unwrap();
+        assert!(page.nodes.is_empty());
+        assert!(page.continuation.is_none());
+    }
+
+    #[test]
+    fn da2_item_iterator_non_progress_remains_fatal() {
+        let mut items = HashMap::new();
+        items.insert(Vec::new(), vec!["RepeatedItem".to_string()]);
+        let server = MockServer::da2(BrowseNamespace::Hierarchical, HashMap::new(), items, vec![])
+            .with_non_progressing_item(&[]);
+        let mut sessions = BrowseSessions::default();
+        let session = sessions.open(server).unwrap();
+
+        assert!(matches!(
+            sessions.page(&session, request(None, BrowseNodeFilter::Items, 10, None)),
+            Err(OpcError::BrowseNonProgress { iterator_type, .. })
+                if iterator_type == "native DA2 item iterator"
+        ));
+    }
+
+    #[test]
+    fn da2_has_more_discards_prefetched_branch_non_progress_and_uses_items() {
+        let mut state = Da2PageState {
+            parent_path: vec!["SCS0130".to_string()],
+            branches: Some(BufferedBrowseIterator::new(
+                Box::new(std::iter::repeat_with(|| {
+                    Ok::<String, OpcError>("\u{1}".to_string())
+                })),
+                "native DA2 branch iterator",
+                &["SCS0130".to_string()],
+            )),
+            items: Some(BufferedBrowseIterator::new(
+                Box::new(std::iter::once(Ok::<String, OpcError>("PV".to_string()))),
+                "native DA2 item iterator",
+                &["SCS0130".to_string()],
+            )),
+            flat: false,
+            merged_items: HashSet::new(),
+        };
+        for _ in 0..63 {
+            assert!(matches!(
+                state.branches.as_mut().unwrap().next(),
+                Some(Ok(value)) if value == "\u{1}"
+            ));
+        }
+
+        assert!(state.has_more());
+        assert!(state.branches.is_none());
+        assert_eq!(
+            state.next().unwrap(),
+            Some((BrowseNodeKind::Item, "PV".to_string()))
         );
     }
 

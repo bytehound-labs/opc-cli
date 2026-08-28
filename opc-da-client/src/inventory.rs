@@ -20,7 +20,7 @@ use std::collections::{HashSet, VecDeque};
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 
-const DIAGNOSTIC_OPERATION_TRACE_LIMIT: u64 = 128;
+const DIAGNOSTIC_OPERATION_TRACE_LIMIT: u64 = 4_096;
 
 struct BranchWork {
     location: BranchLocation,

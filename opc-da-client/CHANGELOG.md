@@ -18,7 +18,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Inventory pacing can cap the requested item rate in addition to the minimum
   interval between native operation starts. A bounded operation is charged
   for its requested batch size before the COM call begins.
-- Diagnostic inventory traces cover the first 128 bounded operations with
+- Diagnostic inventory traces cover the first 4,096 bounded operations with
   browse-path, item, pacing, boundary, native-duration, and iterator-result
   context.
 - Inventory cancellation logs identify the requesting source and whether the

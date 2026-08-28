@@ -15,6 +15,7 @@ Backend-agnostic OPC DA client library for Rust — async, trait-based, with tra
 - **Scalable Native Browsing**: Open isolated sessions and request bounded, one-level pages through OPC DA 3.0, with a narrowly negotiated OPC DA 2.x compatibility fallback.
 - **Bounded Namespace Inventory**: Stream exact ItemIDs with breadcrumb labels through a cancellable, bounded DA 3.0/2.x traversal.
 - **Bounded Browse Safety**: Native and compatibility browse iterators terminate with a contextual error after 64 consecutive identical successful values, preventing a non-progressing OPC enumerator from running indefinitely.
+- **DA2 Branch Recovery**: During hierarchical inventory, a non-progressing branch iterator is discarded so the independent item iterator can continue; item-side non-progress and unrelated errors remain terminal.
 - **Failure-safe Inventory Worker**: Converts worker panics and inventory errors into terminal stream errors instead of silently ending the stream.
 - **Defensive COM Iterators**: Rejects native enumerator counts that exceed the fixed cache capacity before indexing the returned buffer, and releases remaining COM-allocated strings when iteration ends early.
 - **Windows COM/DCOM Support**: Native OPC DA backend via `windows-rs` — no external OPC crates needed.
@@ -268,7 +269,10 @@ For DA2 hierarchical namespaces, every server-reported branch is validated with
 a bounded native navigation probe. Branch-only names rejected with
 `E_INVALIDARG` are skipped and reported in the inventory completion warning;
 names that resolve to exact items remain selectable even when they are not
-navigable. Other COM and transport failures remain visible errors.
+navigable. If the DA2 branch iterator itself reaches the non-progress threshold,
+only that iterator is discarded and item enumeration continues. The completion
+warning identifies the skipped branch iterator; non-progressing item iterators
+and unrelated native errors remain terminal.
 Inventory uses the same first-root-page DA 3.0 negotiation as interactive
 browsing and reports DA 2.x as its source when compatibility fallback is used.
 Completion warnings are cumulative, so an entry limit or skipped branch does

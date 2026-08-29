@@ -61,6 +61,7 @@ enum BoundaryResult {
     Cancelled,
 }
 
+#[derive(Debug)]
 enum InventoryError {
     Cancelled,
     Failed(OpcError),
@@ -974,9 +975,10 @@ impl Da2PageState {
         skipped_non_progressing_branches: &mut u64,
         first_skipped_non_progressing_branch: &mut Option<String>,
     ) -> Result<Option<(BrowseNodeKind, String)>, InventoryError> {
-        let branch_result = self.branches.as_mut().map(|branches| {
-            branches.next(boundary, &self.parent_path, "enumerate_da2_names.branches")
-        });
+        let branch_result = self
+            .branches
+            .as_mut()
+            .map(|branches| branches.next(boundary));
         match branch_result {
             Some(Some(Ok(name))) => return Ok(Some((BrowseNodeKind::Branch, name))),
             Some(Some(Err(InventoryError::Failed(error))))
@@ -992,10 +994,7 @@ impl Da2PageState {
             Some(None) => self.branches = None,
             None => {}
         }
-        let item_result = self
-            .items
-            .as_mut()
-            .map(|items| items.next(boundary, &self.parent_path, "enumerate_da2_names.items"));
+        let item_result = self.items.as_mut().map(|items| items.next(boundary));
         match item_result {
             Some(Some(Ok(name))) => return Ok(Some((BrowseNodeKind::Item, name))),
             Some(Some(Err(error))) => return Err(error),
@@ -1012,9 +1011,7 @@ impl Da2PageState {
         first_skipped_non_progressing_branch: &mut Option<String>,
     ) -> Result<bool, InventoryError> {
         let branch_has_more = match &mut self.branches {
-            Some(branches) => {
-                branches.has_more(boundary, &self.parent_path, "enumerate_da2_names.branches")?
-            }
+            Some(branches) => branches.has_more(boundary)?,
             None => false,
         };
         if branch_has_more {
@@ -1034,7 +1031,7 @@ impl Da2PageState {
         }
 
         if let Some(items) = &mut self.items
-            && items.has_more(boundary, &self.parent_path, "enumerate_da2_names.items")?
+            && items.has_more(boundary)?
         {
             return Ok(true);
         }
@@ -1965,11 +1962,7 @@ mod tests {
         };
         for _ in 0..63 {
             assert!(matches!(
-                state.branches.as_mut().unwrap().next(
-                    &mut boundary,
-                    &["FCS0528".to_string()],
-                    "enumerate_da2_names.branches",
-                ),
+                state.branches.as_mut().unwrap().next(&mut boundary),
                 Some(Ok(value)) if value == "\u{1}"
             ));
         }

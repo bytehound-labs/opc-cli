@@ -102,7 +102,7 @@ The verification script ([verify.ps1](file:///c:/Users/WSALIGAN/code/opc-cli/scr
 | `error!` | COM failures, browse position corruption |
 | `warn!` | Skipped branches/leaves, max depth reached, handled COM operation failures (e.g., read/write rejections) |
 | `info!` | High-level milestones (server connected, browse complete) |
-| `debug!` | Internal state, GUID resolution details |
+| `debug!` | Internal state, GUID resolution details, native iterator refill timing |
 | `trace!` | Known upstream bugs, iterator noise |
 
 ---

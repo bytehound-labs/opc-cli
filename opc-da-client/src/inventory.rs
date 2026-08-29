@@ -1915,7 +1915,7 @@ mod tests {
                 .iter()
                 .map(|entry| entry.item_id.as_str())
                 .collect::<Vec<_>>(),
-            vec!["FCS0528.PV", "FCS0528!Odd.PV"]
+            vec!["FCS0528.LeafOnly", "FCS0528.PV"]
         );
         assert!(completed.is_none());
         assert!(error.is_none());

@@ -1896,7 +1896,10 @@ mod tests {
         let result = run_inventory(
             connector.as_ref(),
             "test",
-            InventoryOptions::default(),
+            InventoryOptions {
+                batch_size: 10,
+                max_entries: None,
+            },
             &InventoryControl::new(),
             &sender,
         );

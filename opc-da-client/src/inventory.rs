@@ -1904,7 +1904,7 @@ mod tests {
         assert!(matches!(
             result,
             Err(OpcError::BrowseNonProgress { iterator_type, .. })
-                if iterator_type == "enumerate_da2_names.items"
+                if iterator_type == "inventory DA2 item iterator"
         ));
         let (entries, completed, error) = collect(&mut receiver);
         assert_eq!(entries.len(), 1);
@@ -1931,8 +1931,10 @@ mod tests {
 
         assert!(matches!(
             result,
-            Err(OpcError::Com { source })
-                if source.code().0.cast_unsigned() == 0x8007_0005
+            Err(OpcError::Internal(message))
+                if message.contains("classify_da2_branch(down)")
+                    && message.contains("\"FCS0528\"")
+                    && message.contains("item \"Denied\"")
         ));
         let (_, completed, error) = collect(&mut receiver);
         assert!(completed.is_none());

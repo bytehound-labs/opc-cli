@@ -124,6 +124,22 @@ impl BrowseStringIterator for GuardedBrowseIterator {
         let result = self.inner.next_string()?;
         let value = match result {
             Ok(value) => value,
+            Err(OpcError::BrowseNonProgress {
+                repeated_value,
+                consecutive,
+                yielded,
+                browse_path,
+                ..
+            }) if browse_path == "<root>" && !self.browse_path.is_empty() => {
+                self.done = true;
+                return Some(Err(browse_non_progress_error(
+                    &self.iterator_type,
+                    &self.browse_path,
+                    &repeated_value,
+                    consecutive,
+                    yielded,
+                )));
+            }
             Err(error) if is_non_progress_browse_error(&error) => {
                 self.done = true;
                 return Some(Err(error));
@@ -258,6 +274,41 @@ mod guarded_iterator_tests {
             .expect("the underlying terminal error must be returned")
             .expect_err("the underlying error must remain an error");
         assert!(matches!(error, OpcError::BrowseNonProgress { .. }));
+        assert!(iterator.next_string().is_none());
+    }
+
+    #[test]
+    fn unscoped_non_progress_error_gets_the_wrapper_browse_path() {
+        let mut iterator = guard_browse_iterator(
+            Box::new(std::iter::once(Err(OpcError::BrowseNonProgress {
+                iterator_type: "native".to_string(),
+                browse_path: "<root>".to_string(),
+                repeated_value: "same".to_string(),
+                consecutive: 64,
+                yielded: 64,
+            }))),
+            "branch iterator",
+            &["Area".to_string(), "Loop".to_string()],
+        );
+
+        let error = iterator
+            .next_string()
+            .expect("the underlying terminal error must be returned")
+            .expect_err("the underlying error must remain an error");
+        assert!(matches!(
+            error,
+            OpcError::BrowseNonProgress {
+                iterator_type,
+                browse_path,
+                repeated_value,
+                consecutive,
+                yielded,
+            } if iterator_type == "branch iterator"
+                && browse_path == "\"Area\" > \"Loop\""
+                && repeated_value == "same"
+                && consecutive == 64
+                && yielded == 64
+        ));
         assert!(iterator.next_string().is_none());
     }
 }

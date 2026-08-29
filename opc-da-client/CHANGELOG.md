@@ -18,6 +18,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Native string iterator entries are released safely when iteration ends early;
   consumed pointers are cleared before conversion and remaining COM allocations
   are released on drop.
+- Native COM iterator counts are validated before fixed-cache indexing, failed
+  fetches retain enough ownership state for cleanup, and null-only batches are
+  bounded by the non-progress threshold.
+- DA 2.x browse wrappers preserve the active browse path when a lower-level
+  iterator reports a root-scoped non-progress error.
 
 ### Added
 

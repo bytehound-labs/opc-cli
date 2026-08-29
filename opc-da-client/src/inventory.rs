@@ -1910,7 +1910,13 @@ mod tests {
                 if iterator_type == "inventory DA2 item iterator"
         ));
         let (entries, completed, error) = collect(&mut receiver);
-        assert_eq!(entries.len(), 1);
+        assert_eq!(
+            entries
+                .iter()
+                .map(|entry| entry.item_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["FCS0528.PV", "FCS0528!Odd.PV"]
+        );
         assert!(completed.is_none());
         assert!(error.is_none());
     }

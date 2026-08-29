@@ -138,6 +138,8 @@ impl Iterator for StringIterator {
 
             if self.index >= self.count {
                 // Zero the cache to prevent stale freed pointers (OPC-BUG-001)
+                let started = Instant::now();
+                tracing::debug!(celt = self.cache.len(), "Starting IEnumString::Next");
                 self.cache.fill(windows::core::PWSTR::null());
 
                 // SAFETY: Calling IEnumString::Next COM interface method with valid mutable cache slice and count pointer.
@@ -146,6 +148,13 @@ impl Iterator for StringIterator {
                         .Next(self.cache.as_mut_slice(), Some(&mut self.count))
                 };
 
+                tracing::debug!(
+                    hresult = format_args!("{:#010X}", code.0),
+                    celt = self.cache.len(),
+                    fetched = self.count,
+                    elapsed_ms = started.elapsed().as_millis(),
+                    "IEnumString::Next returned"
+                );
                 tracing::debug!(
                     hresult = format_args!("{:#010X}", code.0),
                     celt = self.cache.len(),

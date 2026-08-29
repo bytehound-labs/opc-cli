@@ -187,6 +187,11 @@ never expose COM pointers or OPC DA continuation strings. Transport adapters can
 encode tokens with `to_string()` and restore them with each token type's
 `parse()` method.
 
+The repeated-value safety bound applies to each underlying native iterator, not
+to the requested page size. A page smaller than the 64-value bound can therefore
+return a continuation before the iterator guard is reached; continue paging to
+consume the full bounded iterator.
+
 The DA 2.x fallback merges a same-named branch and leaf into one
 `BrowseNodeKind::BranchAndItem` node and resolves its exact item ID through
 `GetItemID`.

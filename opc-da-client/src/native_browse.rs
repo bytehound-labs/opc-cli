@@ -834,7 +834,8 @@ mod tests {
     use crate::backend::connector::{ConnectedGroup, RemoteArray};
     use crate::bindings::da::{tagOPCDATASOURCE, tagOPCITEMDEF, tagOPCITEMRESULT, tagOPCITEMSTATE};
     use crate::opc_da::errors::{
-        E_INVALIDARG_HRESULT, E_NOTIMPL_HRESULT, RPC_X_NULL_REF_POINTER_HRESULT,
+        E_INVALIDARG_HRESULT, E_NOTIMPL_HRESULT, MAX_CONSECUTIVE_IDENTICAL_BROWSE_VALUES,
+        RPC_X_NULL_REF_POINTER_HRESULT,
     };
     use crate::opc_da::typedefs::{GroupHandle, ItemHandle};
     use std::collections::VecDeque;
@@ -1522,7 +1523,15 @@ mod tests {
         let session = sessions.open(server).unwrap();
 
         assert!(matches!(
-            sessions.page(&session, request(None, BrowseNodeFilter::Items, 10, None)),
+            sessions.page(
+                &session,
+                request(
+                    None,
+                    BrowseNodeFilter::Items,
+                    MAX_CONSECUTIVE_IDENTICAL_BROWSE_VALUES as u32,
+                    None,
+                ),
+            ),
             Err(OpcError::BrowseNonProgress { iterator_type, .. })
                 if iterator_type == "native DA2 item iterator"
         ));

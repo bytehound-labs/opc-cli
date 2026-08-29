@@ -230,7 +230,7 @@ The library exposes two browse surfaces:
    - **Branches first:** Enumerate `OPC_BRANCH` items, navigate down via `change_browse_position(DOWN)`, recurse, then **always** navigate back `UP` — even if recursion fails — to prevent position corruption.
    - **Leaves second (soft-fail):** Enumerate `OPC_LEAF` items at current position; failures are logged and skipped.
    - **Fully-qualified IDs:** `get_item_id()` converts browse names to item IDs; falls back to browse name if conversion fails.
-   - **Iterator safety:** The upstream `StringIterator` bug (OPC-BUG-001) is handled internally via cache zeroing, null-entry skipping, and ownership cleanup. Native and compatibility browse iterators also stop after 64 consecutive identical successful values and return `BrowseNonProgress` with iterator, path, repeated-value, and progress context.
+   - **Iterator safety:** The upstream `StringIterator` bug (OPC-BUG-001) is handled internally via cache zeroing, null-entry skipping, bounded null-only batches, fetched-count validation, and ownership cleanup. Native and compatibility browse iterators also stop after 64 consecutive identical successful values and return `BrowseNonProgress` with iterator, path, repeated-value, and progress context. A compatibility wrapper restores the active DA 2.x browse path when a lower-level iterator reports a root-scoped non-progress error.
    - Hierarchical browsing never treats `OPC_FLAT` output as complete item IDs because some servers return branch-only results.
 2. **Native paged API**
    - `browse_capabilities`, `open_browse_session`, `browse_page`, and `close_browse_session` expose bounded one-level enumeration.
@@ -265,7 +265,7 @@ This library is **Windows-only** as it depends on Windows COM/DCOM for OPC DA in
 
 The upstream `opc_da` `StringIterator` had a bug where null `PWSTR` entries in the batch cache were converted to `E_POINTER` errors by `RemotePointer`. This produced up to 16 phantom errors per iterator cycle.
 
-**Fix:** `StringIterator::next()` now zeroes the cache before each `IEnumString::Next()` call, and silently skips null `PWSTR` entries with a `debug!` log. The caller-side `is_known_iterator_bug()` workaround has been removed.
+**Fix:** `StringIterator::next()` now zeroes the cache before each `IEnumString::Next()` call, silently skips null `PWSTR` entries with a `debug!` log, validates fetched counts before indexing, bounds null-only batches, and releases remaining COM-owned strings after failed or early-ended iteration. The caller-side `is_known_iterator_bug()` workaround has been removed.
 
 ### Non-progressing browse iterators
 

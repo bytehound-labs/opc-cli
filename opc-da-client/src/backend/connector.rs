@@ -78,6 +78,31 @@ pub fn classify_da2_branch<S: ConnectedServer>(
 /// the worker while allowing tests to supply pure Rust iterators.
 pub trait BrowseStringIterator {
     fn next_string(&mut self) -> Option<OpcResult<String>>;
+
+    /// Fetch the next item, invoking `before_native_operation` only when the
+    /// iterator needs to perform native work.
+    ///
+    /// Pure Rust iterators use one item as their operation cost. Native DA2
+    /// iterators override this so cached items do not consume the pacing
+    /// budget and only an `IEnumString::Next` refill is charged.
+    fn next_string_with_gate(
+        &mut self,
+        before_native_operation: &mut dyn FnMut(u32) -> bool,
+        should_cancel: &mut dyn FnMut() -> bool,
+    ) -> Option<OpcResult<String>> {
+        if should_cancel() {
+            return None;
+        }
+        if before_native_operation(1) {
+            if should_cancel() {
+                None
+            } else {
+                self.next_string()
+            }
+        } else {
+            None
+        }
+    }
 }
 
 impl<T> BrowseStringIterator for T
@@ -117,11 +142,21 @@ pub fn guard_browse_iterator(
 
 impl BrowseStringIterator for GuardedBrowseIterator {
     fn next_string(&mut self) -> Option<OpcResult<String>> {
+        self.next_string_with_gate(&mut |_| true, &mut || false)
+    }
+
+    fn next_string_with_gate(
+        &mut self,
+        before_native_operation: &mut dyn FnMut(u32) -> bool,
+        should_cancel: &mut dyn FnMut() -> bool,
+    ) -> Option<OpcResult<String>> {
         if self.done {
             return None;
         }
 
-        let result = self.inner.next_string()?;
+        let result = self
+            .inner
+            .next_string_with_gate(before_native_operation, should_cancel)?;
         let value = match result {
             Ok(value) => value,
             Err(OpcError::BrowseNonProgress {
@@ -167,6 +202,31 @@ impl BrowseStringIterator for GuardedBrowseIterator {
         }
 
         Some(Ok(value))
+    }
+}
+
+struct NativeStringIterator {
+    inner: StringIterator,
+}
+
+impl NativeStringIterator {
+    fn new(inner: StringIterator) -> Self {
+        Self { inner }
+    }
+}
+
+impl BrowseStringIterator for NativeStringIterator {
+    fn next_string(&mut self) -> Option<OpcResult<String>> {
+        self.inner.next()
+    }
+
+    fn next_string_with_gate(
+        &mut self,
+        before_native_operation: &mut dyn FnMut(u32) -> bool,
+        should_cancel: &mut dyn FnMut() -> bool,
+    ) -> Option<OpcResult<String>> {
+        self.inner
+            .next_with_gate(before_native_operation, should_cancel)
     }
 }
 
@@ -290,12 +350,9 @@ pub trait ConnectedServer {
         data_type: u16,
         access_rights: u32,
     ) -> OpcResult<Box<dyn BrowseStringIterator>> {
-        Ok(Box::new(self.browse_opc_item_ids(
-            browse_type,
-            filter,
-            data_type,
-            access_rights,
-        )?))
+        Ok(Box::new(NativeStringIterator::new(
+            self.browse_opc_item_ids(browse_type, filter, data_type, access_rights)?,
+        )))
     }
 
     /// Return one native OPC DA 3.0 browse page.

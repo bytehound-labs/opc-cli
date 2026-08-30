@@ -1085,23 +1085,42 @@ impl BufferedBrowseIterator {
         if let Some(value) = self.pending.take() {
             return Some(value.map_err(InventoryError::from));
         }
-        match boundary.before_operation() {
-            BoundaryResult::Proceed => self
-                .inner
-                .next_string()
-                .map(|value| value.map_err(InventoryError::from)),
-            BoundaryResult::Cancelled => Some(Err(InventoryError::Cancelled)),
+        match self.next_native(boundary) {
+            Ok(value) => value.map(|value| value.map_err(InventoryError::from)),
+            Err(error) => Some(Err(error)),
         }
     }
 
     fn has_more(&mut self, boundary: &mut InventoryBoundary<'_>) -> Result<bool, InventoryError> {
         if self.pending.is_none() {
-            self.pending = match boundary.before_operation() {
-                BoundaryResult::Proceed => self.inner.next_string(),
-                BoundaryResult::Cancelled => return Err(InventoryError::Cancelled),
-            };
+            self.pending = self.next_native(boundary)?;
         }
         Ok(self.pending.is_some())
+    }
+
+    fn next_native(
+        &mut self,
+        boundary: &mut InventoryBoundary<'_>,
+    ) -> Result<Option<OpcResult<String>>, InventoryError> {
+        let control = boundary.control;
+        let mut cancelled = false;
+        let mut before_native_operation =
+            |item_cost| match boundary.before_operation_with_cost(item_cost) {
+                BoundaryResult::Proceed => true,
+                BoundaryResult::Cancelled => {
+                    cancelled = true;
+                    false
+                }
+            };
+        let mut should_cancel = || control.is_cancelled();
+        let value = self
+            .inner
+            .next_string_with_gate(&mut before_native_operation, &mut should_cancel);
+        if cancelled || control.is_cancelled() {
+            Err(InventoryError::Cancelled)
+        } else {
+            Ok(value)
+        }
     }
 
     fn take_non_progress(&mut self) -> Option<OpcError> {
@@ -1211,11 +1230,58 @@ mod tests {
         E_INVALIDARG_HRESULT, E_NOTIMPL_HRESULT, RPC_X_NULL_REF_POINTER_HRESULT,
     };
     use crate::opc_da::typedefs::{GroupHandle, ItemHandle};
+    use std::collections::VecDeque;
     use std::sync::Arc;
     use std::sync::Mutex;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use windows::Win32::System::Variant::VARIANT;
     use windows::core::HRESULT;
+
+    struct GateAwareIterator {
+        items: VecDeque<String>,
+        refill_size: u32,
+        remaining_in_refill: usize,
+        costs: Arc<Mutex<Vec<u32>>>,
+        done: bool,
+    }
+
+    impl BrowseStringIterator for GateAwareIterator {
+        fn next_string(&mut self) -> Option<OpcResult<String>> {
+            self.items.pop_front().map(Ok)
+        }
+
+        fn next_string_with_gate(
+            &mut self,
+            before_native_operation: &mut dyn FnMut(u32) -> bool,
+            should_cancel: &mut dyn FnMut() -> bool,
+        ) -> Option<OpcResult<String>> {
+            if self.done || should_cancel() {
+                return None;
+            }
+            if self.remaining_in_refill == 0 {
+                if !before_native_operation(self.refill_size) {
+                    return None;
+                }
+                self.costs.lock().unwrap().push(self.refill_size);
+                if should_cancel() {
+                    return None;
+                }
+                self.remaining_in_refill = self.items.len().min(self.refill_size as usize);
+                if self.remaining_in_refill == 0 {
+                    self.done = true;
+                    return None;
+                }
+            }
+
+            if should_cancel() {
+                return None;
+            }
+            self.remaining_in_refill -= 1;
+            Some(Ok(self.items.pop_front().expect(
+                "remaining_in_refill must match the number of queued items",
+            )))
+        }
+    }
 
     struct TestGroup;
 
@@ -1656,6 +1722,43 @@ mod tests {
             ),
             Duration::from_millis(100)
         );
+    }
+
+    #[test]
+    fn da2_iterator_pacing_charges_each_native_refill_not_each_cached_item() {
+        let costs = Arc::new(Mutex::new(Vec::new()));
+        let mut iterator = BufferedBrowseIterator::new(
+            Box::new(GateAwareIterator {
+                items: ["Item1", "Item2", "Item3"]
+                    .into_iter()
+                    .map(str::to_string)
+                    .collect(),
+                refill_size: 256,
+                remaining_in_refill: 0,
+                costs: Arc::clone(&costs),
+                done: false,
+            }),
+            "test iterator",
+            &[],
+        );
+        let control = InventoryControl::new();
+        let mut boundary = InventoryBoundary::new(&control);
+        let mut values = Vec::new();
+
+        while let Some(value) = iterator.next(&mut boundary) {
+            values.push(value.expect("the test item must be valid"));
+        }
+
+        assert_eq!(
+            values,
+            vec![
+                "Item1".to_string(),
+                "Item2".to_string(),
+                "Item3".to_string()
+            ]
+        );
+        assert_eq!(*costs.lock().unwrap(), vec![256, 256]);
+        assert_eq!(boundary.operations(), 2);
     }
 
     #[test]

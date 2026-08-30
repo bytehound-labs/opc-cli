@@ -65,8 +65,10 @@ All methods use `#[async_trait]`.
 *   A compatibility browse wrapper replaces a root-scoped `BrowseNonProgress` path with the active DA 2.x browse path before returning it to inventory callers.
 *   `start_inventory` requests no more than `batch_size` native entries per operation and never exposes
     browse-session or continuation tokens.
+*   Inventory pacing charges DA3 operations by their requested page size, while native DA2 string enumeration charges only actual `IEnumString::Next` refills using the iterator cache capacity; cached DA2 items do not consume additional item-rate budget.
 *   Inventory cancellation is observed before the next bounded native operation; a cancelled or
-    truncated inventory never claims `complete = true`.
+    truncated inventory never claims `complete = true`, and native DA2 cancellation is also checked
+    between cached items.
 *   Closing, expiry, worker shutdown, or cancellation of an open/page request drops the affected session state on the COM worker.
 *   `read_tag_values` returns a `TagValue` entry for all requested tags, preserving the original array length and order. Items that fail to be added to the group or read will have their `value` set to `"Error"` and `quality` set to `"Bad — <hint>"`.
 *   Successful `VT_BSTR` reads through `read_tag_values` preserve the exact BSTR contents. Empty strings remain empty, embedded quotes remain embedded, and leading/trailing quote characters remain data.

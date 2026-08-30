@@ -14,6 +14,7 @@ Backend-agnostic OPC DA client library for Rust — async, trait-based, with tra
 - **Read & Write Support**: Read tag values and write typed values (`Int`, `Float`, `Bool`, `String`) to OPC tags.
 - **Scalable Native Browsing**: Open isolated sessions and request bounded, one-level pages through OPC DA 3.0, with a narrowly negotiated OPC DA 2.x compatibility fallback.
 - **Bounded Namespace Inventory**: Stream exact ItemIDs with breadcrumb labels through a cancellable, bounded DA 3.0/2.x traversal.
+- **Backend-aware Inventory Pacing**: Charges DA3 pages by requested page size and DA2 string enumeration by actual native cache refills, so cached items do not add artificial delays.
 - **Bounded Browse Safety**: Native and compatibility browse iterators terminate with a contextual error after 64 consecutive identical successful values, preventing a non-progressing OPC enumerator from running indefinitely.
 - **DA2 Branch Recovery**: During hierarchical inventory, a non-progressing branch iterator is discarded so the independent item iterator can continue; item-side non-progress and unrelated errors remain terminal.
 - **Failure-safe Inventory Worker**: Converts worker panics and inventory errors into terminal stream errors instead of silently ending the stream.
@@ -262,10 +263,13 @@ The returned `InventoryStream` exposes pause, resume, and cancellation controls.
 Each native browse call is bounded by `InventoryOptions::batch_size`, and
 `max_entries` can cap a deliberately limited inventory.
 Use `InventoryStream::set_pacing(InventoryPacing { min_interval, item_rate_per_second })` to
-dynamically set the minimum interval between bounded native operation starts
-and the maximum requested item rate. The item-rate budget is charged for the
-requested batch size before each native call, even when the server returns
-fewer entries.
+dynamically set the minimum interval between native operation starts and the
+maximum requested item rate. DA3 page operations charge the requested page size
+before each native call, even when the server returns fewer entries. Hierarchical
+DA2 string enumeration charges the actual `IEnumString::Next` refill size
+(currently the native iterator cache capacity); items already returned from
+that cache do not consume another pacing budget. Cancellation is still checked
+before each cached item as well as before each refill.
 Use `InventoryStream::set_batch_size(batch_size)` to change the bounded request
 size before the next slice; values must be between 1 and
 `MAX_INVENTORY_BATCH_SIZE` (1000).

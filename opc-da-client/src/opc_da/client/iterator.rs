@@ -135,18 +135,25 @@ impl StringIterator {
         }
         self.populated = 0;
     }
-}
 
-impl Iterator for StringIterator {
-    type Item = OpcResult<String>;
-
-    fn next(&mut self) -> Option<Self::Item> {
+    pub(crate) fn next_with_gate(
+        &mut self,
+        before_refill: &mut dyn FnMut(u32) -> bool,
+        should_cancel: &mut dyn FnMut() -> bool,
+    ) -> Option<<Self as Iterator>::Item> {
         loop {
             if self.done {
                 return None;
             }
+            if should_cancel() {
+                return None;
+            }
 
             if self.index >= self.count {
+                if !before_refill(self.cache.len() as u32) {
+                    return None;
+                }
+
                 // Zero the cache to prevent stale freed pointers (OPC-BUG-001)
                 let started = Instant::now();
                 tracing::debug!(celt = self.cache.len(), "Starting IEnumString::Next");
@@ -263,6 +270,14 @@ impl Iterator for StringIterator {
 
             return Some(Ok(value));
         }
+    }
+}
+
+impl Iterator for StringIterator {
+    type Item = OpcResult<String>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.next_with_gate(&mut |_| true, &mut || false)
     }
 }
 
@@ -498,6 +513,105 @@ mod tests {
         }
 
         assert_eq!(results, items);
+    }
+
+    #[test]
+    fn test_string_iterator_gate_runs_once_per_native_refill() {
+        let items = vec![
+            "Item1".to_string(),
+            "Item2".to_string(),
+            "Item3".to_string(),
+        ];
+        let mock_enum: IEnumString = MockEnumString {
+            items: items.clone(),
+            index: std::sync::atomic::AtomicUsize::new(0),
+        }
+        .into();
+
+        let mut iter = StringIterator::new(mock_enum);
+        let mut costs = Vec::new();
+        let mut gate = |cost| {
+            costs.push(cost);
+            true
+        };
+        let mut should_cancel = || false;
+        let mut results = Vec::new();
+        while let Some(item) = iter.next_with_gate(&mut gate, &mut should_cancel) {
+            results.push(item.expect("the native item must be valid"));
+        }
+
+        assert_eq!(results, items);
+        assert_eq!(
+            costs,
+            vec![STRING_CACHE_SIZE as u32, STRING_CACHE_SIZE as u32],
+            "cached items must not each consume a native-operation budget"
+        );
+    }
+
+    #[test]
+    fn test_string_iterator_gate_can_cancel_before_refill() {
+        let mock_enum: IEnumString = MockEnumString {
+            items: vec!["Item1".to_string()],
+            index: std::sync::atomic::AtomicUsize::new(0),
+        }
+        .into();
+
+        let mut iter = StringIterator::new(mock_enum);
+        let mut called = false;
+        let mut should_cancel = || false;
+        {
+            let mut gate = |_cost| {
+                called = true;
+                false
+            };
+            assert!(iter.next_with_gate(&mut gate, &mut should_cancel).is_none());
+        }
+        assert!(called, "the gate must run before the native refill");
+        assert!(
+            iter.next().is_some(),
+            "cancellation must not permanently exhaust the iterator"
+        );
+    }
+
+    #[test]
+    fn test_string_iterator_checks_cancellation_for_cached_items() {
+        let items = vec![
+            "Item1".to_string(),
+            "Item2".to_string(),
+            "Item3".to_string(),
+        ];
+        let mock_enum: IEnumString = MockEnumString {
+            items,
+            index: std::sync::atomic::AtomicUsize::new(0),
+        }
+        .into();
+
+        let mut iter = StringIterator::new(mock_enum);
+        let mut refill_count = 0;
+        let mut gate = |_cost| {
+            refill_count += 1;
+            true
+        };
+        let mut cached_items_seen = 0;
+        let mut should_cancel = || {
+            cached_items_seen += 1;
+            cached_items_seen > 1
+        };
+
+        assert_eq!(
+            iter.next_with_gate(&mut gate, &mut should_cancel)
+                .expect("the first item must be yielded")
+                .expect("the first item must be valid"),
+            "Item1"
+        );
+        assert!(
+            iter.next_with_gate(&mut gate, &mut should_cancel).is_none(),
+            "cancellation must stop before the next cached item"
+        );
+        assert_eq!(
+            refill_count, 1,
+            "cached-item cancellation must not trigger another native refill"
+        );
     }
 
     #[test]

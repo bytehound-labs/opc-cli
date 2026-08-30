@@ -46,7 +46,7 @@ struct InventoryPage {
 
 enum InventoryContinuation {
     Da3(String),
-    Da2(Da2PageState),
+    Da2(Box<Da2PageState>),
 }
 
 struct InventoryDa2BranchNode {
@@ -257,17 +257,15 @@ pub fn run_inventory<C: ServerConnector>(
         let paused_before = boundary.paused_time();
         let batch_size = control.batch_size().unwrap_or(options.batch_size);
         let operations_before = boundary.operations();
-        let page_result = next_page(
-            &connected,
-            &mut work,
-            batch_size,
-            &mut current_da2_path,
-            &mut skipped_invalid_branches,
-            &mut first_skipped_invalid_branch,
-            &mut skipped_non_progressing_branches,
-            &mut first_skipped_non_progressing_branch,
-            &mut boundary,
-        );
+        let mut page_context = InventoryPageContext {
+            current_da2_path: &mut current_da2_path,
+            skipped_invalid_branches: &mut skipped_invalid_branches,
+            first_skipped_invalid_branch: &mut first_skipped_invalid_branch,
+            skipped_non_progressing_branches: &mut skipped_non_progressing_branches,
+            first_skipped_non_progressing_branch: &mut first_skipped_non_progressing_branch,
+            boundary: &mut boundary,
+        };
+        let page_result = next_page(&connected, &mut work, batch_size, &mut page_context);
         let slice_elapsed = call_started.elapsed();
         active_time +=
             slice_elapsed.saturating_sub(boundary.paused_time().saturating_sub(paused_before));
@@ -404,7 +402,7 @@ pub fn run_inventory<C: ServerConnector>(
                     work.da3_continuation = Some(continuation);
                 }
                 InventoryContinuation::Da2(state) => {
-                    work.da2_state = Some(state);
+                    work.da2_state = Some(*state);
                 }
             }
             queue.push_front(work);
@@ -531,17 +529,12 @@ fn next_page<S: ConnectedServer>(
     server: &S,
     work: &mut BranchWork,
     batch_size: u32,
-    current_da2_path: &mut Vec<String>,
-    skipped_invalid_branches: &mut u64,
-    first_skipped_invalid_branch: &mut Option<String>,
-    skipped_non_progressing_branches: &mut u64,
-    first_skipped_non_progressing_branch: &mut Option<String>,
-    boundary: &mut InventoryBoundary<'_>,
+    context: &mut InventoryPageContext<'_, '_>,
 ) -> Result<InventoryPage, InventoryError> {
     match &work.location {
         BranchLocation::Da3(item_id) => {
             let is_root = item_id.is_none() && work.breadcrumbs.is_empty();
-            let page = match boundary.before_operation_with_cost(batch_size) {
+            let page = match context.boundary.before_operation_with_cost(batch_size) {
                 BoundaryResult::Proceed => server.browse_da3(
                     item_id.as_deref(),
                     work.da3_continuation.as_deref(),
@@ -583,25 +576,20 @@ fn next_page<S: ConnectedServer>(
         }
         BranchLocation::Da2(path) => {
             if work.da2_state.is_none() {
-                work.da2_state = Some(start_da2_page(server, path, current_da2_path, boundary)?);
+                work.da2_state = Some(start_da2_page(
+                    server,
+                    path,
+                    context.current_da2_path,
+                    context.boundary,
+                )?);
             }
             let state = work.da2_state.take().ok_or_else(|| {
                 OpcError::Internal("DA2 inventory page state disappeared".to_string())
             })?;
-            let (nodes, state) = browse_da2_page(
-                server,
-                state,
-                batch_size,
-                current_da2_path,
-                skipped_invalid_branches,
-                first_skipped_invalid_branch,
-                skipped_non_progressing_branches,
-                first_skipped_non_progressing_branch,
-                boundary,
-            )?;
+            let (nodes, state) = browse_da2_page(server, state, batch_size, context)?;
             Ok(InventoryPage {
                 nodes,
-                continuation: state.map(InventoryContinuation::Da2),
+                continuation: state.map(|state| InventoryContinuation::Da2(Box::new(state))),
             })
         }
     }
@@ -648,6 +636,15 @@ struct Da2PageState {
     items: Option<BufferedBrowseIterator>,
     flat: bool,
     merged_items: HashSet<String>,
+}
+
+struct InventoryPageContext<'a, 'control> {
+    current_da2_path: &'a mut Vec<String>,
+    skipped_invalid_branches: &'a mut u64,
+    first_skipped_invalid_branch: &'a mut Option<String>,
+    skipped_non_progressing_branches: &'a mut u64,
+    first_skipped_non_progressing_branch: &'a mut Option<String>,
+    boundary: &'a mut InventoryBoundary<'control>,
 }
 
 fn start_da2_page<S: ConnectedServer>(
@@ -734,21 +731,21 @@ fn browse_da2_page<S: ConnectedServer>(
     server: &S,
     mut state: Da2PageState,
     batch_size: u32,
-    current_path: &mut Vec<String>,
-    skipped_invalid_branches: &mut u64,
-    first_skipped_invalid_branch: &mut Option<String>,
-    skipped_non_progressing_branches: &mut u64,
-    first_skipped_non_progressing_branch: &mut Option<String>,
-    boundary: &mut InventoryBoundary<'_>,
+    context: &mut InventoryPageContext<'_, '_>,
 ) -> Result<(Vec<InventoryNode>, Option<Da2PageState>), InventoryError> {
-    move_to_da2_path(server, current_path, &state.parent_path, boundary)?;
+    move_to_da2_path(
+        server,
+        context.current_da2_path,
+        &state.parent_path,
+        context.boundary,
+    )?;
     let mut nodes = Vec::with_capacity(batch_size as usize);
     while nodes.len() < batch_size as usize {
         let Some((mut kind, name)) = state
             .next(
-                boundary,
-                skipped_non_progressing_branches,
-                first_skipped_non_progressing_branch,
+                context.boundary,
+                context.skipped_non_progressing_branches,
+                context.first_skipped_non_progressing_branch,
             )
             .map_err(|error| {
                 contextual_inventory_error(error, "enumerate_da2_names", &state.parent_path, None)
@@ -765,9 +762,9 @@ fn browse_da2_page<S: ConnectedServer>(
                     server,
                     &mut state,
                     &name,
-                    skipped_invalid_branches,
-                    first_skipped_invalid_branch,
-                    boundary,
+                    context.skipped_invalid_branches,
+                    context.first_skipped_invalid_branch,
+                    context.boundary,
                 )?
                 else {
                     continue;
@@ -779,7 +776,7 @@ fn browse_da2_page<S: ConnectedServer>(
                 let item_id = if state.flat {
                     name.clone()
                 } else {
-                    match paced_call(boundary, || server.get_item_id(&name)) {
+                    match paced_call(context.boundary, || server.get_item_id(&name)) {
                         Ok(item_id) => item_id,
                         Err(InventoryError::Failed(error)) => {
                             return Err(contextual_browse_error(
@@ -794,8 +791,12 @@ fn browse_da2_page<S: ConnectedServer>(
                     }
                 };
                 let child = if !state.flat
-                    && probe_da2_name_has_children(server, &name, &state.parent_path, boundary)?
-                {
+                    && probe_da2_name_has_children(
+                        server,
+                        &name,
+                        &state.parent_path,
+                        context.boundary,
+                    )? {
                     let mut child_path = state.parent_path.clone();
                     child_path.push(name.clone());
                     kind = BrowseNodeKind::BranchAndItem;
@@ -819,9 +820,9 @@ fn browse_da2_page<S: ConnectedServer>(
         });
     }
     let has_more = state.has_more(
-        boundary,
-        skipped_non_progressing_branches,
-        first_skipped_non_progressing_branch,
+        context.boundary,
+        context.skipped_non_progressing_branches,
+        context.first_skipped_non_progressing_branch,
     )?;
     Ok((nodes, has_more.then_some(state)))
 }

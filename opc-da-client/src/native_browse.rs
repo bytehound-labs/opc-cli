@@ -232,7 +232,7 @@ impl<S: ConnectedServer> BrowseSessions<S> {
                 parent,
                 filter,
                 state,
-            } => Self::browse_da2(session, parent, filter, max_elements, state),
+            } => Self::browse_da2(session, parent, filter, max_elements, *state),
         }
     }
 
@@ -525,7 +525,7 @@ impl<S: ConnectedServer> BrowseSessions<S> {
                 BrowseContinuation::Da2 {
                     parent,
                     filter,
-                    state,
+                    state: Box::new(state),
                 },
             )?)
         } else {
@@ -622,7 +622,7 @@ enum BrowseContinuation {
     Da2 {
         parent: Option<BrowseNodeToken>,
         filter: BrowseNodeFilter,
-        state: Da2PageState,
+        state: Box<Da2PageState>,
     },
 }
 
@@ -1528,7 +1528,8 @@ mod tests {
                 request(
                     None,
                     BrowseNodeFilter::Items,
-                    MAX_CONSECUTIVE_IDENTICAL_BROWSE_VALUES as u32,
+                    u32::try_from(MAX_CONSECUTIVE_IDENTICAL_BROWSE_VALUES)
+                        .expect("the non-progress guard limit fits in u32"),
                     None,
                 ),
             ),

@@ -179,7 +179,7 @@ impl<C: ServerConnector + 'static> ComWorker<C> {
                         let start = std::time::Instant::now();
                         let servers = connector.enumerate_servers();
                         if let Ok(s) = &servers {
-                            tracing::info!(
+                            tracing::debug!(
                                 count = s.len(),
                                 elapsed_ms =
                                     u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX),
@@ -348,7 +348,7 @@ impl<C: ServerConnector + 'static> ComWorker<C> {
             std::collections::hash_map::Entry::Vacant(e) => {
                 tracing::debug!(server = %server_name, "Cache miss, connecting");
                 let srv = connector.connect(server_name)?;
-                tracing::info!(server = %server_name, "Connection established, added to pool");
+                tracing::debug!(server = %server_name, "Connection established, added to pool");
                 e.insert(srv)
             }
         };
@@ -364,7 +364,7 @@ impl<C: ServerConnector + 'static> ComWorker<C> {
                 })?;
                 let fresh_ref = &fresh_srv;
                 let result = operation(fresh_ref);
-                tracing::info!(server = %server_name, "Reconnection successful, pool updated");
+                tracing::debug!(server = %server_name, "Reconnection successful, pool updated");
                 cache.insert(server_name.to_string(), fresh_srv);
                 result
             }
@@ -516,7 +516,7 @@ impl<C: ServerConnector + 'static> ComWorker<C> {
             };
         }
 
-        tracing::info!(
+        tracing::debug!(
             count = tag_values.len(),
             elapsed_ms = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX),
             "read_tag_values completed"
@@ -607,7 +607,7 @@ impl<C: ServerConnector + 'static> ComWorker<C> {
             .ok_or_else(|| OpcError::Internal("Server returned empty write errors".to_string()))?;
 
         let write_result = if write_err.is_ok() {
-            tracing::info!(
+            tracing::debug!(
                 elapsed_ms = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX),
                 "write_tag_value completed"
             );
@@ -684,7 +684,7 @@ impl<C: ServerConnector + 'static> ComWorker<C> {
                 0,
             )?;
         }
-        tracing::info!(
+        tracing::debug!(
             count = tags.len(),
             elapsed_ms = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX),
             "browse_tags completed"

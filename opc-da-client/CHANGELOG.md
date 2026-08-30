@@ -29,6 +29,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Inventory pacing can cap the requested item rate in addition to the minimum
   interval between native operation starts. A bounded operation is charged
   for its requested batch size before the COM call begins.
+- Inventory cancellation logs identify the requesting source and whether the
+  control was already cancelled, including explicit stream cancellation and
+  stream-drop cleanup.
 
 ## [0.2.7] - 2026-08-25
 

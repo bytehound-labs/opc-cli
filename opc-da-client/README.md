@@ -29,7 +29,7 @@ Add this to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-opc-da-client = { package = "bytehound-opc-da-client", version = "0.2.5" }
+opc-da-client = { package = "bytehound-opc-da-client", version = "0.2.8" }
 ```
 
 ## Prerequisites

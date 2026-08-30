@@ -101,9 +101,14 @@ The verification script ([verify.ps1](file:///c:/Users/WSALIGAN/code/opc-cli/scr
 | :--- | :--- |
 | `error!` | COM failures, browse position corruption |
 | `warn!` | Skipped branches/leaves, max depth reached, handled COM operation failures (e.g., read/write rejections) |
-| `info!` | High-level milestones (server connected, browse complete) |
+| `info!` | High-level lifecycle milestones (for example, COM initialization) |
 | `debug!` | Internal state, GUID resolution details, native iterator refill timing |
 | `trace!` | Known upstream bugs, iterator noise |
+
+Routine successful OPC operations (server listing, reads, writes, and browse
+pages) are logged at `debug!` with elapsed time fields so a large inventory
+does not fill the normal informational log stream. Failures and operator-
+relevant transitions remain at `warn!` or `error!`.
 
 ---
 

@@ -2,6 +2,7 @@
 use crate::opc_da::client::ClientTrait;
 use crate::opc_da::errors::{OpcError, OpcResult};
 use crate::provider::OpcValue;
+use std::time::Instant;
 use windows::Win32::Foundation::{FILETIME, VARIANT_BOOL};
 use windows::Win32::System::Com::{CLSIDFromProgID, CoTaskMemFree, ProgIDFromCLSID};
 use windows::Win32::System::Ole::{
@@ -10,7 +11,6 @@ use windows::Win32::System::Ole::{
 };
 use windows::Win32::System::Variant::{VARIANT, VT_BOOL, VT_BSTR, VT_I4, VT_R8};
 use windows::core::{BSTR, PCWSTR};
-use std::time::Instant;
 
 pub use crate::opc_da::errors::{
     format_hresult, friendly_com_hint, friendly_hresult_hint as friendly_com_hresult_hint,

@@ -17,6 +17,9 @@ Backend-agnostic OPC DA client library for Rust — async, trait-based, with tra
 - **Startup Boundary Diagnostics**: Low-volume informational logs mark COM worker startup,
   ProgID resolution, server connection, capability detection, namespace organization, and the
   first native inventory operation, making startup stalls distinguishable from traversal stalls.
+- **Scale-safe Iterator Diagnostics**: Native iterator refill timing and per-entry null handling
+  are trace-level diagnostics, so production-scale inventories do not fill debug logs with
+  routine enumeration events.
 - **Backend-aware Inventory Pacing**: Charges DA3 pages by requested page size and DA2 string enumeration by actual native cache refills, so cached items do not add artificial delays.
 - **Bounded Browse Safety**: Native and compatibility browse iterators terminate with a contextual error after 64 consecutive identical successful values, preventing a non-progressing OPC enumerator from running indefinitely.
 - **DA2 Branch Recovery**: During hierarchical inventory, a non-progressing branch iterator is discarded so the independent item iterator can continue; item-side non-progress and unrelated errors remain terminal.

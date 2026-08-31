@@ -156,7 +156,7 @@ impl StringIterator {
 
                 // Zero the cache to prevent stale freed pointers (OPC-BUG-001)
                 let started = Instant::now();
-                tracing::debug!(celt = self.cache.len(), "Starting IEnumString::Next");
+                tracing::trace!(celt = self.cache.len(), "Starting IEnumString::Next");
                 self.cache.fill(windows::core::PWSTR::null());
                 self.index = 0;
                 self.count = 0;
@@ -168,7 +168,7 @@ impl StringIterator {
                         .Next(self.cache.as_mut_slice(), Some(&mut self.count))
                 };
 
-                tracing::debug!(
+                tracing::trace!(
                     hresult = format_args!("{:#010X}", code.0),
                     celt = self.cache.len(),
                     fetched = self.count,
@@ -236,7 +236,7 @@ impl StringIterator {
             self.index += 1;
 
             if pwstr.is_null() {
-                tracing::debug!(
+                tracing::trace!(
                     index = self.index - 1,
                     count = self.count,
                     "StringIterator: skipping null PWSTR entry"

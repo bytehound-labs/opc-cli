@@ -390,7 +390,7 @@ Defined in § 1.1. See table above.
 **Error Handling at Boundary:**
 *   All `opc_da` errors are wrapped with `anyhow::Context` to add operation context.
 *   `create_server` failures additionally log a `friendly_com_hint` before propagating.
-*   `E_POINTER` errors from `StringIterator` are now handled internally by the iterator (null-PWSTR skip + `debug!` log).
+*   `E_POINTER` errors from `StringIterator` are now handled internally by the iterator (null-PWSTR skip + `trace!` log).
 *   Native and compatibility browse iterators terminate after 64 consecutive identical successful
     values with contextual `BrowseNonProgress` errors rather than waiting indefinitely for an
     unprogressing OPC enumerator to finish.

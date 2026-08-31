@@ -93,6 +93,7 @@ struct InventoryBoundary<'a> {
     last_started: Option<Instant>,
     paused_time: Duration,
     native_operations: u64,
+    first_operation_reported: bool,
 }
 
 fn pacing_interval(pacing: crate::provider::InventoryPacing, item_cost: u32) -> Duration {
@@ -112,6 +113,7 @@ impl<'a> InventoryBoundary<'a> {
             last_started: None,
             paused_time: Duration::ZERO,
             native_operations: 0,
+            first_operation_reported: false,
         }
     }
 
@@ -145,6 +147,16 @@ impl<'a> InventoryBoundary<'a> {
 
             if self.control.is_cancelled() || self.control.is_paused() {
                 continue;
+            }
+            if !self.first_operation_reported {
+                let pacing = self.control.pacing();
+                tracing::info!(
+                    item_cost,
+                    item_rate_per_second = ?pacing.item_rate_per_second,
+                    min_interval_ms = pacing.min_interval.as_millis(),
+                    "native inventory first operation starting"
+                );
+                self.first_operation_reported = true;
             }
             self.last_started = Some(Instant::now());
             self.native_operations = self.native_operations.saturating_add(1);
@@ -188,8 +200,23 @@ pub fn run_inventory<C: ServerConnector>(
     }
 
     let mut active_time = Duration::ZERO;
+    let startup_started = Instant::now();
+    tracing::info!(
+        server = %server_name,
+        batch_size = options.batch_size,
+        thread_id = ?std::thread::current().id(),
+        "native inventory startup started"
+    );
+    let connect_started = Instant::now();
     let connected = connector.connect(server_name)?;
+    tracing::info!(
+        server = %server_name,
+        elapsed_ms = connect_started.elapsed().as_millis(),
+        total_elapsed_ms = startup_started.elapsed().as_millis(),
+        "native inventory server connection completed"
+    );
     let mut boundary = InventoryBoundary::new(control);
+    tracing::info!(server = %server_name, "native inventory capability detection started");
     let capabilities = if control.is_cancelled() {
         crate::provider::BrowseCapabilities {
             namespace: crate::provider::BrowseNamespace::Unknown,
@@ -209,6 +236,14 @@ pub fn run_inventory<C: ServerConnector>(
             Err(InventoryError::Failed(error)) => return Err(error),
         }
     };
+    tracing::info!(
+        server = %server_name,
+        supports_da2 = capabilities.supports_da2,
+        supports_da3 = capabilities.supports_da3,
+        namespace = ?capabilities.namespace,
+        elapsed_ms = startup_started.elapsed().as_millis(),
+        "native inventory capability detection completed"
+    );
     let mut queue = VecDeque::from([initial_work(capabilities)]);
     let mut seen_items = HashSet::new();
     let mut current_da2_path = Vec::new();
@@ -257,6 +292,7 @@ pub fn run_inventory<C: ServerConnector>(
         let paused_before = boundary.paused_time();
         let batch_size = control.batch_size().unwrap_or(options.batch_size);
         let operations_before = boundary.operations();
+        let first_native_operation = operations_before == 0;
         let mut page_context = InventoryPageContext {
             current_da2_path: &mut current_da2_path,
             skipped_invalid_branches: &mut skipped_invalid_branches,
@@ -267,6 +303,14 @@ pub fn run_inventory<C: ServerConnector>(
         };
         let page_result = next_page(&connected, &mut work, batch_size, &mut page_context);
         let slice_elapsed = call_started.elapsed();
+        if first_native_operation && boundary.operations() > operations_before {
+            tracing::info!(
+                server = %server_name,
+                elapsed_ms = startup_started.elapsed().as_millis(),
+                first_operation_elapsed_ms = slice_elapsed.as_millis(),
+                "native inventory first operation completed"
+            );
+        }
         active_time +=
             slice_elapsed.saturating_sub(boundary.paused_time().saturating_sub(paused_before));
         let page = match page_result {

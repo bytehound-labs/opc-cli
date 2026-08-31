@@ -150,10 +150,18 @@ impl<C: ServerConnector + 'static> ComWorker<C> {
         let (init_tx, init_rx) = std::sync::mpsc::channel();
 
         let handle = std::thread::spawn(move || {
-            tracing::debug!("COM worker thread spawned, initializing COM (MTA)");
+            let started = std::time::Instant::now();
+            tracing::info!(
+                thread_id = ?std::thread::current().id(),
+                "COM worker thread started; initializing MTA"
+            );
             let _guard = match crate::ComGuard::new() {
                 Ok(g) => {
-                    tracing::info!("COM MTA initialized successfully on worker thread");
+                    tracing::info!(
+                        thread_id = ?std::thread::current().id(),
+                        elapsed_ms = started.elapsed().as_millis(),
+                        "COM worker MTA initialized"
+                    );
                     let _ = init_tx.send(Ok(()));
                     g
                 }

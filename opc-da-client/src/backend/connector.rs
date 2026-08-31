@@ -15,6 +15,7 @@ use crate::opc_da::errors::{
 pub use crate::opc_da::errors::{OpcError, OpcResult};
 use crate::provider::BrowseNodeFilter;
 use anyhow::Context;
+use std::time::Instant;
 pub use windows::Win32::System::Variant::VARIANT;
 use windows::core::Interface;
 
@@ -480,18 +481,38 @@ impl ServerConnector for ComConnector {
     }
 
     fn connect(&self, server_name: &str) -> OpcResult<Self::Server> {
+        let started = Instant::now();
+        tracing::info!(server = %server_name, "native COM connector startup started");
         let opc_server = crate::helpers::connect_server(server_name)?;
+        tracing::debug!(
+            server = %server_name,
+            elapsed_ms = started.elapsed().as_millis(),
+            "native COM connector received OPC DA server object"
+        );
         let unknown: windows::core::IUnknown = opc_server.cast()?;
-
-        Ok(ComServer {
+        let common = unknown.cast()?;
+        let connection_point_container = unknown.cast()?;
+        let item_properties = unknown.cast()?;
+        let server_public_groups = unknown.cast().ok();
+        let browse_server_address_space = unknown.cast().ok();
+        let browse = unknown.cast().ok();
+        let connected = ComServer {
             server: opc_server,
-            common: unknown.cast()?,
-            connection_point_container: unknown.cast()?,
-            item_properties: unknown.cast()?,
-            server_public_groups: unknown.cast().ok(),
-            browse_server_address_space: unknown.cast().ok(),
-            browse: unknown.cast().ok(),
-        })
+            common,
+            connection_point_container,
+            item_properties,
+            server_public_groups,
+            browse_server_address_space,
+            browse,
+        };
+        tracing::info!(
+            server = %server_name,
+            supports_da2 = connected.browse_server_address_space.is_some(),
+            supports_da3 = connected.browse.is_some(),
+            elapsed_ms = started.elapsed().as_millis(),
+            "native COM connector startup completed"
+        );
+        Ok(connected)
     }
 }
 

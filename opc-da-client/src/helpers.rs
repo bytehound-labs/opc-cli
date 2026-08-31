@@ -10,6 +10,7 @@ use windows::Win32::System::Ole::{
 };
 use windows::Win32::System::Variant::{VARIANT, VT_BOOL, VT_BSTR, VT_I4, VT_R8};
 use windows::core::{BSTR, PCWSTR};
+use std::time::Instant;
 
 pub use crate::opc_da::errors::{
     format_hresult, friendly_com_hint, friendly_hresult_hint as friendly_com_hresult_hint,
@@ -309,6 +310,8 @@ pub fn opc_value_to_variant(value: &OpcValue) -> VARIANT {
 /// Returns `Err` if the `ProgID` cannot be resolved or the server
 /// cannot be instantiated.
 pub fn connect_server(server_name: &str) -> OpcResult<crate::bindings::da::IOPCServer> {
+    let started = Instant::now();
+    tracing::info!(server = %server_name, "resolving OPC DA server ProgID");
     // SAFETY: `server_wide` is null-terminated and lives until end of scope.
     let clsid_raw = unsafe {
         let server_wide: Vec<u16> = server_name
@@ -321,10 +324,16 @@ pub fn connect_server(server_name: &str) -> OpcResult<crate::bindings::da::IOPCS
             ))
         })?
     };
+    tracing::debug!(
+        server = %server_name,
+        elapsed_ms = started.elapsed().as_millis(),
+        "OPC DA server ProgID resolved"
+    );
     // SAFETY: `opc_da::GUID` and `windows::core::GUID` are binary compatible.
     let clsid = unsafe { std::mem::transmute_copy(&clsid_raw) };
 
     let client = crate::opc_da::client::v2::Client;
+    let create_started = Instant::now();
     let server = client
         .create_server(clsid, crate::opc_da::typedefs::ClassContext::All)
         .map_err(|e| {
@@ -337,7 +346,12 @@ pub fn connect_server(server_name: &str) -> OpcResult<crate::bindings::da::IOPCS
             tracing::error!(error = ?e, server = %server_name, hint, "create_server failed");
             e
         })?;
-    tracing::debug!(server = %server_name, "Connected to OPC DA server");
+    tracing::info!(
+        server = %server_name,
+        elapsed_ms = create_started.elapsed().as_millis(),
+        total_elapsed_ms = started.elapsed().as_millis(),
+        "OPC DA server COM object created"
+    );
     Ok(server.server)
 }
 

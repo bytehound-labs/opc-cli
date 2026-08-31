@@ -14,6 +14,9 @@ Backend-agnostic OPC DA client library for Rust — async, trait-based, with tra
 - **Read & Write Support**: Read tag values and write typed values (`Int`, `Float`, `Bool`, `String`) to OPC tags.
 - **Scalable Native Browsing**: Open isolated sessions and request bounded, one-level pages through OPC DA 3.0, with a narrowly negotiated OPC DA 2.x compatibility fallback.
 - **Bounded Namespace Inventory**: Stream exact ItemIDs with breadcrumb labels through a cancellable, bounded DA 3.0/2.x traversal.
+- **Startup Boundary Diagnostics**: Low-volume informational logs mark COM worker startup,
+  ProgID resolution, server connection, capability detection, namespace organization, and the
+  first native inventory operation, making startup stalls distinguishable from traversal stalls.
 - **Backend-aware Inventory Pacing**: Charges DA3 pages by requested page size and DA2 string enumeration by actual native cache refills, so cached items do not add artificial delays.
 - **Bounded Browse Safety**: Native and compatibility browse iterators terminate with a contextual error after 64 consecutive identical successful values, preventing a non-progressing OPC enumerator from running indefinitely.
 - **DA2 Branch Recovery**: During hierarchical inventory, a non-progressing branch iterator is discarded so the independent item iterator can continue; item-side non-progress and unrelated errors remain terminal.

@@ -248,6 +248,7 @@ The library exposes two browse surfaces:
    - DA 2.x flat servers page `OPC_FLAT` results without recursive traversal.
    - During hierarchical DA 2.x inventory, a branch-side `BrowseNonProgress` terminates only the malformed branch iterator; item enumeration continues and reports a cumulative completion warning. Item-side non-progress and unrelated errors remain terminal.
    - Public session, node, and continuation tokens are random UUIDs with string encode/parse support for transport adapters; raw COM pointers and DA continuation strings remain on the worker.
+   - The internal DA 3.0 inventory worker validates continuation progress independently of public browse sessions. A `more_elements` response must contain a non-empty token that has not already been seen for that branch; repeated tokens, including cycles, are terminal. Temporary empty pages are accepted, while 64 consecutive empty continuation pages are treated as non-progress. Public `browse_page` remains one bounded page per call and does not drain continuations or apply this worker-only guard.
 3. **Safety guards**
    - `max_tags` hard cap (default 10,000) to prevent unbounded collection.
    - `MAX_DEPTH` (50) to guard against infinite recursion in malformed namespaces.
@@ -256,6 +257,7 @@ The library exposes two browse surfaces:
    - Native pages are capped at 1,000 nodes, sessions expire after five minutes of inactivity, and per-session node/page token counts are bounded.
    - Closing or expiring a session drops its dedicated connection and continuation enumerators on the COM worker. A cancelled open/page request avoids or closes the associated session.
    - Inventory shares the same DA 3.0 root negotiation and records DA 2.x as the effective source when compatibility fallback occurs. Terminal warnings are merged so later truncation or malformed-branch diagnostics do not replace the fallback warning. A non-progressing DA 2.x branch iterator is recoverable and does not prevent the independent item iterator from completing; item-side non-progress remains terminal.
+   - Internal DA 3.0 inventory continuation state is bounded per branch by token uniqueness and the consecutive-empty-page threshold. This protects the full traversal worker from malformed servers without changing the public session API's explicit, caller-driven continuation semantics.
 
 ---
 

@@ -52,6 +52,10 @@ pub enum OpcError {
         yielded: usize,
     },
 
+    /// A DA 3.0 browse continuation failed to make progress.
+    #[error("OPC DA browse continuation made no progress at browse path {browse_path}: {detail}")]
+    BrowseContinuationNonProgress { browse_path: String, detail: String },
+
     /// Catch-all for unexpected internal failures.
     #[error("Internal error: {0}")]
     Internal(String),
@@ -120,6 +124,7 @@ pub(crate) const E_INVALIDARG_HRESULT: u32 = 0x8007_0057;
 pub(crate) const E_NOTIMPL_HRESULT: u32 = 0x8000_4001;
 pub(crate) const RPC_X_NULL_REF_POINTER_HRESULT: u32 = 0x8007_06F4;
 pub(crate) const MAX_CONSECUTIVE_IDENTICAL_BROWSE_VALUES: usize = 64;
+pub(crate) const MAX_CONSECUTIVE_EMPTY_DA3_PAGES: usize = MAX_CONSECUTIVE_IDENTICAL_BROWSE_VALUES;
 
 pub(crate) fn com_hresult(error: &OpcError) -> Option<u32> {
     match error {
@@ -154,6 +159,16 @@ pub(crate) fn browse_non_progress_error(
         repeated_value: repeated_value.to_string(),
         consecutive,
         yielded,
+    }
+}
+
+pub(crate) fn browse_continuation_non_progress_error(
+    browse_path: &[String],
+    detail: impl Into<String>,
+) -> OpcError {
+    OpcError::BrowseContinuationNonProgress {
+        browse_path: format_browse_path(browse_path),
+        detail: detail.into(),
     }
 }
 
@@ -326,5 +341,24 @@ mod tests {
                 && consecutive == 64
                 && yielded == 147
         ));
+    }
+
+    #[test]
+    fn browse_continuation_non_progress_error_formats_its_path_and_detail() {
+        let error = browse_continuation_non_progress_error(
+            &["FCS0528".to_string(), "PV".to_string()],
+            "server repeated continuation token",
+        );
+        assert!(matches!(
+            &error,
+            OpcError::BrowseContinuationNonProgress { browse_path, detail }
+                if browse_path == "\"FCS0528\" > \"PV\""
+                    && detail == "server repeated continuation token"
+        ));
+        assert_eq!(
+            error.to_string(),
+            "OPC DA browse continuation made no progress at browse path \"FCS0528\" > \"PV\": \
+             server repeated continuation token"
+        );
     }
 }

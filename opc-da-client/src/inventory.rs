@@ -8,7 +8,8 @@ use crate::bindings::da::{
     OPC_BRANCH, OPC_BROWSE_DOWN, OPC_BROWSE_UP, OPC_FLAT, OPC_LEAF, OPC_NS_FLAT,
 };
 use crate::opc_da::errors::{
-    E_INVALIDARG_HRESULT, OpcError, OpcResult, com_hresult, contextual_browse_error,
+    E_INVALIDARG_HRESULT, MAX_CONSECUTIVE_EMPTY_DA3_PAGES, OpcError, OpcResult,
+    browse_continuation_non_progress_error, com_hresult, contextual_browse_error,
     is_da3_browse_compatibility_error, is_non_progress_browse_error,
 };
 use crate::provider::{
@@ -24,6 +25,8 @@ struct BranchWork {
     location: BranchLocation,
     breadcrumbs: Vec<String>,
     da3_continuation: Option<String>,
+    da3_seen_continuations: HashSet<String>,
+    da3_consecutive_empty_pages: usize,
     da2_state: Option<Da2PageState>,
 }
 
@@ -411,6 +414,8 @@ pub fn run_inventory<C: ServerConnector>(
                     location,
                     breadcrumbs,
                     da3_continuation: None,
+                    da3_seen_continuations: HashSet::new(),
+                    da3_consecutive_empty_pages: 0,
                     da2_state: None,
                 });
             }
@@ -506,6 +511,8 @@ fn initial_work(capabilities: BrowseCapabilities) -> BranchWork {
         location,
         breadcrumbs: Vec::new(),
         da3_continuation: None,
+        da3_seen_continuations: HashSet::new(),
+        da3_consecutive_empty_pages: 0,
         da2_state: None,
     }
 }
@@ -569,6 +576,13 @@ fn capabilities_for_inventory<S: ConnectedServer>(
     })
 }
 
+fn da3_continuation_error(work: &BranchWork, detail: String) -> InventoryError {
+    InventoryError::Failed(browse_continuation_non_progress_error(
+        &work.breadcrumbs,
+        detail,
+    ))
+}
+
 fn next_page<S: ConnectedServer>(
     server: &S,
     work: &mut BranchWork,
@@ -599,23 +613,57 @@ fn next_page<S: ConnectedServer>(
                     )
                 }
             })?;
-            let nodes = page
-                .elements
+            let crate::backend::connector::NativeBrowsePage {
+                elements,
+                more_elements,
+                continuation,
+            } = page;
+            let continuation = if more_elements {
+                let value = continuation.as_deref().ok_or_else(|| {
+                    da3_continuation_error(
+                        work,
+                        "server reported more elements without a continuation point".to_string(),
+                    )
+                })?;
+                if value.is_empty() {
+                    return Err(da3_continuation_error(
+                        work,
+                        "server returned an empty continuation token".to_string(),
+                    ));
+                }
+                if !work.da3_seen_continuations.insert(value.to_string()) {
+                    return Err(da3_continuation_error(
+                        work,
+                        format!("server repeated continuation token {value:?}"),
+                    ));
+                }
+                if elements.is_empty() {
+                    work.da3_consecutive_empty_pages =
+                        work.da3_consecutive_empty_pages.saturating_add(1);
+                    if work.da3_consecutive_empty_pages >= MAX_CONSECUTIVE_EMPTY_DA3_PAGES {
+                        return Err(da3_continuation_error(
+                            work,
+                            format!(
+                                "server returned {} consecutive empty pages",
+                                work.da3_consecutive_empty_pages
+                            ),
+                        ));
+                    }
+                } else {
+                    work.da3_consecutive_empty_pages = 0;
+                }
+                Some(value.to_string())
+            } else {
+                work.da3_consecutive_empty_pages = 0;
+                None
+            };
+            let nodes = elements
                 .into_iter()
                 .map(map_da3_node)
                 .collect::<OpcResult<Vec<_>>>()?;
-            let continuation = page
-                .continuation
-                .filter(|_| page.more_elements)
-                .map(InventoryContinuation::Da3);
-            if page.more_elements && continuation.is_none() {
-                return Err(InventoryError::Failed(OpcError::Internal(
-                    "DA3 server reported more elements without a continuation point".to_string(),
-                )));
-            }
             Ok(InventoryPage {
                 nodes,
-                continuation,
+                continuation: continuation.map(InventoryContinuation::Da3),
             })
         }
         BranchLocation::Da2(path) => {
@@ -1510,6 +1558,235 @@ mod tests {
                 .take()
                 .ok_or_else(|| OpcError::Internal("server already connected".to_string()))
         }
+    }
+
+    struct ScriptedDa3Server {
+        pages: Mutex<VecDeque<crate::backend::connector::NativeBrowsePage>>,
+    }
+
+    impl ConnectedServer for ScriptedDa3Server {
+        type Group = TestGroup;
+
+        fn query_organization(&self) -> OpcResult<u32> {
+            Ok(OPC_NS_FLAT.0.cast_unsigned())
+        }
+
+        fn browse_opc_item_ids(
+            &self,
+            _browse_type: u32,
+            _filter: Option<&str>,
+            _data_type: u16,
+            _access_rights: u32,
+        ) -> OpcResult<crate::backend::connector::StringIterator> {
+            Err(OpcError::NotImplemented("test".to_string()))
+        }
+
+        fn change_browse_position(&self, _direction: u32, _name: &str) -> OpcResult<()> {
+            Ok(())
+        }
+
+        fn get_item_id(&self, _item_name: &str) -> OpcResult<String> {
+            Err(OpcError::NotImplemented("test".to_string()))
+        }
+
+        fn supports_da2_browse(&self) -> bool {
+            false
+        }
+
+        fn supports_da3_browse(&self) -> bool {
+            true
+        }
+
+        fn browse_da3(
+            &self,
+            _item_id: Option<&str>,
+            _continuation: Option<&str>,
+            _max_elements: u32,
+            _filter: BrowseNodeFilter,
+        ) -> OpcResult<crate::backend::connector::NativeBrowsePage> {
+            self.pages
+                .lock()
+                .unwrap()
+                .pop_front()
+                .ok_or_else(|| OpcError::Internal("scripted page queue exhausted".to_string()))
+        }
+
+        fn begin_da2_browse(
+            &self,
+            _browse_type: u32,
+            _filter: Option<&str>,
+            _data_type: u16,
+            _access_rights: u32,
+        ) -> OpcResult<Box<dyn BrowseStringIterator>> {
+            Err(OpcError::NotImplemented("test".to_string()))
+        }
+
+        fn add_group(
+            &self,
+            _name: &str,
+            _active: bool,
+            _update_rate: u32,
+            _client_handle: GroupHandle,
+            _time_bias: i32,
+            _percent_deadband: f32,
+            _locale_id: u32,
+            _revised_update_rate: &mut u32,
+            _server_handle: &mut GroupHandle,
+        ) -> OpcResult<Self::Group> {
+            Err(OpcError::NotImplemented("test".to_string()))
+        }
+
+        fn remove_group(&self, _server_group: GroupHandle, _force: bool) -> OpcResult<()> {
+            Ok(())
+        }
+    }
+
+    fn scripted_da3_page(
+        names: &[&str],
+        more_elements: bool,
+        continuation: Option<&str>,
+    ) -> crate::backend::connector::NativeBrowsePage {
+        crate::backend::connector::NativeBrowsePage {
+            elements: names
+                .iter()
+                .map(|name| NativeBrowseElement {
+                    name: (*name).to_string(),
+                    item_id: Some(format!("exact::{name}")),
+                    has_children: false,
+                    is_item: true,
+                })
+                .collect(),
+            more_elements,
+            continuation: continuation.map(str::to_string),
+        }
+    }
+
+    fn run_scripted_da3_inventory(
+        pages: Vec<crate::backend::connector::NativeBrowsePage>,
+    ) -> (
+        OpcResult<()>,
+        Vec<InventoryEntry>,
+        Option<InventoryCompleted>,
+        Option<OpcError>,
+    ) {
+        let connector = SharedConnector {
+            server: Arc::new(Mutex::new(Some(ScriptedDa3Server {
+                pages: Mutex::new(pages.into()),
+            }))),
+        };
+        let (sender, mut receiver) = mpsc::channel(512);
+        let result = run_inventory(
+            &connector,
+            "test",
+            InventoryOptions::default(),
+            &InventoryControl::new(),
+            &sender,
+        );
+        let (entries, completed, error) = collect(&mut receiver);
+        (result, entries, completed, error)
+    }
+
+    #[test]
+    fn da3_inventory_accepts_a_temporary_empty_continuation_page() {
+        let (result, entries, completed, error) = run_scripted_da3_inventory(vec![
+            scripted_da3_page(&["First"], true, Some("first")),
+            scripted_da3_page(&[], true, Some("empty")),
+            scripted_da3_page(&["Last"], false, None),
+        ]);
+
+        assert!(result.is_ok());
+        assert_eq!(
+            entries
+                .into_iter()
+                .map(|entry| entry.item_id)
+                .collect::<Vec<_>>(),
+            vec!["exact::First", "exact::Last"]
+        );
+        assert!(completed.is_some_and(|value| value.complete));
+        assert!(error.is_none());
+    }
+
+    #[test]
+    fn da3_inventory_rejects_missing_continuation_tokens() {
+        let (result, _, completed, error) =
+            run_scripted_da3_inventory(vec![scripted_da3_page(&["First"], true, None)]);
+
+        assert!(matches!(
+            result,
+            Err(OpcError::BrowseContinuationNonProgress { detail, .. })
+                if detail.contains("without a continuation point")
+        ));
+        assert!(completed.is_none());
+        assert!(error.is_none());
+    }
+
+    #[test]
+    fn da3_inventory_rejects_empty_continuation_tokens() {
+        let (result, _, completed, error) =
+            run_scripted_da3_inventory(vec![scripted_da3_page(&["First"], true, Some(""))]);
+
+        assert!(matches!(
+            result,
+            Err(OpcError::BrowseContinuationNonProgress { detail, .. })
+                if detail.contains("empty continuation token")
+        ));
+        assert!(completed.is_none());
+        assert!(error.is_none());
+    }
+
+    #[test]
+    fn da3_inventory_rejects_repeated_continuation_tokens() {
+        let (result, _, completed, error) = run_scripted_da3_inventory(vec![
+            scripted_da3_page(&["First"], true, Some("repeat")),
+            scripted_da3_page(&["Second"], true, Some("repeat")),
+        ]);
+
+        assert!(matches!(
+            result,
+            Err(OpcError::BrowseContinuationNonProgress { detail, .. })
+                if detail.contains("repeated continuation token")
+        ));
+        assert!(completed.is_none());
+        assert!(error.is_none());
+    }
+
+    #[test]
+    fn da3_inventory_rejects_cyclic_continuation_tokens() {
+        let (result, _, completed, error) = run_scripted_da3_inventory(vec![
+            scripted_da3_page(&["First"], true, Some("a")),
+            scripted_da3_page(&["Second"], true, Some("b")),
+            scripted_da3_page(&["Third"], true, Some("a")),
+        ]);
+
+        assert!(matches!(
+            result,
+            Err(OpcError::BrowseContinuationNonProgress { detail, .. })
+                if detail.contains("repeated continuation token")
+        ));
+        assert!(completed.is_none());
+        assert!(error.is_none());
+    }
+
+    #[test]
+    fn da3_inventory_rejects_too_many_consecutive_empty_pages() {
+        let mut pages = vec![scripted_da3_page(&["First"], true, Some("token-0"))];
+        for index in 1..=MAX_CONSECUTIVE_EMPTY_DA3_PAGES {
+            pages.push(scripted_da3_page(
+                &[],
+                true,
+                Some(&format!("token-{index}")),
+            ));
+        }
+
+        let (result, _, completed, error) = run_scripted_da3_inventory(pages);
+
+        assert!(matches!(
+            result,
+            Err(OpcError::BrowseContinuationNonProgress { detail, .. })
+                if detail.contains("consecutive empty pages")
+        ));
+        assert!(completed.is_none());
+        assert!(error.is_none());
     }
 
     #[test]

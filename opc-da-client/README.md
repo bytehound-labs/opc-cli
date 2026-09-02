@@ -22,6 +22,10 @@ Backend-agnostic OPC DA client library for Rust — async, trait-based, with tra
   routine enumeration events.
 - **Backend-aware Inventory Pacing**: Charges DA3 pages by requested page size and DA2 string enumeration by actual native cache refills, so cached items do not add artificial delays.
 - **Bounded Browse Safety**: Native and compatibility browse iterators terminate with a contextual error after 64 consecutive identical successful values, preventing a non-progressing OPC enumerator from running indefinitely.
+- **Continuation-safe Inventory Traversal**: Internal DA3 inventory traversal rejects missing,
+  empty, repeated, and cyclic continuation tokens, and stops after 64 consecutive empty
+  continuation pages with a typed non-progress error. Finite temporary empty pages remain
+  valid; public `browse_page` calls remain one-page operations under caller control.
 - **DA2 Branch Recovery**: During hierarchical inventory, a non-progressing branch iterator is discarded so the independent item iterator can continue; item-side non-progress and unrelated errors remain terminal.
 - **Failure-safe Inventory Worker**: Converts worker panics and inventory errors into terminal stream errors instead of silently ending the stream.
 - **Cancellation Diagnostics**: Inventory cancellation logs identify the requesting source and whether cancellation was already pending, distinguishing explicit cancellation from stream-drop cleanup.
@@ -199,6 +203,15 @@ The repeated-value safety bound applies to each underlying native iterator, not
 to the requested page size. A page smaller than the 64-value bound can therefore
 return a continuation before the iterator guard is reached; continue paging to
 consume the full bounded iterator.
+
+`start_inventory` applies an additional progress guard to its private DA3
+continuation loop. A response that reports more elements must provide a
+non-empty token that has not already been returned for that branch; repeated
+tokens, including cycles, terminate the inventory with a contextual error.
+Empty pages are allowed when they are temporary, but 64 consecutive empty
+continuation pages are treated as non-progress. This guard belongs only to the
+internal full-inventory worker. The public `browse_page` API returns exactly
+one bounded page and leaves continuation handling to the caller.
 
 The DA 2.x fallback merges a same-named branch and leaf into one
 `BrowseNodeKind::BranchAndItem` node and resolves its exact item ID through

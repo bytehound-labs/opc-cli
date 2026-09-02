@@ -65,6 +65,12 @@ All methods use `#[async_trait]`.
 *   A compatibility browse wrapper replaces a root-scoped `BrowseNonProgress` path with the active DA 2.x browse path before returning it to inventory callers.
 *   `start_inventory` requests no more than `batch_size` native entries per operation and never exposes
     browse-session or continuation tokens.
+*   Internal DA3 inventory traversal requires a non-empty continuation token whenever a page reports
+    more elements, rejects a token already returned for the same branch (including cycles), and
+    treats 64 consecutive empty continuation pages as non-progress and reports a typed
+    continuation error. Fewer empty pages are allowed when a later page makes progress. This
+    guard does not apply to public `browse_page`, which returns one bounded page and leaves
+    continuation control to the caller.
 *   Inventory pacing charges DA3 operations by their requested page size, while native DA2 string enumeration charges only actual `IEnumString::Next` refills using the iterator cache capacity; cached DA2 items do not consume additional item-rate budget.
 *   Inventory cancellation is observed before the next bounded native operation; a cancelled or
     truncated inventory never claims `complete = true`, and native DA2 cancellation is also checked
@@ -276,6 +282,12 @@ cannot invalidate existing DA 3.0 node or continuation tokens.
 Only selectable `Item` and `BranchAndItem` nodes expose exact ItemIDs.
 Branch-only DA 3.0 nodes retain their native ItemID solely as private session
 navigation state and return no public ItemID.
+The internal `start_inventory` worker handles DA3 continuations differently
+from `browse_page`: it requires a non-empty token for every `more_elements`
+response, rejects repeated tokens for a branch, and stops after 64 consecutive
+empty continuation pages. Temporary empty pages are valid below that threshold.
+The public `browse_page` operation remains strictly one page per call and does
+not recursively drain or apply the inventory worker's progress guard.
 When DA 3.0 browsing is unavailable or this compatibility fallback is selected, hierarchical DA 2.x
 sessions enumerate immediate `OPC_BRANCH` and `OPC_LEAF` children and resolve
 leaf names through `GetItemID`; flat sessions page `OPC_FLAT` results. The DA

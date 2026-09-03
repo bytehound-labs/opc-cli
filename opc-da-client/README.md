@@ -14,8 +14,22 @@ Backend-agnostic OPC DA client library for Rust — async, trait-based, with tra
 - **Read & Write Support**: Read tag values and write typed values (`Int`, `Float`, `Bool`, `String`) to OPC tags.
 - **Scalable Native Browsing**: Open isolated sessions and request bounded, one-level pages through OPC DA 3.0, with a narrowly negotiated OPC DA 2.x compatibility fallback.
 - **Bounded Namespace Inventory**: Stream exact ItemIDs with breadcrumb labels through a cancellable, bounded DA 3.0/2.x traversal.
+- **Startup Boundary Diagnostics**: Low-volume informational logs mark COM worker startup,
+  ProgID resolution, server connection, capability detection, namespace organization, and the
+  first native inventory operation, making startup stalls distinguishable from traversal stalls.
+- **Scale-safe Iterator Diagnostics**: Native iterator refill timing and per-entry null handling
+  are trace-level diagnostics, so production-scale inventories do not fill debug logs with
+  routine enumeration events.
+- **Backend-aware Inventory Pacing**: Charges DA3 pages by requested page size and DA2 string enumeration by actual native cache refills, so cached items do not add artificial delays.
+- **Bounded Browse Safety**: Native and compatibility browse iterators terminate with a contextual error after 64 consecutive identical successful values, preventing a non-progressing OPC enumerator from running indefinitely.
+- **Continuation-safe Inventory Traversal**: Internal DA3 inventory traversal rejects missing,
+  empty, repeated, and cyclic continuation tokens, and stops after 64 consecutive empty
+  continuation pages with a typed non-progress error. Finite temporary empty pages remain
+  valid; public `browse_page` calls remain one-page operations under caller control.
+- **DA2 Branch Recovery**: During hierarchical inventory, a non-progressing branch iterator is discarded so the independent item iterator can continue; item-side non-progress and unrelated errors remain terminal.
 - **Failure-safe Inventory Worker**: Converts worker panics and inventory errors into terminal stream errors instead of silently ending the stream.
-- **Defensive COM Iterators**: Rejects native enumerator counts that exceed the fixed cache capacity before indexing the returned buffer.
+- **Cancellation Diagnostics**: Inventory cancellation logs identify the requesting source and whether cancellation was already pending, distinguishing explicit cancellation from stream-drop cleanup.
+- **Defensive COM Iterators**: Rejects native enumerator counts that exceed the fixed cache capacity before indexing the returned buffer, bounds null-only batches, and releases every remaining COM-allocated string after failed or early-ended iteration.
 - **Windows COM/DCOM Support**: Native OPC DA backend via `windows-rs` — no external OPC crates needed.
 - **Robust Error Handling**: Leverages `thiserror` for the `OpcError` domain type and `friendly_com_hint()` for human-readable HRESULT explanations.
 - **Test-Friendly**: Built-in `MockOpcProvider` via the `test-support` feature.
@@ -26,7 +40,7 @@ Add this to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-opc-da-client = { package = "bytehound-opc-da-client", version = "0.2.5" }
+opc-da-client = { package = "bytehound-opc-da-client", version = "0.2.8" }
 ```
 
 ## Prerequisites
@@ -185,6 +199,20 @@ never expose COM pointers or OPC DA continuation strings. Transport adapters can
 encode tokens with `to_string()` and restore them with each token type's
 `parse()` method.
 
+The repeated-value safety bound applies to each underlying native iterator, not
+to the requested page size. A page smaller than the 64-value bound can therefore
+return a continuation before the iterator guard is reached; continue paging to
+consume the full bounded iterator.
+
+`start_inventory` applies an additional progress guard to its private DA3
+continuation loop. A response that reports more elements must provide a
+non-empty token that has not already been returned for that branch; repeated
+tokens, including cycles, terminate the inventory with a contextual error.
+Empty pages are allowed when they are temporary, but 64 consecutive empty
+continuation pages are treated as non-progress. This guard belongs only to the
+internal full-inventory worker. The public `browse_page` API returns exactly
+one bounded page and leaves continuation handling to the caller.
+
 The DA 2.x fallback merges a same-named branch and leaf into one
 `BrowseNodeKind::BranchAndItem` node and resolves its exact item ID through
 `GetItemID`.
@@ -254,10 +282,13 @@ The returned `InventoryStream` exposes pause, resume, and cancellation controls.
 Each native browse call is bounded by `InventoryOptions::batch_size`, and
 `max_entries` can cap a deliberately limited inventory.
 Use `InventoryStream::set_pacing(InventoryPacing { min_interval, item_rate_per_second })` to
-dynamically set the minimum interval between bounded native operation starts
-and the maximum requested item rate. The item-rate budget is charged for the
-requested batch size before each native call, even when the server returns
-fewer entries.
+dynamically set the minimum interval between native operation starts and the
+maximum requested item rate. DA3 page operations charge the requested page size
+before each native call, even when the server returns fewer entries. Hierarchical
+DA2 string enumeration charges the actual `IEnumString::Next` refill size
+(currently the native iterator cache capacity); items already returned from
+that cache do not consume another pacing budget. Cancellation is still checked
+before each cached item as well as before each refill.
 Use `InventoryStream::set_batch_size(batch_size)` to change the bounded request
 size before the next slice; values must be between 1 and
 `MAX_INVENTORY_BATCH_SIZE` (1000).
@@ -267,7 +298,10 @@ For DA2 hierarchical namespaces, every server-reported branch is validated with
 a bounded native navigation probe. Branch-only names rejected with
 `E_INVALIDARG` are skipped and reported in the inventory completion warning;
 names that resolve to exact items remain selectable even when they are not
-navigable. Other COM and transport failures remain visible errors.
+navigable. If the DA2 branch iterator itself reaches the non-progress threshold,
+only that iterator is discarded and item enumeration continues. The completion
+warning identifies the skipped branch iterator; non-progressing item iterators
+and unrelated native errors remain terminal.
 Inventory uses the same first-root-page DA 3.0 negotiation as interactive
 browsing and reports DA 2.x as its source when compatibility fallback is used.
 Completion warnings are cumulative, so an entry limit or skipped branch does

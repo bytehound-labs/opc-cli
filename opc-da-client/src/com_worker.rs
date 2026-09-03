@@ -1,4 +1,6 @@
-use crate::backend::connector::{ConnectedGroup, ConnectedServer, ServerConnector};
+use crate::backend::connector::{
+    ConnectedGroup, ConnectedServer, ServerConnector, guard_browse_iterator,
+};
 use crate::bindings::da::{
     OPC_BRANCH, OPC_BROWSE_DOWN, OPC_BROWSE_UP, OPC_DS_DEVICE, OPC_LEAF, OPC_NS_FLAT, tagOPCITEMDEF,
 };
@@ -7,7 +9,9 @@ use crate::helpers::{
     variant_to_display_string, variant_to_string,
 };
 use crate::native_browse::{BrowseSessions, capabilities_for_server};
-use crate::opc_da::errors::{OpcError, OpcResult};
+use crate::opc_da::errors::{
+    OpcError, OpcResult, contextual_browse_error, is_non_progress_browse_error,
+};
 use crate::opc_da::typedefs::{GroupHandle, ItemHandle};
 use crate::provider::{
     BrowseCapabilities, BrowsePage, BrowsePageRequest, BrowseSessionToken, OpcValue, TagValue,
@@ -146,10 +150,18 @@ impl<C: ServerConnector + 'static> ComWorker<C> {
         let (init_tx, init_rx) = std::sync::mpsc::channel();
 
         let handle = std::thread::spawn(move || {
-            tracing::debug!("COM worker thread spawned, initializing COM (MTA)");
+            let started = std::time::Instant::now();
+            tracing::info!(
+                thread_id = ?std::thread::current().id(),
+                "COM worker thread started; initializing MTA"
+            );
             let _guard = match crate::ComGuard::new() {
                 Ok(g) => {
-                    tracing::info!("COM MTA initialized successfully on worker thread");
+                    tracing::info!(
+                        thread_id = ?std::thread::current().id(),
+                        elapsed_ms = started.elapsed().as_millis(),
+                        "COM worker MTA initialized"
+                    );
                     let _ = init_tx.send(Ok(()));
                     g
                 }
@@ -175,7 +187,7 @@ impl<C: ServerConnector + 'static> ComWorker<C> {
                         let start = std::time::Instant::now();
                         let servers = connector.enumerate_servers();
                         if let Ok(s) = &servers {
-                            tracing::info!(
+                            tracing::debug!(
                                 count = s.len(),
                                 elapsed_ms =
                                     u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX),
@@ -344,7 +356,7 @@ impl<C: ServerConnector + 'static> ComWorker<C> {
             std::collections::hash_map::Entry::Vacant(e) => {
                 tracing::debug!(server = %server_name, "Cache miss, connecting");
                 let srv = connector.connect(server_name)?;
-                tracing::info!(server = %server_name, "Connection established, added to pool");
+                tracing::debug!(server = %server_name, "Connection established, added to pool");
                 e.insert(srv)
             }
         };
@@ -360,7 +372,7 @@ impl<C: ServerConnector + 'static> ComWorker<C> {
                 })?;
                 let fresh_ref = &fresh_srv;
                 let result = operation(fresh_ref);
-                tracing::info!(server = %server_name, "Reconnection successful, pool updated");
+                tracing::debug!(server = %server_name, "Reconnection successful, pool updated");
                 cache.insert(server_name.to_string(), fresh_srv);
                 result
             }
@@ -512,7 +524,7 @@ impl<C: ServerConnector + 'static> ComWorker<C> {
             };
         }
 
-        tracing::info!(
+        tracing::debug!(
             count = tag_values.len(),
             elapsed_ms = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX),
             "read_tag_values completed"
@@ -603,7 +615,7 @@ impl<C: ServerConnector + 'static> ComWorker<C> {
             .ok_or_else(|| OpcError::Internal("Server returned empty write errors".to_string()))?;
 
         let write_result = if write_err.is_ok() {
-            tracing::info!(
+            tracing::debug!(
                 elapsed_ms = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX),
                 "write_tag_value completed"
             );
@@ -653,7 +665,11 @@ impl<C: ServerConnector + 'static> ComWorker<C> {
         let mut tags = Vec::new();
 
         if org == OPC_NS_FLAT.0 as u32 {
-            let mut string_iter = opc_server.begin_da2_browse(OPC_LEAF.0 as u32, Some(""), 0, 0)?;
+            let mut string_iter = guard_browse_iterator(
+                opc_server.begin_da2_browse(OPC_LEAF.0 as u32, Some(""), 0, 0)?,
+                "recursive flat iterator",
+                &[],
+            );
             while let Some(tag_res) = string_iter.next_string() {
                 if tags.len() >= max_tags {
                     break;
@@ -666,9 +682,17 @@ impl<C: ServerConnector + 'static> ComWorker<C> {
                 progress.fetch_add(1, Ordering::Relaxed);
             }
         } else {
-            Self::browse_recursive(opc_server, &mut tags, max_tags, progress, tags_sink, 0)?;
+            Self::browse_recursive(
+                opc_server,
+                &mut tags,
+                max_tags,
+                progress,
+                tags_sink,
+                &mut Vec::new(),
+                0,
+            )?;
         }
-        tracing::info!(
+        tracing::debug!(
             count = tags.len(),
             elapsed_ms = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX),
             "browse_tags completed"
@@ -682,6 +706,7 @@ impl<C: ServerConnector + 'static> ComWorker<C> {
         max_tags: usize,
         progress: &Arc<AtomicUsize>,
         tags_sink: &Arc<std::sync::Mutex<Vec<String>>>,
+        browse_path: &mut Vec<String>,
         depth: usize,
     ) -> OpcResult<()> {
         const MAX_DEPTH: usize = 50;
@@ -692,18 +717,34 @@ impl<C: ServerConnector + 'static> ComWorker<C> {
             return Ok(());
         }
 
-        let mut branch_enum = server.begin_da2_browse(OPC_BRANCH.0 as u32, Some(""), 0, 0)?;
+        let mut branch_enum = guard_browse_iterator(
+            server.begin_da2_browse(OPC_BRANCH.0 as u32, Some(""), 0, 0)?,
+            "recursive branch iterator",
+            browse_path,
+        );
         let mut branches = Vec::new();
         while let Some(result) = branch_enum.next_string() {
             match result {
                 Ok(name) => branches.push(name),
+                Err(error) if is_non_progress_browse_error(&error) => {
+                    return Err(contextual_browse_error(
+                        error,
+                        "browse_recursive(branches)",
+                        browse_path,
+                        None,
+                    ));
+                }
                 Err(e) => {
                     tracing::warn!(error = ?e, "Branch iteration error, skipping");
                 }
             }
         }
 
-        let mut leaf_enum = server.begin_da2_browse(OPC_LEAF.0 as u32, Some(""), 0, 0)?;
+        let mut leaf_enum = guard_browse_iterator(
+            server.begin_da2_browse(OPC_LEAF.0 as u32, Some(""), 0, 0)?,
+            "recursive leaf iterator",
+            browse_path,
+        );
         while let Some(tag_res) = leaf_enum.next_string() {
             if tags.len() >= max_tags {
                 return Ok(());
@@ -740,13 +781,28 @@ impl<C: ServerConnector + 'static> ComWorker<C> {
                 continue;
             }
 
-            if let Err(e) =
-                Self::browse_recursive(server, tags, max_tags, progress, tags_sink, depth + 1)
-            {
+            browse_path.push(branch.clone());
+            let recurse_result = Self::browse_recursive(
+                server,
+                tags,
+                max_tags,
+                progress,
+                tags_sink,
+                browse_path,
+                depth + 1,
+            );
+
+            let up_result = server.change_browse_position(OPC_BROWSE_UP.0 as u32, "");
+            browse_path.pop();
+
+            if let Err(e) = recurse_result {
+                if is_non_progress_browse_error(&e) {
+                    return Err(e);
+                }
                 tracing::warn!(error = ?e, "browse_recursive error");
             }
 
-            if let Err(e) = server.change_browse_position(OPC_BROWSE_UP.0 as u32, "") {
+            if let Err(e) = up_result {
                 tracing::warn!(error = ?e, "Failed to browse up, stopping recursion");
                 break;
             }

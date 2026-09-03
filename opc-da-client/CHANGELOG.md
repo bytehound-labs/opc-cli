@@ -12,12 +12,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - DA 3.0 `IOPCBrowse::Browse` sends a true null property-ID pointer when
   `dwPropertyCount` is zero, while retaining the generated binding path for
   non-empty property-ID lists.
+- Native and compatibility browse iterators terminate after 64 consecutive
+  identical successful values with a contextual `BrowseNonProgress` error
+  instead of allowing a non-progressing OPC enumerator to run indefinitely.
+- Native string iterator entries are released safely when iteration ends early;
+  consumed pointers are cleared before conversion and remaining COM allocations
+  are released on drop.
+- Native COM iterator counts are validated before fixed-cache indexing, failed
+  fetches retain enough ownership state for cleanup, and null-only batches are
+  bounded by the non-progress threshold.
+- DA 2.x browse wrappers preserve the active browse path when a lower-level
+  iterator reports a root-scoped non-progress error.
 
 ### Added
 
 - Inventory pacing can cap the requested item rate in addition to the minimum
   interval between native operation starts. A bounded operation is charged
   for its requested batch size before the COM call begins.
+- Inventory cancellation logs identify the requesting source and whether the
+  control was already cancelled, including explicit stream cancellation and
+  stream-drop cleanup.
 
 ## [0.2.7] - 2026-08-25
 

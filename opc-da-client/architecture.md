@@ -101,9 +101,15 @@ The verification script ([verify.ps1](file:///c:/Users/WSALIGAN/code/opc-cli/scr
 | :--- | :--- |
 | `error!` | COM failures, browse position corruption |
 | `warn!` | Skipped branches/leaves, max depth reached, handled COM operation failures (e.g., read/write rejections) |
-| `info!` | High-level milestones (server connected, browse complete) |
-| `debug!` | Internal state, GUID resolution details |
-| `trace!` | Known upstream bugs, iterator noise |
+| `info!` | High-level lifecycle milestones (for example, COM initialization) |
+| `debug!` | Internal state, GUID resolution details, actionable native-operation diagnostics |
+| `trace!` | Native iterator refill timing and per-entry iterator noise |
+
+Routine successful OPC operations (server listing, reads, writes, and browse
+pages) are logged at `debug!` with elapsed time fields so a large inventory
+does not fill the normal informational log stream. Native iterator refills and
+per-entry null handling are more frequent and remain at `trace!`; failures and
+operator-relevant transitions remain at `warn!` or `error!`.
 
 ---
 
@@ -230,7 +236,7 @@ The library exposes two browse surfaces:
    - **Branches first:** Enumerate `OPC_BRANCH` items, navigate down via `change_browse_position(DOWN)`, recurse, then **always** navigate back `UP` — even if recursion fails — to prevent position corruption.
    - **Leaves second (soft-fail):** Enumerate `OPC_LEAF` items at current position; failures are logged and skipped.
    - **Fully-qualified IDs:** `get_item_id()` converts browse names to item IDs; falls back to browse name if conversion fails.
-   - **Iterator bug handled:** The upstream `StringIterator` bug (OPC-BUG-001) is handled internally via cache zeroing.
+   - **Iterator safety:** The upstream `StringIterator` bug (OPC-BUG-001) is handled internally via cache zeroing, null-entry skipping, bounded null-only batches, fetched-count validation, and ownership cleanup. Native and compatibility browse iterators also stop after 64 consecutive identical successful values and return `BrowseNonProgress` with iterator, path, repeated-value, and progress context. A compatibility wrapper restores the active DA 2.x browse path when a lower-level iterator reports a root-scoped non-progress error.
    - Hierarchical browsing never treats `OPC_FLAT` output as complete item IDs because some servers return branch-only results.
 2. **Native paged API**
    - `browse_capabilities`, `open_browse_session`, `browse_page`, and `close_browse_session` expose bounded one-level enumeration.
@@ -240,7 +246,9 @@ The library exposes two browse surfaces:
    - DA 2.x hierarchical servers enumerate only immediate `OPC_BRANCH` and/or `OPC_LEAF` children and resolve leaves with exact `GetItemID` values.
    - A DA 2.x browse name present as both a branch and a leaf is emitted once as `BranchAndItem`, with its exact `GetItemID` value.
    - DA 2.x flat servers page `OPC_FLAT` results without recursive traversal.
+   - During hierarchical DA 2.x inventory, a branch-side `BrowseNonProgress` terminates only the malformed branch iterator; item enumeration continues and reports a cumulative completion warning. Item-side non-progress and unrelated errors remain terminal.
    - Public session, node, and continuation tokens are random UUIDs with string encode/parse support for transport adapters; raw COM pointers and DA continuation strings remain on the worker.
+   - The internal DA 3.0 inventory worker validates continuation progress independently of public browse sessions. A `more_elements` response must contain a non-empty token that has not already been seen for that branch; repeated tokens, including cycles, are terminal. Temporary empty pages are accepted, while 64 consecutive empty continuation pages are treated as non-progress. Public `browse_page` remains one bounded page per call and does not drain continuations or apply this worker-only guard.
 3. **Safety guards**
    - `max_tags` hard cap (default 10,000) to prevent unbounded collection.
    - `MAX_DEPTH` (50) to guard against infinite recursion in malformed namespaces.
@@ -248,7 +256,8 @@ The library exposes two browse surfaces:
    - `progress` (`Arc<AtomicUsize>`) reports discovered tag count in real-time.
    - Native pages are capped at 1,000 nodes, sessions expire after five minutes of inactivity, and per-session node/page token counts are bounded.
    - Closing or expiring a session drops its dedicated connection and continuation enumerators on the COM worker. A cancelled open/page request avoids or closes the associated session.
-   - Inventory shares the same DA 3.0 root negotiation and records DA 2.x as the effective source when compatibility fallback occurs. Terminal warnings are merged so later truncation or malformed-branch diagnostics do not replace the fallback warning.
+   - Inventory shares the same DA 3.0 root negotiation and records DA 2.x as the effective source when compatibility fallback occurs. Terminal warnings are merged so later truncation or malformed-branch diagnostics do not replace the fallback warning. A non-progressing DA 2.x branch iterator is recoverable and does not prevent the independent item iterator from completing; item-side non-progress remains terminal.
+   - Internal DA 3.0 inventory continuation state is bounded per branch by token uniqueness and the consecutive-empty-page threshold. This protects the full traversal worker from malformed servers without changing the public session API's explicit, caller-driven continuation semantics.
 
 ---
 
@@ -264,7 +273,16 @@ This library is **Windows-only** as it depends on Windows COM/DCOM for OPC DA in
 
 The upstream `opc_da` `StringIterator` had a bug where null `PWSTR` entries in the batch cache were converted to `E_POINTER` errors by `RemotePointer`. This produced up to 16 phantom errors per iterator cycle.
 
-**Fix:** `StringIterator::next()` now zeroes the cache before each `IEnumString::Next()` call, and silently skips null `PWSTR` entries with a `debug!` log. The caller-side `is_known_iterator_bug()` workaround has been removed.
+**Fix:** `StringIterator::next()` now zeroes the cache before each `IEnumString::Next()` call, silently skips null `PWSTR` entries with a `debug!` log, validates fetched counts before indexing, bounds null-only batches, and releases remaining COM-owned strings after failed or early-ended iteration. The caller-side `is_known_iterator_bug()` workaround has been removed.
+
+### Non-progressing browse iterators
+
+Native and compatibility browse iterators terminate after
+`MAX_CONSECUTIVE_IDENTICAL_BROWSE_VALUES` (64) consecutive identical successful
+values. The terminal `BrowseNonProgress` error includes the iterator type,
+browse path, repeated value, consecutive count, and total yielded count. Short
+duplicate sequences remain valid; only an unchanged value that reaches the
+threshold is treated as a non-progressing enumerator.
 
 ### DCOM Filter Omission (Intentional)
 

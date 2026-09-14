@@ -17,8 +17,11 @@ Backend-agnostic OPC DA client library for Rust — async, trait-based, with tra
 - **Failure-safe Inventory Worker**: Converts worker panics and inventory errors into terminal stream errors instead of silently ending the stream.
 - **Defensive COM Iterators**: Rejects native enumerator counts that exceed the fixed cache capacity before indexing the returned buffer.
 - **Windows COM/DCOM Support**: Native OPC DA backend via `windows-rs` — no external OPC crates needed.
+- **Deterministic COM Ownership**: Native arrays have one owner and are converted without shallow pointer clones; nested strings, blobs, item-state values, and property values are released on the COM worker thread after conversion, including error and partial-result paths. Returned element counts are checked against physical COM allocation bounds, and failed property entries are still cleared according to the OPC DA contract.
+- **Owned VQT Writes**: OPC DA value-quality-timestamp writes use a non-clonable owning wrapper for each copied `VARIANT`, which clears the value after the COM call instead of relying on the generated shallow VQT clone.
 - **Robust Error Handling**: Leverages `thiserror` for the `OpcError` domain type and `friendly_com_hint()` for human-readable HRESULT explanations.
 - **Test-Friendly**: Built-in `MockOpcProvider` via the `test-support` feature.
+- **Opt-in Native Diagnostics**: The `dev-diagnostics` feature exposes a read-only native canary and a JSON Lines example for comparing direct COM reads with the normal worker path.
 
 ## Installation
 
@@ -89,6 +92,77 @@ contains the exact COM string contents: no quote characters are added or removed
 that intentionally want the historical quoted string presentation can call
 `read_tag_values_for_display`; its default trait implementation falls back to
 `read_tag_values` for third-party providers.
+
+### Native Read-Only Canary
+
+Enable `dev-diagnostics` only for troubleshooting native OPC DA behavior. The feature adds
+`opc_da_client::diagnostics` and the `native_read_canary` example; its `serde` and
+`serde_json` dependencies are not part of normal builds.
+
+```powershell
+cargo run -p bytehound-opc-da-client `
+  --example native_read_canary `
+  --features dev-diagnostics -- `
+  Yokogawa.CSHIS_OPC.1 `
+  FCS0201!204FI00510.PV `
+  FCS0201!204FI00510.OUT `
+  --update-rate-ms 1000
+```
+
+The command is non-interactive and writes one JSON object per line to stdout. It connects
+directly by ProgID, records server status and locale information, asks the server for its
+text for HRESULT `0xC004800B`, validates and adds the exact ItemIDs to a temporary active
+group, records canonical type/access metadata and available standard item properties, and
+performs explicit device and cache reads immediately and after one and two server-revised
+update intervals. Each per-item result includes the HRESULT in hexadecimal plus Windows and
+vendor text, and successful reads include safely formatted value, quality, and timestamp
+fields. The temporary group is removed before the normal `OpcDaClient` worker reads one
+selected item for comparison.
+
+The canary is strictly read-only: it never calls OPC write APIs, never changes the requested
+ItemIDs, and never substitutes a cache read when a device read fails. Device and cache
+observations are independent records. Library callers can use
+`run_native_read_canary(NativeReadCanaryConfig)` and `write_json_lines` directly.
+
+### Bounded Native Inventory Diagnostics
+
+The same diagnostic example can run a bounded namespace inventory without SQLite or gateway
+persistence:
+
+```powershell
+cargo run -p bytehound-opc-da-client `
+  --example native_read_canary `
+  --features dev-diagnostics -- `
+  inventory Yokogawa.CSHIS_OPC.1 `
+  --start-path FCS0219 `
+  --start-path 203FI02005 `
+  --batch-size 25 `
+  --max-entries 1000 `
+  --min-interval-ms 25 `
+  --deadline-secs 60
+```
+
+The inventory command emits JSON Lines for `inventory_start`, each `entry`, `progress`, and
+`slice`, followed by `completed` and a final `inventory_result`. Display names, ItemIDs, and
+breadcrumbs are serialized with normal JSON escaping, including control characters. The
+default configuration is intentionally conservative: a batch size of 25, a 100-entry limit,
+25 ms minimum operation interval, and a 60-second deadline. `--item-rate-per-second` adds an
+independent requested item-rate limit. Repeated `--start-path <COMPONENT>` values select a
+diagnostic-only DA2 browse path instead of the namespace root. The `inventory_start` record
+contains the selected path, and entries below the path retain their normal breadcrumbs and
+exact ItemIDs. The path mode is useful for proving whether a known nested branch is reachable
+without waiting for a breadth-first root traversal to reach it; it does not change the stable
+`OpcProvider::start_inventory` API or production inventory behavior. A server that does not
+support DA2 rejects a targeted path explicitly.
+
+Use `--cancel-after-secs <N>` for an explicit cancellation run. Cancellation requests are
+reported before the worker reaches its next bounded native operation. A deadline emits
+`deadline_expired`, requests cancellation, and allows a five-second grace period before a
+blocked native worker is detached. `Completed`, stream errors, and channel closure are joined
+directly so a normal terminal event cannot be mistaken for a still-running worker. The final
+result classifies the run as `completed`, `stream_error`, `channel_eof`, `deadline`, or
+`worker_failure`; only `completed` is a successful diagnostic result.
+
 
 ### Writing a Value
 
@@ -188,6 +262,18 @@ encode tokens with `to_string()` and restore them with each token type's
 The DA 2.x fallback merges a same-named branch and leaf into one
 `BrowseNodeKind::BranchAndItem` node and resolves its exact item ID through
 `GetItemID`.
+
+The diagnostic-only `native_read_canary browse` mode can inspect a server-returned
+branch and its immediate children without writing values or using SQLite:
+
+```text
+native_read_canary browse Yokogawa.CSHIS_OPC.1 --path SCS0130 --page-size 250
+```
+
+It emits JSON Lines containing the server's exact child names, item IDs, node kinds,
+and browse continuation tokens. This is intended for troubleshooting namespace
+formation; use returned item IDs for subsequent read tests rather than constructing
+ItemIDs from project files.
 
 For both DA 3.0 and DA 2.x, only selectable `Item` and `BranchAndItem`
 nodes expose `item_id`. Branch-only nodes retain any native ItemID needed for

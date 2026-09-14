@@ -44,6 +44,7 @@ pub trait CommonTrait {
             self.interface()?
                 .QueryAvailableLocaleIDs(locale_ids.as_mut_len_ptr(), locale_ids.as_mut_ptr())?;
         }
+        locale_ids.validate_output("IOPCCommon::QueryAvailableLocaleIDs")?;
 
         Ok(locale_ids)
     }
@@ -56,12 +57,20 @@ pub trait CommonTrait {
     /// # Returns
     /// Localized error message string in current locale
     fn get_error_string(&self, error: windows::core::HRESULT) -> OpcResult<String> {
-        // SAFETY: Calling COM interface method GetErrorString.
-        let output = unsafe { self.interface()?.GetErrorString(error)? };
+        let interface = self.interface()?;
+        let mut output = RemotePointer::<u16>::null();
+        // SAFETY: The output remains owned by output even when COM returns an
+        // error after allocating a vendor string.
+        unsafe {
+            (windows::core::Interface::vtable(interface).GetErrorString)(
+                windows::core::Interface::as_raw(interface),
+                error,
+                output.as_mut_pwstr_ptr(),
+            )
+            .ok()?;
+        }
 
-        RemotePointer::from(output)
-            .try_into()
-            .map_err(OpcError::from)
+        output.try_into().map_err(OpcError::from)
     }
 
     /// Sets a client name for server identification.

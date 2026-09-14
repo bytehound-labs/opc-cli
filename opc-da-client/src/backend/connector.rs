@@ -15,6 +15,31 @@ use anyhow::Context;
 pub use windows::Win32::System::Variant::VARIANT;
 use windows::core::Interface;
 
+#[cfg(feature = "dev-diagnostics")]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DiagnosticServerStatus {
+    pub(crate) start_time: std::time::SystemTime,
+    pub(crate) current_time: std::time::SystemTime,
+    pub(crate) last_update_time: std::time::SystemTime,
+    pub(crate) server_state: String,
+    pub(crate) group_count: u32,
+    pub(crate) band_width: u32,
+    pub(crate) major_version: u16,
+    pub(crate) minor_version: u16,
+    pub(crate) build_number: u16,
+    pub(crate) vendor_info: String,
+}
+
+#[cfg(feature = "dev-diagnostics")]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DiagnosticItemProperty {
+    pub(crate) id: u32,
+    pub(crate) description: String,
+    pub(crate) data_type: u16,
+    pub(crate) value: Option<String>,
+    pub(crate) error: windows::core::HRESULT,
+}
+
 /// Rust-native OPC DA 3.0 browse element used inside the backend boundary.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NativeBrowseElement {
@@ -255,6 +280,41 @@ pub trait ConnectedServer {
     ///
     /// Returns an error if the group removal fails.
     fn remove_group(&self, server_group: GroupHandle, force: bool) -> OpcResult<()>;
+
+    #[cfg(feature = "dev-diagnostics")]
+    fn diagnostic_status(&self) -> OpcResult<DiagnosticServerStatus> {
+        Err(OpcError::NotImplemented(
+            "OPC server status diagnostics are not supported".to_string(),
+        ))
+    }
+
+    #[cfg(feature = "dev-diagnostics")]
+    fn diagnostic_locale_id(&self) -> OpcResult<u32> {
+        Err(OpcError::NotImplemented(
+            "OPC locale diagnostics are not supported".to_string(),
+        ))
+    }
+
+    #[cfg(feature = "dev-diagnostics")]
+    fn diagnostic_available_locale_ids(&self) -> OpcResult<Vec<u32>> {
+        Err(OpcError::NotImplemented(
+            "OPC locale enumeration diagnostics are not supported".to_string(),
+        ))
+    }
+
+    #[cfg(feature = "dev-diagnostics")]
+    fn diagnostic_error_string(&self, _error: windows::core::HRESULT) -> OpcResult<String> {
+        Err(OpcError::NotImplemented(
+            "OPC vendor error-string diagnostics are not supported".to_string(),
+        ))
+    }
+
+    #[cfg(feature = "dev-diagnostics")]
+    fn diagnostic_item_properties(&self, _item_id: &str) -> OpcResult<Vec<DiagnosticItemProperty>> {
+        Err(OpcError::NotImplemented(
+            "OPC item-property diagnostics are not supported".to_string(),
+        ))
+    }
 }
 
 /// Facade over an OPC DA group for item management and I/O.
@@ -263,6 +323,19 @@ pub trait ConnectedServer {
 ///
 /// All methods return `OpcResult` — COM errors are propagated with context.
 pub trait ConnectedGroup {
+    #[cfg(feature = "dev-diagnostics")]
+    fn validate_items(
+        &self,
+        _items: &[tagOPCITEMDEF],
+    ) -> OpcResult<(
+        RemoteArray<tagOPCITEMRESULT>,
+        RemoteArray<windows::core::HRESULT>,
+    )> {
+        Err(OpcError::NotImplemented(
+            "OPC item validation diagnostics are not supported".to_string(),
+        ))
+    }
+
     /// Add items to this group for monitoring.
     ///
     /// # Errors
@@ -346,7 +419,7 @@ impl ServerConnector for ComConnector {
             server: opc_server,
             common: unknown.cast()?,
             connection_point_container: unknown.cast()?,
-            item_properties: unknown.cast()?,
+            item_properties: unknown.cast().ok(),
             server_public_groups: unknown.cast().ok(),
             browse_server_address_space: unknown.cast().ok(),
             browse: unknown.cast().ok(),
@@ -359,7 +432,7 @@ pub struct ComServer {
     pub(crate) server: crate::bindings::da::IOPCServer,
     pub(crate) common: crate::bindings::comn::IOPCCommon,
     pub(crate) connection_point_container: windows::Win32::System::Com::IConnectionPointContainer,
-    pub(crate) item_properties: crate::bindings::da::IOPCItemProperties,
+    pub(crate) item_properties: Option<crate::bindings::da::IOPCItemProperties>,
     pub(crate) server_public_groups: Option<crate::bindings::da::IOPCServerPublicGroups>,
     pub(crate) browse_server_address_space:
         Option<crate::bindings::da::IOPCBrowseServerAddressSpace>,
@@ -386,7 +459,9 @@ impl ConnectionPointContainerTrait for ComServer {
 
 impl ItemPropertiesTrait for ComServer {
     fn interface(&self) -> OpcResult<&crate::bindings::da::IOPCItemProperties> {
-        Ok(&self.item_properties)
+        self.item_properties
+            .as_ref()
+            .ok_or_else(|| OpcError::NotImplemented("IOPCItemProperties not supported".to_string()))
     }
 }
 
@@ -489,7 +564,7 @@ impl ConnectedServer for ComServer {
             OPC_BROWSE_FILTER_ALL, OPC_BROWSE_FILTER_BRANCHES, OPC_BROWSE_FILTER_ITEMS,
             OPC_BROWSE_HASCHILDREN, OPC_BROWSE_ISITEM,
         };
-        use crate::opc_da::com_utils::RemotePointer;
+        use crate::opc_da::com_utils::TryFromNative;
 
         let native_filter = match filter {
             BrowseNodeFilter::Branches => OPC_BROWSE_FILTER_BRANCHES,
@@ -509,25 +584,19 @@ impl ConnectedServer for ComServer {
             &[],
         )?;
 
-        let owned_strings: Vec<_> = elements
-            .as_slice()
-            .iter()
-            .map(|element| {
-                (
-                    RemotePointer::from(element.szName),
-                    RemotePointer::from(element.szItemID),
-                    element.dwFlagValue,
-                )
-            })
-            .collect();
-
-        let mut mapped = Vec::with_capacity(owned_strings.len());
-        for (name, item_id, flags) in owned_strings {
+        let mut mapped = Vec::with_capacity(elements.as_slice().len());
+        for element in elements.as_slice() {
+            let name = String::try_from_native(&element.szName)?;
+            let item_id = if element.szItemID.is_null() {
+                None
+            } else {
+                Some(String::try_from_native(&element.szItemID)?)
+            };
             mapped.push(NativeBrowseElement {
-                name: String::try_from(name)?,
-                item_id: Option::<String>::try_from(item_id)?.filter(|value| !value.is_empty()),
-                has_children: flags & OPC_BROWSE_HASCHILDREN != 0,
-                is_item: flags & OPC_BROWSE_ISITEM != 0,
+                name,
+                item_id: item_id.filter(|value| !value.is_empty()),
+                has_children: element.dwFlagValue & OPC_BROWSE_HASCHILDREN != 0,
+                is_item: element.dwFlagValue & OPC_BROWSE_ISITEM != 0,
             });
         }
 
@@ -567,6 +636,121 @@ impl ConnectedServer for ComServer {
     fn remove_group(&self, server_group: GroupHandle, force: bool) -> OpcResult<()> {
         ServerTrait::remove_group(self, server_group, force)
     }
+
+    #[cfg(feature = "dev-diagnostics")]
+    fn diagnostic_status(&self) -> OpcResult<DiagnosticServerStatus> {
+        use crate::opc_da::com_utils::TryFromNative;
+        use crate::opc_da::typedefs::{ServerState, ServerStatus};
+
+        let status = ServerTrait::get_status(self)?;
+        let native = status
+            .as_ref()
+            .ok_or_else(|| OpcError::Internal("OPC server returned null status".to_string()))?;
+        let status = ServerStatus::try_from_native(native)?;
+        let server_state = match status.server_state {
+            ServerState::Running => "running",
+            ServerState::Failed => "failed",
+            ServerState::NoConfig => "no_config",
+            ServerState::Suspended => "suspended",
+            ServerState::Test => "test",
+            ServerState::CommunicationFault => "communication_fault",
+        }
+        .to_string();
+        Ok(DiagnosticServerStatus {
+            start_time: status.start_time,
+            current_time: status.current_time,
+            last_update_time: status.last_update_time,
+            server_state,
+            group_count: status.group_count,
+            band_width: status.band_width,
+            major_version: status.major_version,
+            minor_version: status.minor_version,
+            build_number: status.build_number,
+            vendor_info: status.vendor_info,
+        })
+    }
+
+    #[cfg(feature = "dev-diagnostics")]
+    fn diagnostic_locale_id(&self) -> OpcResult<u32> {
+        CommonTrait::get_locale_id(self)
+    }
+
+    #[cfg(feature = "dev-diagnostics")]
+    fn diagnostic_available_locale_ids(&self) -> OpcResult<Vec<u32>> {
+        Ok(CommonTrait::query_available_locale_ids(self)?
+            .as_slice()
+            .to_vec())
+    }
+
+    #[cfg(feature = "dev-diagnostics")]
+    fn diagnostic_error_string(&self, error: windows::core::HRESULT) -> OpcResult<String> {
+        CommonTrait::get_error_string(self, error)
+    }
+
+    #[cfg(feature = "dev-diagnostics")]
+    fn diagnostic_item_properties(&self, item_id: &str) -> OpcResult<Vec<DiagnosticItemProperty>> {
+        use crate::opc_da::com_utils::TryFromNative;
+
+        let (ids, descriptions, data_types) =
+            ItemPropertiesTrait::query_available_properties(self, item_id)?;
+        if ids.len() != descriptions.len() || ids.len() != data_types.len() {
+            return Err(OpcError::Internal(
+                "OPC server returned mismatched available-property array sizes".to_string(),
+            ));
+        }
+
+        let descriptions = descriptions
+            .as_slice()
+            .iter()
+            .map(|description| String::try_from_native(description).map_err(OpcError::from))
+            .collect::<OpcResult<Vec<_>>>()?;
+        let standard_indices = ids
+            .as_slice()
+            .iter()
+            .enumerate()
+            .filter(|(_, id)| is_standard_property_id(**id))
+            .map(|(index, _)| index)
+            .collect::<Vec<_>>();
+        let standard_ids = standard_indices
+            .iter()
+            .map(|index| ids.as_slice()[*index])
+            .collect::<Vec<_>>();
+        if standard_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let (values, errors) =
+            ItemPropertiesTrait::get_item_properties(self, item_id, &standard_ids)?;
+        if values.len() as usize != standard_ids.len()
+            || errors.len() as usize != standard_ids.len()
+        {
+            return Err(OpcError::Internal(
+                "OPC server returned mismatched item-property result array sizes".to_string(),
+            ));
+        }
+
+        Ok(standard_indices
+            .into_iter()
+            .enumerate()
+            .map(|(value_index, available_index)| {
+                let error = errors.as_slice()[value_index];
+                DiagnosticItemProperty {
+                    id: ids.as_slice()[available_index],
+                    description: descriptions[available_index].clone(),
+                    data_type: data_types.as_slice()[available_index],
+                    value: error.is_ok().then(|| {
+                        crate::helpers::variant_to_string(&values.as_slice()[value_index])
+                    }),
+                    error,
+                }
+            })
+            .collect())
+    }
+}
+
+#[cfg(feature = "dev-diagnostics")]
+fn is_standard_property_id(id: u32) -> bool {
+    (1..=8).contains(&id) || (100..=108).contains(&id)
 }
 
 pub struct ComGroup {
@@ -635,6 +819,17 @@ impl DataObjectTrait for ComGroup {
 }
 
 impl ConnectedGroup for ComGroup {
+    #[cfg(feature = "dev-diagnostics")]
+    fn validate_items(
+        &self,
+        items: &[tagOPCITEMDEF],
+    ) -> OpcResult<(
+        RemoteArray<tagOPCITEMRESULT>,
+        RemoteArray<windows::core::HRESULT>,
+    )> {
+        ItemMgtTrait::validate_items(self, items, false)
+    }
+
     fn add_items(
         &self,
         items: &[tagOPCITEMDEF],

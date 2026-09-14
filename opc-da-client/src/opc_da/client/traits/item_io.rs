@@ -1,7 +1,8 @@
-use crate::bindings::da::{IOPCItemIO, tagOPCITEMVQT};
+use crate::bindings::da::IOPCItemIO;
 use crate::opc_da::{
-    com_utils::{LocalPointer, RemoteArray},
+    com_utils::{LocalPointer, RemoteArray, clear_variant},
     errors::{OpcError, OpcResult},
+    typedefs::OwnedItemVqt,
 };
 
 /// Direct item I/O functionality (OPC DA 3.0).
@@ -48,7 +49,7 @@ pub trait ItemIoTrait {
 
         let len = item_ids.len().try_into()?;
 
-        let mut values = RemoteArray::new(len);
+        let mut values = RemoteArray::new_with_cleanup(len, clear_variant);
         let mut qualities = RemoteArray::new(len);
         let mut timestamps = RemoteArray::new(len);
         let mut errors = RemoteArray::new(len);
@@ -65,6 +66,10 @@ pub trait ItemIoTrait {
                 errors.as_mut_ptr(),
             )?;
         }
+        values.validate_output("IOPCItemIO::Read values")?;
+        qualities.validate_output("IOPCItemIO::Read qualities")?;
+        timestamps.validate_output("IOPCItemIO::Read timestamps")?;
+        errors.validate_output("IOPCItemIO::Read errors")?;
 
         Ok((values, qualities, timestamps, errors))
     }
@@ -83,7 +88,7 @@ pub trait ItemIoTrait {
     fn write_vqt(
         &self,
         item_ids: &[String],
-        item_vqts: &[tagOPCITEMVQT],
+        item_vqts: &[OwnedItemVqt],
     ) -> OpcResult<RemoteArray<windows::core::HRESULT>> {
         if item_ids.is_empty() || item_vqts.is_empty() || item_ids.len() != item_vqts.len() {
             return Err(OpcError::InvalidState(
@@ -103,10 +108,11 @@ pub trait ItemIoTrait {
             self.interface()?.WriteVQT(
                 len,
                 item_ptrs.as_ptr(),
-                item_vqts.as_ptr(),
+                OwnedItemVqt::as_native_slice(item_vqts).as_ptr(),
                 errors.as_mut_ptr(),
             )?;
         }
+        errors.validate_output("IOPCItemIO::WriteVQT errors")?;
 
         Ok(errors)
     }

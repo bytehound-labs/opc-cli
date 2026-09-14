@@ -89,12 +89,20 @@ pub trait BrowseServerAddressSpaceTrait {
     /// Fully qualified item ID string
     fn get_item_id(&self, item_data_id: &str) -> OpcResult<String> {
         let item_data_id = LocalPointer::from(item_data_id);
+        let interface = self.interface()?;
+        let mut output = RemotePointer::<u16>::null();
 
-        // SAFETY: Calling COM interface method GetItemID with valid item_data_id string.
-        let output = unsafe { self.interface()?.GetItemID(item_data_id.as_pwstr())? };
-
-        let ptr = RemotePointer::from(output);
-        ptr.try_into().map_err(OpcError::from)
+        // SAFETY: The output remains owned by output even when COM returns an
+        // error after allocating an item ID.
+        unsafe {
+            (windows::core::Interface::vtable(interface).GetItemID)(
+                windows::core::Interface::as_raw(interface),
+                item_data_id.as_pcwstr(),
+                output.as_mut_pwstr_ptr(),
+            )
+            .ok()?;
+        }
+        output.try_into().map_err(OpcError::from)
     }
 
     /// Browses available access paths for an item.

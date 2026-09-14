@@ -30,14 +30,14 @@ impl ClientTrait<Server> for Client {
 /// Provides access to OPC DA 2.0 server interfaces including:
 /// - `IOPCServer` for basic server operations
 /// - `IOPCCommon` for server status and locale management
-/// - `IOPCItemProperties` for browsing item properties
+/// - optional `IOPCItemProperties` for browsing item properties
 /// - `IOPCServerPublicGroups` for public group management
 /// - `IOPCBrowseServerAddressSpace` for browsing the address space
 pub struct Server {
     pub(crate) server: crate::bindings::da::IOPCServer,
     pub(crate) common: crate::bindings::comn::IOPCCommon,
     pub(crate) connection_point_container: windows::Win32::System::Com::IConnectionPointContainer,
-    pub(crate) item_properties: crate::bindings::da::IOPCItemProperties,
+    pub(crate) item_properties: Option<crate::bindings::da::IOPCItemProperties>,
     pub(crate) server_public_groups: Option<crate::bindings::da::IOPCServerPublicGroups>,
     pub(crate) browse_server_address_space:
         Option<crate::bindings::da::IOPCBrowseServerAddressSpace>,
@@ -51,7 +51,7 @@ impl TryFrom<windows::core::IUnknown> for Server {
             server: value.cast()?,
             common: value.cast()?,
             connection_point_container: value.cast()?,
-            item_properties: value.cast()?,
+            item_properties: value.cast().ok(),
             server_public_groups: value.cast().ok(),
             browse_server_address_space: value.cast().ok(),
         })
@@ -78,7 +78,9 @@ impl ConnectionPointContainerTrait for Server {
 
 impl ItemPropertiesTrait for Server {
     fn interface(&self) -> OpcResult<&crate::bindings::da::IOPCItemProperties> {
-        Ok(&self.item_properties)
+        self.item_properties
+            .as_ref()
+            .ok_or_else(|| OpcError::NotImplemented("IOPCItemProperties not supported".to_string()))
     }
 }
 

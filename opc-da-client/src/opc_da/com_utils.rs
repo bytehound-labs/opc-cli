@@ -4,9 +4,15 @@
 //! as well as traits for converting between COM-native and Rust-native types.
 
 use windows::{
-    Win32::System::Com::{CoTaskMemAlloc, CoTaskMemFree},
+    Win32::System::{
+        Com::{CoGetMalloc, CoTaskMemAlloc, CoTaskMemFree},
+        Variant::{VARIANT, VariantClear, VariantCopy},
+    },
     core::PWSTR,
 };
+
+type ElementCleanup<T> = unsafe fn(&mut T);
+type PointerCleanup<T> = unsafe fn(*mut T);
 
 // ── Memory Management ───────────────────────────────────────────────
 
@@ -14,10 +20,11 @@ use windows::{
 ///
 /// This struct ensures proper cleanup of COM-allocated memory when dropped.
 /// It provides safe access to the underlying array through slices.
-#[derive(Debug, Clone, PartialEq)]
 pub struct RemoteArray<T: Sized> {
     pointer: RemotePointer<T>,
     len: u32,
+    capacity: Option<u32>,
+    element_cleanup: Option<ElementCleanup<T>>,
 }
 
 impl<T: Sized> RemoteArray<T> {
@@ -28,6 +35,30 @@ impl<T: Sized> RemoteArray<T> {
         Self {
             pointer: RemotePointer::null(),
             len,
+            capacity: Some(len),
+            element_cleanup: None,
+        }
+    }
+
+    /// Creates a COM output array whose initialized elements require cleanup.
+    #[inline(always)]
+    pub(crate) fn new_with_cleanup(len: u32, cleanup: ElementCleanup<T>) -> Self {
+        Self {
+            pointer: RemotePointer::null(),
+            len,
+            capacity: Some(len),
+            element_cleanup: Some(cleanup),
+        }
+    }
+
+    /// Creates an empty COM output array with a known maximum returned length.
+    #[inline(always)]
+    pub(crate) fn with_capacity_and_cleanup(capacity: u32, cleanup: ElementCleanup<T>) -> Self {
+        Self {
+            pointer: RemotePointer::null(),
+            len: 0,
+            capacity: Some(capacity),
+            element_cleanup: Some(cleanup),
         }
     }
 
@@ -36,22 +67,29 @@ impl<T: Sized> RemoteArray<T> {
     /// # Safety
     /// The caller must ensure that the pointer is valid and points to a COM-allocated array.
     #[inline(always)]
-    pub(crate) fn from_mut_ptr(pointer: *mut T, len: u32) -> Self {
+    pub(crate) unsafe fn from_mut_ptr(pointer: *mut T, len: u32) -> Self {
         Self {
-            pointer: RemotePointer::from_raw(pointer),
+            // SAFETY: The caller transfers ownership of this COM allocation.
+            pointer: unsafe { RemotePointer::from_raw(pointer) },
             len,
+            capacity: Some(len),
+            element_cleanup: None,
         }
     }
 
-    /// Creates a `RemoteArray` from a constant pointer and length.
-    ///
-    /// # Safety
-    /// The caller must ensure that the pointer is valid and points to a COM-allocated array.
+    /// Creates an owning array from a COM allocation with nested element cleanup.
     #[inline(always)]
-    pub(crate) fn from_ptr(pointer: *const T, len: u32) -> Self {
+    pub(crate) unsafe fn from_mut_ptr_with_cleanup(
+        pointer: *mut T,
+        len: u32,
+        cleanup: ElementCleanup<T>,
+    ) -> Self {
         Self {
-            pointer: RemotePointer::from_raw(pointer as *mut T),
+            // SAFETY: The caller transfers ownership of this COM allocation.
+            pointer: unsafe { RemotePointer::from_raw(pointer) },
             len,
+            capacity: Some(len),
+            element_cleanup: Some(cleanup),
         }
     }
 
@@ -61,6 +99,19 @@ impl<T: Sized> RemoteArray<T> {
         Self {
             pointer: RemotePointer::null(),
             len: 0,
+            capacity: None,
+            element_cleanup: None,
+        }
+    }
+
+    /// Creates an empty COM output array whose returned elements require cleanup.
+    #[inline(always)]
+    pub(crate) fn empty_with_cleanup(cleanup: ElementCleanup<T>) -> Self {
+        Self {
+            pointer: RemotePointer::null(),
+            len: 0,
+            capacity: None,
+            element_cleanup: Some(cleanup),
         }
     }
 
@@ -68,7 +119,7 @@ impl<T: Sized> RemoteArray<T> {
     ///
     /// This is useful when calling COM functions that output an array via a pointer to a pointer.
     #[inline(always)]
-    pub fn as_mut_ptr(&mut self) -> *mut *mut T {
+    pub(crate) fn as_mut_ptr(&mut self) -> *mut *mut T {
         self.pointer.as_mut_ptr()
     }
 
@@ -82,7 +133,7 @@ impl<T: Sized> RemoteArray<T> {
             return &[];
         }
 
-        let len = usize::try_from(self.len).unwrap_or(0);
+        let len = self.initialized_len();
 
         // SAFETY: Pointer and length are guaranteed to be valid for slice creation.
         unsafe { core::slice::from_raw_parts(self.pointer.inner, len) }
@@ -98,7 +149,7 @@ impl<T: Sized> RemoteArray<T> {
             return &mut [];
         }
 
-        let len = usize::try_from(self.len).unwrap_or(0);
+        let len = self.initialized_len();
 
         // SAFETY: Pointer and length are guaranteed to be valid for mutable slice creation.
         unsafe { core::slice::from_raw_parts_mut(self.pointer.inner, len) }
@@ -124,7 +175,7 @@ impl<T: Sized> RemoteArray<T> {
     ///
     /// This is useful when calling COM functions that output the length via a pointer.
     #[inline(always)]
-    pub fn as_mut_len_ptr(&mut self) -> *mut u32 {
+    pub(crate) fn as_mut_len_ptr(&mut self) -> *mut u32 {
         &mut self.len
     }
 
@@ -137,11 +188,143 @@ impl<T: Sized> RemoteArray<T> {
         self.len = len;
     }
 
-    pub fn into_vec(self) -> Vec<RemotePointer<T>> {
-        self.as_slice()
-            .iter()
-            .map(|v| RemotePointer::from_raw(v as *const T as *mut T))
-            .collect()
+    /// Converts the array into ordinary Rust-owned values.
+    ///
+    /// The conversion borrows each element while this wrapper remains the
+    /// unique owner of the COM allocation. Dropping the wrapper releases every
+    /// nested allocation and the outer buffer exactly once, including when a
+    /// conversion fails partway through.
+    pub fn into_vec<U>(
+        self,
+        convert: impl FnMut(&T) -> windows::core::Result<U>,
+    ) -> windows::core::Result<Vec<U>> {
+        self.as_slice().iter().map(convert).collect()
+    }
+
+    fn initialized_len(&self) -> usize {
+        let logical_len = self
+            .capacity
+            .map_or(self.len, |capacity| self.len.min(capacity));
+        let logical_len = usize::try_from(logical_len).unwrap_or(0);
+
+        if self.pointer.inner.is_null() || logical_len == 0 {
+            return 0;
+        }
+
+        let Some(required_bytes) = logical_len.checked_mul(core::mem::size_of::<T>()) else {
+            return 0;
+        };
+        if required_bytes > isize::MAX as usize {
+            return 0;
+        }
+
+        // `GetSize` is only a physical safety bound. It does not tell us how
+        // many logical elements COM initialized, so the API-reported count
+        // and caller-provided capacity remain authoritative.
+        match unsafe { task_mem_allocation_bytes(self.pointer.inner.cast()) } {
+            Some(allocated_bytes) if required_bytes <= allocated_bytes => logical_len,
+            _ => 0,
+        }
+    }
+
+    /// Returns the element count written by COM before capacity clamping.
+    #[inline(always)]
+    pub(crate) fn reported_len(&self) -> u32 {
+        self.len
+    }
+
+    /// Returns the maximum number of elements known to fit in the allocation.
+    #[inline(always)]
+    pub(crate) fn capacity(&self) -> Option<u32> {
+        self.capacity
+    }
+
+    /// Validates the pointer/count pair returned by COM.
+    pub(crate) fn validate_output(&self, operation: &str) -> windows::core::Result<()> {
+        if self.len > 0 && self.pointer.inner.is_null() {
+            return Err(windows::core::Error::new(
+                windows::Win32::Foundation::E_POINTER,
+                format!(
+                    "{operation} returned a null array for {} elements",
+                    self.len
+                ),
+            ));
+        }
+        if let Some(capacity) = self.capacity
+            && self.len > capacity
+        {
+            return Err(windows::core::Error::new(
+                windows::Win32::Foundation::E_INVALIDARG,
+                format!(
+                    "{operation} returned {} elements for a {capacity}-element allocation",
+                    self.len
+                ),
+            ));
+        }
+        if !self.pointer.inner.is_null() {
+            let element_size = core::mem::size_of::<T>();
+            let required_bytes = usize::try_from(self.len)
+                .ok()
+                .and_then(|len| len.checked_mul(element_size))
+                .and_then(|bytes| (bytes <= isize::MAX as usize).then_some(bytes))
+                .ok_or_else(|| {
+                    windows::core::Error::new(
+                        windows::Win32::Foundation::E_INVALIDARG,
+                        format!(
+                            "{operation} returned an element count that overflows its byte length"
+                        ),
+                    )
+                })?;
+            let allocated_bytes =
+                // SAFETY: RemoteArray only owns COM task allocations.
+                unsafe { task_mem_allocation_bytes(self.pointer.inner.cast()) }.ok_or_else(|| {
+                    windows::core::Error::new(
+                        windows::Win32::Foundation::E_INVALIDARG,
+                        format!("{operation} returned a pointer outside the COM task allocator"),
+                    )
+                })?;
+            if required_bytes > allocated_bytes {
+                return Err(windows::core::Error::new(
+                    windows::Win32::Foundation::E_INVALIDARG,
+                    format!(
+                        "{operation} returned {} elements requiring {required_bytes} bytes, \
+                         but the COM allocation is only {allocated_bytes} bytes",
+                        self.len
+                    ),
+                ));
+            }
+        }
+        Ok(())
+    }
+}
+
+impl<T: Sized> core::fmt::Debug for RemoteArray<T> {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        formatter
+            .debug_struct("RemoteArray")
+            .field("pointer", &self.pointer)
+            .field("len", &self.len)
+            .field("capacity", &self.capacity)
+            .finish_non_exhaustive()
+    }
+}
+
+impl<T: Sized> PartialEq for RemoteArray<T> {
+    fn eq(&self, other: &Self) -> bool {
+        self.pointer == other.pointer && self.len == other.len
+    }
+}
+
+impl<T: Sized> Drop for RemoteArray<T> {
+    fn drop(&mut self) {
+        let Some(cleanup) = self.element_cleanup else {
+            return;
+        };
+        for element in self.as_mut_slice() {
+            // SAFETY: The cleanup function matches T and each initialized
+            // element is visited exactly once before the outer allocation.
+            unsafe { cleanup(element) };
+        }
     }
 }
 
@@ -157,10 +340,9 @@ impl<T: Sized> Default for RemoteArray<T> {
 ///
 /// This struct ensures proper cleanup of COM-allocated memory when dropped.
 /// It provides methods to access the underlying pointer.
-#[repr(transparent)]
-#[derive(Debug, Clone, PartialEq)]
 pub struct RemotePointer<T: Sized> {
     inner: *mut T,
+    cleanup: Option<PointerCleanup<T>>,
 }
 
 impl<T: Sized> RemotePointer<T> {
@@ -169,6 +351,7 @@ impl<T: Sized> RemotePointer<T> {
     pub fn null() -> Self {
         Self {
             inner: core::ptr::null_mut(),
+            cleanup: None,
         }
     }
 
@@ -176,25 +359,72 @@ impl<T: Sized> RemotePointer<T> {
     ///
     /// Useful for COM functions that output data via a pointer to a pointer.
     #[inline(always)]
-    pub(crate) fn from_raw(pointer: *mut T) -> Self {
-        Self { inner: pointer }
+    pub(crate) unsafe fn from_raw(pointer: *mut T) -> Self {
+        Self {
+            inner: pointer,
+            cleanup: None,
+        }
+    }
+
+    /// Creates an owning pointer with cleanup for fields nested in `T`.
+    #[inline(always)]
+    pub(crate) unsafe fn from_raw_with_cleanup(
+        pointer: *mut T,
+        cleanup: PointerCleanup<T>,
+    ) -> Self {
+        Self {
+            inner: pointer,
+            cleanup: Some(cleanup),
+        }
     }
 
     pub(crate) fn copy_slice(value: &[T]) -> Self {
+        if value.is_empty() {
+            return Self::null();
+        }
+
         // SAFETY: Allocates memory for slice using COM CoTaskMemAlloc.
         let pointer = unsafe { CoTaskMemAlloc(core::mem::size_of_val(value)) };
+        if pointer.is_null() {
+            return Self::null();
+        }
         // SAFETY: Destination buffer was allocated with sufficient capacity and pointers are non-overlapping.
         unsafe {
             core::ptr::copy_nonoverlapping(value.as_ptr(), pointer as _, value.len());
         }
         Self {
             inner: pointer as _,
+            cleanup: None,
         }
     }
 
     #[inline(always)]
-    pub fn as_mut_ptr(&mut self) -> *mut *mut T {
+    pub(crate) fn as_mut_ptr(&mut self) -> *mut *mut T {
         &mut self.inner
+    }
+
+    #[inline(always)]
+    pub(crate) fn as_ptr(&self) -> *mut T {
+        self.inner
+    }
+
+    /// Releases a previously owned allocation after an in/out COM parameter
+    /// replaces it with a different pointer.
+    ///
+    /// # Safety
+    /// `previous` must have been owned by this wrapper immediately before the
+    /// COM call that may have replaced the pointer.
+    pub(crate) unsafe fn free_replaced(&self, previous: *mut T) {
+        if !previous.is_null() && previous != self.inner {
+            if let Some(cleanup) = self.cleanup {
+                // SAFETY: `previous` had the same nested cleanup contract as
+                // the output pointer that replaced it.
+                unsafe { cleanup(previous) };
+            }
+            // SAFETY: The previous allocation is no longer reachable through
+            // this owner and was allocated with the COM task allocator.
+            unsafe { CoTaskMemFree(Some(previous.cast())) };
+        }
     }
 
     /// Returns an `Option` referencing the inner value if it is not null.
@@ -224,21 +454,26 @@ impl<T: Sized> RemotePointer<T> {
     }
 }
 
+impl<T: Sized> core::fmt::Debug for RemotePointer<T> {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        formatter
+            .debug_tuple("RemotePointer")
+            .field(&self.inner)
+            .finish()
+    }
+}
+
+impl<T: Sized> PartialEq for RemotePointer<T> {
+    fn eq(&self, other: &Self) -> bool {
+        self.inner == other.inner
+    }
+}
+
 impl<T: Sized> Default for RemotePointer<T> {
     /// Creates a new `RemotePointer` initialized to null by default.
     #[inline(always)]
     fn default() -> Self {
         Self::null()
-    }
-}
-
-impl From<PWSTR> for RemotePointer<u16> {
-    /// Converts a `PWSTR` to a `RemotePointer<u16>`.
-    #[inline(always)]
-    fn from(value: PWSTR) -> Self {
-        Self {
-            inner: value.as_ptr(),
-        }
     }
 }
 
@@ -289,7 +524,7 @@ impl TryFrom<RemotePointer<u16>> for Option<String> {
 impl RemotePointer<u16> {
     /// Returns a mutable pointer to a `PWSTR`.
     #[inline(always)]
-    pub fn as_mut_pwstr_ptr(&mut self) -> *mut PWSTR {
+    pub(crate) fn as_mut_pwstr_ptr(&mut self) -> *mut PWSTR {
         &mut self.inner as *mut *mut u16 as *mut PWSTR
     }
 }
@@ -299,12 +534,77 @@ impl<T: Sized> Drop for RemotePointer<T> {
     #[inline(always)]
     fn drop(&mut self) {
         if !self.inner.is_null() {
+            if let Some(cleanup) = self.cleanup {
+                // SAFETY: The cleanup function matches T and runs exactly once
+                // before the containing COM allocation is released.
+                unsafe { cleanup(self.inner) };
+            }
             // SAFETY: Memory was allocated via COM CoTaskMemAlloc and pointer is non-null.
             unsafe {
                 CoTaskMemFree(Some(self.inner as _));
             }
         }
     }
+}
+
+/// Frees a nested COM task-allocated wide string and nulls its slot.
+pub(crate) unsafe fn clear_pwstr(value: &mut PWSTR) {
+    if !value.is_null() {
+        // SAFETY: OPC DA returns these strings from the COM task allocator.
+        unsafe { CoTaskMemFree(Some(value.as_ptr().cast())) };
+        #[cfg(test)]
+        PWSTR_CLEANUP_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        *value = PWSTR::null();
+    }
+}
+
+#[cfg(test)]
+pub(crate) static PWSTR_CLEANUP_COUNT: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+
+/// Clears a nested COM VARIANT without treating its enclosing raw buffer as a
+/// Rust-owned `VARIANT` value.
+pub(crate) unsafe fn clear_variant(value: &mut VARIANT) {
+    // SAFETY: The value was initialized by COM and is cleared exactly once.
+    unsafe {
+        let _ = VariantClear(value);
+    }
+}
+
+/// Returns the physical byte size of a COM task allocation.
+///
+/// This is a safety bound for validating a caller-supplied byte or element
+/// count. It is not an initialized-element count: COM allocators may round
+/// allocations up, and only the API contract can define which elements exist.
+pub(crate) unsafe fn task_mem_allocation_bytes(pointer: *const core::ffi::c_void) -> Option<usize> {
+    if pointer.is_null() {
+        return None;
+    }
+    // SAFETY: CoGetMalloc returns the task allocator used by CoTaskMemAlloc,
+    // and GetSize only observes the supplied allocation.
+    let bytes = unsafe { CoGetMalloc(1).ok()?.GetSize(Some(pointer)) };
+    (bytes != usize::MAX).then_some(bytes)
+}
+
+/// Creates an independently owned copy of a COM `VARIANT`.
+///
+/// Unlike `VARIANT::clone`, this preserves a `VariantCopy` failure instead of
+/// silently returning an empty value.
+pub(crate) fn clone_variant(value: &VARIANT) -> windows::core::Result<VARIANT> {
+    let mut copy = VARIANT::default();
+    // SAFETY: Both pointers reference initialized VARIANT values.
+    let result = unsafe { VariantCopy(&mut copy, value) };
+    if let Err(error) = result {
+        // VariantCopy may have partially initialized its destination before
+        // reporting an error, so release any nested allocation it produced.
+        // SAFETY: `copy` started as VT_EMPTY and is the sole owner of anything
+        // VariantCopy may have placed in it.
+        unsafe {
+            let _ = VariantClear(&mut copy);
+        }
+        return Err(error);
+    }
+    Ok(copy)
 }
 
 /// A safe wrapper around locally allocated memory needing to be passed to COM functions.
@@ -545,12 +845,14 @@ impl TryFromNative<RemoteArray<windows::core::HRESULT>> for Vec<windows::core::R
     fn try_from_native(
         native: &RemoteArray<windows::core::HRESULT>,
     ) -> windows::core::Result<Self> {
+        native.validate_output("HRESULT array conversion")?;
         Ok(native.as_slice().iter().map(|v| (*v).ok()).collect())
     }
 }
 
 impl<Native, T: TryFromNative<Native>> TryFromNative<RemoteArray<Native>> for Vec<T> {
     fn try_from_native(native: &RemoteArray<Native>) -> windows::core::Result<Self> {
+        native.validate_output("native array conversion")?;
         native.as_slice().iter().map(T::try_from_native).collect()
     }
 }
@@ -563,6 +865,8 @@ impl<Native, T: TryFromNative<Native>>
         native: &(RemoteArray<Native>, RemoteArray<windows::core::HRESULT>),
     ) -> windows::core::Result<Self> {
         let (results, errors) = native;
+        results.validate_output("result array conversion")?;
+        errors.validate_output("error array conversion")?;
         if results.len() != errors.len() {
             return Err(windows::core::Error::new(
                 windows::Win32::Foundation::E_INVALIDARG,
@@ -638,6 +942,178 @@ impl TryToNative<windows::Win32::Foundation::FILETIME> for std::time::SystemTime
 
 impl TryFromNative<windows::core::PWSTR> for String {
     fn try_from_native(native: &windows::core::PWSTR) -> windows::core::Result<Self> {
-        RemotePointer::from(*native).try_into()
+        if native.is_null() {
+            return Err(windows::Win32::Foundation::E_POINTER.into());
+        }
+        // SAFETY: This conversion borrows the COM-owned string. Its containing
+        // owner remains responsible for releasing the allocation.
+        Ok(unsafe { native.to_string() }?)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    static CLEANED_ELEMENTS: AtomicUsize = AtomicUsize::new(0);
+    static CAPPED_ELEMENTS: AtomicUsize = AtomicUsize::new(0);
+    static FAILED_CONVERSION_ELEMENTS: AtomicUsize = AtomicUsize::new(0);
+    static UNWRITTEN_ELEMENTS: AtomicUsize = AtomicUsize::new(0);
+
+    unsafe fn count_cleanup(_: &mut u32) {
+        CLEANED_ELEMENTS.fetch_add(1, Ordering::SeqCst);
+    }
+
+    unsafe fn count_capped_cleanup(_: &mut u32) {
+        CAPPED_ELEMENTS.fetch_add(1, Ordering::SeqCst);
+    }
+
+    unsafe fn count_failed_conversion_cleanup(_: &mut u32) {
+        FAILED_CONVERSION_ELEMENTS.fetch_add(1, Ordering::SeqCst);
+    }
+
+    unsafe fn count_unwritten_cleanup(_: &mut u32) {
+        UNWRITTEN_ELEMENTS.fetch_add(1, Ordering::SeqCst);
+    }
+
+    fn remote_u32_array(values: &[u32], cleanup: unsafe fn(&mut u32)) -> RemoteArray<u32> {
+        // SAFETY: Allocate enough COM task memory for every copied element.
+        let pointer = unsafe { CoTaskMemAlloc(core::mem::size_of_val(values)) }.cast::<u32>();
+        assert!(!pointer.is_null());
+        // SAFETY: The allocation is large enough and does not overlap values.
+        unsafe {
+            core::ptr::copy_nonoverlapping(values.as_ptr(), pointer, values.len());
+        }
+        // SAFETY: pointer is a COM task allocation containing exactly the
+        // initialized values copied above, and ownership transfers here.
+        unsafe {
+            RemoteArray::from_mut_ptr_with_cleanup(
+                pointer,
+                u32::try_from(values.len()).unwrap(),
+                cleanup,
+            )
+        }
+    }
+
+    #[test]
+    fn into_vec_copies_values_without_nested_com_ownership() {
+        let values = [10, 20, 30];
+        // SAFETY: Allocate enough COM task memory for every copied element.
+        let pointer = unsafe { CoTaskMemAlloc(core::mem::size_of_val(&values)) }.cast::<u32>();
+        assert!(!pointer.is_null());
+        // SAFETY: The allocation is large enough and does not overlap values.
+        unsafe {
+            core::ptr::copy_nonoverlapping(values.as_ptr(), pointer, values.len());
+        }
+        // SAFETY: pointer is a COM task allocation containing exactly the
+        // initialized values copied above, and ownership transfers here.
+        let remote =
+            unsafe { RemoteArray::from_mut_ptr(pointer, u32::try_from(values.len()).unwrap()) };
+
+        assert_eq!(remote.into_vec(|value| Ok(*value)).unwrap(), values);
+    }
+
+    #[test]
+    fn into_vec_cleans_nested_com_ownership_after_conversion() {
+        CLEANED_ELEMENTS.store(0, Ordering::SeqCst);
+        let remote = remote_u32_array(&[10, 20, 30], count_cleanup);
+
+        let local = remote.into_vec(|value| Ok(*value)).unwrap();
+
+        assert_eq!(local, vec![10, 20, 30]);
+        assert_eq!(CLEANED_ELEMENTS.load(Ordering::SeqCst), 3);
+    }
+
+    #[test]
+    fn into_vec_cleans_every_element_when_conversion_fails() {
+        FAILED_CONVERSION_ELEMENTS.store(0, Ordering::SeqCst);
+        let remote = remote_u32_array(&[10, 20, 30], count_failed_conversion_cleanup);
+
+        let error = remote
+            .into_vec(|value| {
+                if *value == 20 {
+                    Err(windows::core::Error::new(
+                        windows::Win32::Foundation::E_INVALIDARG,
+                        "conversion failed",
+                    ))
+                } else {
+                    Ok(*value)
+                }
+            })
+            .expect_err("the middle element should fail conversion");
+
+        assert_eq!(error.code(), windows::Win32::Foundation::E_INVALIDARG);
+        assert_eq!(FAILED_CONVERSION_ELEMENTS.load(Ordering::SeqCst), 3);
+    }
+
+    #[test]
+    fn cleanup_is_capped_at_the_known_allocation_capacity() {
+        CAPPED_ELEMENTS.store(0, Ordering::SeqCst);
+        let mut remote = remote_u32_array(&[1, 2], count_capped_cleanup);
+        // SAFETY: Deliberately simulates a malformed COM fetched count. The
+        // wrapper must never walk beyond its known two-element allocation.
+        unsafe { remote.set_len(5) };
+
+        assert_eq!(remote.reported_len(), 5);
+        assert_eq!(remote.len(), 5);
+        assert_eq!(remote.as_slice().len(), 2);
+        assert_eq!(
+            remote
+                .validate_output("test")
+                .expect_err("the malformed length must be rejected")
+                .code(),
+            windows::Win32::Foundation::E_INVALIDARG
+        );
+        drop(remote);
+
+        assert_eq!(CAPPED_ELEMENTS.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn output_capacity_does_not_count_unwritten_elements_as_initialized() {
+        UNWRITTEN_ELEMENTS.store(0, Ordering::SeqCst);
+        let mut remote = RemoteArray::with_capacity_and_cleanup(2, count_unwritten_cleanup);
+        let values = [1_u32, 2];
+        // SAFETY: Allocate and initialize the simulated COM output buffer.
+        let pointer = unsafe { CoTaskMemAlloc(core::mem::size_of_val(&values)) }.cast::<u32>();
+        assert!(!pointer.is_null());
+        // SAFETY: The allocation is large enough and the destination is the
+        // wrapper's currently-null output pointer.
+        unsafe {
+            core::ptr::copy_nonoverlapping(values.as_ptr(), pointer, values.len());
+            *remote.as_mut_ptr() = pointer;
+        }
+
+        drop(remote);
+
+        assert_eq!(UNWRITTEN_ELEMENTS.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn borrowed_pwstr_conversion_leaves_freeing_to_the_owner() {
+        let owner = RemotePointer::<u16>::from("borrowed");
+        let borrowed = PWSTR(owner.as_ptr());
+
+        assert_eq!(
+            String::try_from_native(&borrowed).unwrap(),
+            "borrowed".to_string()
+        );
+        assert_eq!(unsafe { borrowed.to_string() }.unwrap(), "borrowed");
+        drop(owner);
+    }
+
+    #[test]
+    fn clone_variant_rejects_an_invalid_variant() {
+        let mut invalid = VARIANT::default();
+        // SAFETY: Deliberately construct an invalid VARTYPE with no owned
+        // payload to exercise the VariantCopy failure path.
+        unsafe {
+            (*invalid.Anonymous.Anonymous).vt = windows::Win32::System::Variant::VARENUM(u16::MAX);
+        }
+
+        let error = clone_variant(&invalid).expect_err("invalid VARTYPE must be rejected");
+
+        assert!(error.code().is_err());
     }
 }

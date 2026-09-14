@@ -1,6 +1,6 @@
 use crate::bindings::da::IOPCItemProperties;
 use crate::opc_da::{
-    com_utils::{LocalPointer, RemoteArray},
+    com_utils::{LocalPointer, RemoteArray, clear_pwstr, clear_variant},
     errors::{OpcError, OpcResult},
 };
 
@@ -40,20 +40,20 @@ pub trait ItemPropertiesTrait {
         let item_id = LocalPointer::from(item_id);
 
         let mut count = 0;
-        let mut property_ids = RemoteArray::new(0);
-        let mut descriptions = RemoteArray::new(0);
-        let mut datatypes = RemoteArray::new(0);
+        let mut property_ids = RemoteArray::empty();
+        let mut descriptions = RemoteArray::empty_with_cleanup(clear_pwstr);
+        let mut datatypes = RemoteArray::empty();
 
         // SAFETY: Calling COM interface method QueryAvailableProperties with valid item_id pointer.
-        unsafe {
+        let result = unsafe {
             self.interface()?.QueryAvailableProperties(
                 item_id.as_pcwstr(),
                 &mut count,
                 property_ids.as_mut_ptr(),
                 descriptions.as_mut_ptr(),
                 datatypes.as_mut_ptr(),
-            )?;
-        }
+            )
+        };
 
         if count > 0 {
             // SAFETY: Updating array lengths based on count returned by QueryAvailableProperties.
@@ -63,6 +63,10 @@ pub trait ItemPropertiesTrait {
                 datatypes.set_len(count);
             }
         }
+        result?;
+        property_ids.validate_output("QueryAvailableProperties property IDs")?;
+        descriptions.validate_output("QueryAvailableProperties descriptions")?;
+        datatypes.validate_output("QueryAvailableProperties data types")?;
 
         Ok((property_ids, descriptions, datatypes))
     }
@@ -94,7 +98,8 @@ pub trait ItemPropertiesTrait {
 
         let item_id = LocalPointer::from(item_id);
 
-        let mut values = RemoteArray::new(property_ids.len().try_into()?);
+        let mut values =
+            RemoteArray::new_with_cleanup(property_ids.len().try_into()?, clear_variant);
         let mut errors = RemoteArray::new(property_ids.len().try_into()?);
 
         // SAFETY: Calling COM interface method GetItemProperties with valid item_id pointer and property IDs.
@@ -107,6 +112,8 @@ pub trait ItemPropertiesTrait {
                 errors.as_mut_ptr(),
             )?;
         }
+        values.validate_output("GetItemProperties values")?;
+        errors.validate_output("GetItemProperties errors")?;
 
         Ok((values, errors))
     }
@@ -138,7 +145,8 @@ pub trait ItemPropertiesTrait {
 
         let item_id = LocalPointer::from(item_id);
 
-        let mut new_item_ids = RemoteArray::new(property_ids.len().try_into()?);
+        let mut new_item_ids =
+            RemoteArray::new_with_cleanup(property_ids.len().try_into()?, clear_pwstr);
         let mut errors = RemoteArray::new(property_ids.len().try_into()?);
 
         // SAFETY: Calling COM interface method LookupItemIDs with valid item_id pointer and property IDs.
@@ -151,6 +159,8 @@ pub trait ItemPropertiesTrait {
                 errors.as_mut_ptr(),
             )?;
         }
+        new_item_ids.validate_output("LookupItemIDs item IDs")?;
+        errors.validate_output("LookupItemIDs errors")?;
 
         Ok((new_item_ids, errors))
     }

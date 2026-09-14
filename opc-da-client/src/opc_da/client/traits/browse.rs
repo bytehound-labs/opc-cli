@@ -3,6 +3,7 @@ use crate::bindings::da::{
 };
 use crate::opc_da::com_utils::{LocalPointer, RemoteArray, RemotePointer};
 use crate::opc_da::errors::{OpcError, OpcResult};
+use crate::opc_da::typedefs::{clear_browse_element, clear_item_properties};
 use windows::core::{Interface, PCWSTR, PWSTR};
 
 /// Calls `IOPCBrowse::Browse` with the ABI-required null property-ID pointer.
@@ -81,7 +82,8 @@ pub trait BrowseTrait {
         let item_ptrs: LocalPointer<Vec<Vec<u16>>> = LocalPointer::from(item_ids);
         let item_ptrs = item_ptrs.as_pcwstr_array();
 
-        let mut results = RemoteArray::new(item_ids.len().try_into()?);
+        let mut results =
+            RemoteArray::new_with_cleanup(item_ids.len().try_into()?, clear_item_properties);
 
         // SAFETY: Calling COM interface method GetProperties with valid array pointers and handles.
         unsafe {
@@ -93,6 +95,7 @@ pub trait BrowseTrait {
                 results.as_mut_ptr(),
             )?;
         }
+        results.validate_output("IOPCBrowse::GetProperties results")?;
 
         Ok(results)
     }
@@ -144,9 +147,14 @@ pub trait BrowseTrait {
             RemotePointer::from_option(continuation_point.as_ref().map(|v| v.as_ref()));
         let mut more_elements = false.into();
         let mut count = 0;
-        let mut elements = RemoteArray::empty();
+        let mut elements = if max_elements == 0 {
+            RemoteArray::with_capacity_and_cleanup(0, clear_browse_element)
+        } else {
+            RemoteArray::with_capacity_and_cleanup(max_elements, clear_browse_element)
+        };
+        let previous_continuation = continuation_point.as_ptr();
 
-        if property_ids.is_empty() {
+        let result = if property_ids.is_empty() {
             browse_with_null_property_ids(
                 self.interface()?,
                 item_id.as_pcwstr(),
@@ -160,7 +168,7 @@ pub trait BrowseTrait {
                 &mut more_elements,
                 &mut count,
                 elements.as_mut_ptr(),
-            )?;
+            )
         } else {
             // SAFETY: Calling the generated COM interface method with valid strings,
             // property IDs, and output pointers.
@@ -178,14 +186,18 @@ pub trait BrowseTrait {
                     &mut more_elements,
                     &mut count,
                     elements.as_mut_ptr(),
-                )?;
+                )
             }
-        }
+        };
 
-        if count > 0 {
-            // SAFETY: Updating array length based on count returned by Browse.
-            unsafe { elements.set_len(count) };
-        }
+        // SAFETY: Browse reports the number of initialized elements through
+        // `count`; RemoteArray clamps cleanup to the requested capacity.
+        unsafe { elements.set_len(count) };
+        // SAFETY: previous_continuation was owned by continuation_point before
+        // the in/out COM call and is no longer referenced if COM replaced it.
+        unsafe { continuation_point.free_replaced(previous_continuation) };
+        result?;
+        elements.validate_output("IOPCBrowse::Browse elements")?;
 
         Ok((
             more_elements.into(),

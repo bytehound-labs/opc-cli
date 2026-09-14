@@ -179,6 +179,23 @@ pub fn run_inventory<C: ServerConnector>(
     control: &InventoryControl,
     sender: &mpsc::Sender<OpcResult<InventoryEvent>>,
 ) -> OpcResult<()> {
+    run_inventory_from_path(connector, server_name, options, control, sender, None)
+}
+
+/// Traverse one server starting at a diagnostic-only DA2 browse path.
+///
+/// The stable inventory API always starts at the namespace root. This internal
+/// variant exists for the native canary so a known branch can be tested without
+/// waiting for a breadth-first root traversal to reach it.
+#[allow(clippy::too_many_lines)]
+pub fn run_inventory_from_path<C: ServerConnector>(
+    connector: &C,
+    server_name: &str,
+    options: InventoryOptions,
+    control: &InventoryControl,
+    sender: &mpsc::Sender<OpcResult<InventoryEvent>>,
+    start_path: Option<&[String]>,
+) -> OpcResult<()> {
     if options.batch_size == 0 || options.batch_size > crate::provider::MAX_INVENTORY_BATCH_SIZE {
         return Err(OpcError::InvalidState(format!(
             "Inventory batch size must be between 1 and {}",
@@ -208,7 +225,7 @@ pub fn run_inventory<C: ServerConnector>(
             Err(InventoryError::Failed(error)) => return Err(error),
         }
     };
-    let mut queue = VecDeque::from([initial_work(capabilities)]);
+    let mut queue = VecDeque::from([initial_work(capabilities, start_path)?]);
     let mut seen_items = HashSet::new();
     let mut current_da2_path = Vec::new();
     let mut branches_visited = 0_u64;
@@ -295,7 +312,7 @@ pub fn run_inventory<C: ServerConnector>(
                     terminal.capabilities.supports_da3 = false;
                     branches_visited = branches_visited.saturating_sub(1);
                     queue.clear();
-                    queue.push_back(initial_work(terminal.capabilities));
+                    queue.push_back(initial_work(terminal.capabilities, None)?);
                     current_da2_path.clear();
                     continue;
                 }
@@ -439,18 +456,33 @@ pub fn run_inventory<C: ServerConnector>(
     Ok(())
 }
 
-fn initial_work(capabilities: BrowseCapabilities) -> BranchWork {
-    let location = if capabilities.supports_da3 {
-        BranchLocation::Da3(None)
+fn initial_work(
+    capabilities: BrowseCapabilities,
+    start_path: Option<&[String]>,
+) -> Result<BranchWork, OpcError> {
+    let (location, breadcrumbs) = if let Some(path) = start_path {
+        if path.is_empty() {
+            return Err(OpcError::InvalidState(
+                "diagnostic inventory start path cannot be empty".to_string(),
+            ));
+        }
+        if !capabilities.supports_da2 {
+            return Err(OpcError::InvalidState(
+                "diagnostic inventory start paths require an OPC DA 2.x browse server".to_string(),
+            ));
+        }
+        (BranchLocation::Da2(path.to_vec()), path.to_vec())
+    } else if capabilities.supports_da3 {
+        (BranchLocation::Da3(None), Vec::new())
     } else {
-        BranchLocation::Da2(Vec::new())
+        (BranchLocation::Da2(Vec::new()), Vec::new())
     };
-    BranchWork {
+    Ok(BranchWork {
         location,
-        breadcrumbs: Vec::new(),
+        breadcrumbs,
         da3_continuation: None,
         da2_state: None,
-    }
+    })
 }
 
 fn is_initial_da3_root(work: &BranchWork) -> bool {
@@ -1692,6 +1724,91 @@ mod tests {
         assert_eq!(entries[0].kind, BrowseNodeKind::BranchAndItem);
         assert!(completed.is_some_and(|value| value.complete));
         assert!(error.is_none());
+    }
+
+    #[test]
+    fn targeted_da2_inventory_starts_at_path_and_preserves_breadcrumbs() {
+        let connector = Arc::new(SharedConnector {
+            server: Arc::new(Mutex::new(Some(Da2SemanticsServer::default()))),
+        });
+        let (sender, mut receiver) = mpsc::channel(16);
+        let start_path = vec!["Pump".to_string()];
+
+        run_inventory_from_path(
+            connector.as_ref(),
+            "test",
+            InventoryOptions {
+                batch_size: 1,
+                max_entries: None,
+            },
+            &InventoryControl::new(),
+            &sender,
+            Some(&start_path),
+        )
+        .unwrap();
+
+        let (entries, completed, error) = collect(&mut receiver);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].item_id, "Pump.PV");
+        assert_eq!(entries[0].breadcrumbs, start_path);
+        assert!(completed.is_some_and(|value| value.complete));
+        assert!(error.is_none());
+    }
+
+    #[test]
+    fn targeted_da2_inventory_rejects_empty_paths() {
+        let connector = Arc::new(SharedConnector {
+            server: Arc::new(Mutex::new(Some(Da2SemanticsServer::default()))),
+        });
+        let (sender, _receiver) = mpsc::channel(8);
+        let empty_path = Vec::new();
+
+        let result = run_inventory_from_path(
+            connector.as_ref(),
+            "test",
+            InventoryOptions::default(),
+            &InventoryControl::new(),
+            &sender,
+            Some(&empty_path),
+        );
+
+        assert!(matches!(
+            result,
+            Err(OpcError::InvalidState(message))
+                if message.contains("start path cannot be empty")
+        ));
+    }
+
+    #[test]
+    fn targeted_da2_inventory_requires_da2_browse_support() {
+        let connector = Arc::new(SharedConnector {
+            server: Arc::new(Mutex::new(Some(Da3Server {
+                total: 1,
+                browse_calls: Arc::new(AtomicUsize::new(0)),
+                batch_sizes: Arc::new(Mutex::new(Vec::new())),
+                fail: false,
+                da3_hresult: None,
+                supports_da2: false,
+                da2_items: Vec::new(),
+            }))),
+        });
+        let (sender, _receiver) = mpsc::channel(8);
+        let start_path = vec!["Pump".to_string()];
+
+        let result = run_inventory_from_path(
+            connector.as_ref(),
+            "test",
+            InventoryOptions::default(),
+            &InventoryControl::new(),
+            &sender,
+            Some(&start_path),
+        );
+
+        assert!(matches!(
+            result,
+            Err(OpcError::InvalidState(message))
+                if message.contains("require an OPC DA 2.x browse server")
+        ));
     }
 
     #[test]

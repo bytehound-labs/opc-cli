@@ -1,9 +1,10 @@
 #[cfg(feature = "opc-da-backend")]
 use crate::opc_da::client::ClientTrait;
+use crate::opc_da::com_utils::RemotePointer;
 use crate::opc_da::errors::{OpcError, OpcResult};
 use crate::provider::OpcValue;
 use windows::Win32::Foundation::{FILETIME, VARIANT_BOOL};
-use windows::Win32::System::Com::{CLSIDFromProgID, CoTaskMemFree, ProgIDFromCLSID};
+use windows::Win32::System::Com::{CLSIDFromProgID, ProgIDFromCLSID};
 use windows::Win32::System::Ole::{
     SafeArrayAccessData, SafeArrayGetDim, SafeArrayGetElemsize, SafeArrayGetLBound,
     SafeArrayGetUBound, SafeArrayUnaccessData,
@@ -29,24 +30,19 @@ const _: () = assert!(
 /// Helper to convert GUID to `ProgID` using Windows API
 pub fn guid_to_progid(guid: &windows::core::GUID) -> OpcResult<String> {
     // SAFETY: `ProgIDFromCLSID` is a Win32 FFI call that allocates a PWSTR via COM allocator.
-    // SAFETY: We read it and free it with `CoTaskMemFree` before returning.
+    // SAFETY: The returned pointer is immediately transferred to its RAII owner.
     unsafe {
         let progid = ProgIDFromCLSID(guid)
             .map_err(|e| OpcError::Internal(format!("Failed to get ProgID from CLSID: {e}")))?;
-
-        let result = if progid.is_null() {
-            String::new()
+        // SAFETY: ProgIDFromCLSID transfers ownership of this COM task allocation.
+        let progid = RemotePointer::from_raw(progid.as_ptr());
+        if progid.as_ptr().is_null() {
+            Ok(String::new())
         } else {
             progid
-                .to_string()
-                .map_err(|e| OpcError::Conversion(format!("Failed into convert PWSTR: {e}")))?
-        };
-
-        if !progid.is_null() {
-            CoTaskMemFree(Some(progid.as_ptr() as *const _));
+                .try_into()
+                .map_err(|e| OpcError::Conversion(format!("Failed to convert PWSTR: {e}")))
         }
-
-        Ok(result)
     }
 }
 
@@ -112,12 +108,34 @@ fn variant_to_string_with_bstr_quotes(variant: &VARIANT, quote_bstr: bool) -> St
                         }
                         let _ = SafeArrayUnaccessData(parray);
                     }
+                } else if base_type == VT_BSTR.0 {
+                    let mut data_ptr: *mut std::ffi::c_void = std::ptr::null_mut();
+                    if SafeArrayAccessData(parray, &raw mut data_ptr).is_ok() {
+                        #[allow(clippy::cast_sign_loss)]
+                        let strings = std::slice::from_raw_parts(
+                            data_ptr as *const *const u16,
+                            count as usize,
+                        );
+                        #[allow(clippy::cast_sign_loss)]
+                        for raw in strings.iter().take(display_count as usize) {
+                            // SAFETY: SAFEARRAY owns each BSTR. ManuallyDrop makes
+                            // this a borrow-only view so formatting cannot free it.
+                            let borrowed = std::mem::ManuallyDrop::new(BSTR::from_raw(*raw));
+                            let value = String::from_utf16_lossy(&borrowed);
+                            elements.push(if quote_bstr {
+                                format!("\"{value}\"")
+                            } else {
+                                value
+                            });
+                        }
+                        let _ = SafeArrayUnaccessData(parray);
+                    }
                 } else {
                     let elem_size = SafeArrayGetElemsize(parray) as usize;
                     let mut data_ptr: *mut std::ffi::c_void = std::ptr::null_mut();
                     if SafeArrayAccessData(parray, &raw mut data_ptr).is_ok() {
                         for i in 0..display_count {
-                            let mut temp_var = VARIANT::default();
+                            let mut temp_var = std::mem::ManuallyDrop::new(VARIANT::default());
                             (*temp_var.Anonymous.Anonymous).vt =
                                 windows::Win32::System::Variant::VARENUM(base_type);
 
@@ -737,6 +755,91 @@ mod tests {
             };
 
             assert_eq!(variant_to_string(&v), "[10, 20, 30]");
+        }
+    }
+
+    #[test]
+    fn test_variant_to_string_safearray_bstr_borrows_elements() {
+        use std::ffi::c_void;
+        use std::mem::ManuallyDrop;
+        use windows::Win32::System::Ole::{
+            SafeArrayAccessData, SafeArrayCreateVector, SafeArrayUnaccessData,
+        };
+        use windows::Win32::System::Variant::{
+            VARENUM, VARIANT, VARIANT_0, VARIANT_0_0, VT_ARRAY, VT_BSTR,
+        };
+
+        let contents = ["", "A\"B", r"C:\path", "line\n\t\u{1}"];
+        // SAFETY: The SAFEARRAY owns the raw BSTRs installed in its data slots.
+        unsafe {
+            let parray = SafeArrayCreateVector(VT_BSTR, 0, u32::try_from(contents.len()).unwrap());
+            assert!(!parray.is_null());
+            let mut data: *mut c_void = core::ptr::null_mut();
+            SafeArrayAccessData(parray, &raw mut data).unwrap();
+            let slots = core::slice::from_raw_parts_mut(data.cast::<*const u16>(), contents.len());
+            for (slot, content) in slots.iter_mut().zip(contents) {
+                *slot = BSTR::from(content).into_raw();
+            }
+            SafeArrayUnaccessData(parray).unwrap();
+
+            let mut middle = VARIANT_0_0 {
+                vt: VARENUM(VT_ARRAY.0 | VT_BSTR.0),
+                ..Default::default()
+            };
+            middle.Anonymous.parray = parray;
+            let variant = VARIANT {
+                Anonymous: VARIANT_0 {
+                    Anonymous: ManuallyDrop::new(middle),
+                },
+            };
+
+            assert_eq!(
+                variant_to_string(&variant),
+                "[, A\"B, C:\\path, line\n\t\u{1}]"
+            );
+            assert_eq!(
+                variant_to_display_string(&variant),
+                "[\"\", \"A\"B\", \"C:\\path\", \"line\n\t\u{1}\"]"
+            );
+        }
+    }
+
+    #[test]
+    fn test_variant_to_string_multidimensional_bstr_safearray() {
+        use std::mem::ManuallyDrop;
+        use windows::Win32::System::Com::SAFEARRAYBOUND;
+        use windows::Win32::System::Ole::SafeArrayCreate;
+        use windows::Win32::System::Variant::{
+            VARENUM, VARIANT, VARIANT_0, VARIANT_0_0, VT_ARRAY, VT_BSTR,
+        };
+
+        // SAFETY: The bounds describe a valid empty-initialized 2x2 BSTR array,
+        // which is owned and released by the enclosing VARIANT.
+        unsafe {
+            let bounds = [
+                SAFEARRAYBOUND {
+                    cElements: 2,
+                    lLbound: 0,
+                },
+                SAFEARRAYBOUND {
+                    cElements: 2,
+                    lLbound: 0,
+                },
+            ];
+            let parray = SafeArrayCreate(VT_BSTR, 2, bounds.as_ptr());
+            assert!(!parray.is_null());
+            let mut middle = VARIANT_0_0 {
+                vt: VARENUM(VT_ARRAY.0 | VT_BSTR.0),
+                ..Default::default()
+            };
+            middle.Anonymous.parray = parray;
+            let variant = VARIANT {
+                Anonymous: VARIANT_0 {
+                    Anonymous: ManuallyDrop::new(middle),
+                },
+            };
+
+            assert_eq!(variant_to_string(&variant), "Array[2D]");
         }
     }
 

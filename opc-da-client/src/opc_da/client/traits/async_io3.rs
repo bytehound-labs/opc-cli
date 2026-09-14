@@ -1,7 +1,7 @@
 use crate::opc_da::{
     com_utils::RemoteArray,
     errors::{OpcError, OpcResult},
-    typedefs::ItemHandle,
+    typedefs::{ItemHandle, OwnedItemVqt},
 };
 
 /// Asynchronous I/O functionality (OPC DA 3.0).
@@ -64,7 +64,7 @@ pub trait AsyncIo3Trait {
     fn write_vqt(
         &self,
         server_handles: &[ItemHandle],
-        values: &[crate::bindings::da::tagOPCITEMVQT],
+        values: &[OwnedItemVqt],
         transaction_id: u32,
     ) -> OpcResult<(u32, RemoteArray<windows::core::HRESULT>)> {
         if server_handles.len() != values.len() {
@@ -83,7 +83,7 @@ pub trait AsyncIo3Trait {
             self.interface()?.WriteVQT(
                 len,
                 server_handles.as_ptr() as *const u32,
-                values.as_ptr(),
+                OwnedItemVqt::as_native_slice(values).as_ptr(),
                 transaction_id,
                 &mut cancel_id,
                 errors.as_mut_ptr(),

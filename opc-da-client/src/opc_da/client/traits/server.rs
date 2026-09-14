@@ -4,7 +4,7 @@ use crate::opc_da::{
     client::{GroupIterator, StringIterator},
     com_utils::{LocalPointer, RemotePointer},
     errors::{OpcError, OpcResult},
-    typedefs::GroupHandle,
+    typedefs::{GroupHandle, clear_server_status},
 };
 
 /// OPC Server management functionality.
@@ -86,9 +86,21 @@ pub trait ServerTrait<Group: TryFrom<windows::core::IUnknown, Error = windows::c
     /// Server status structure containing vendor info, time, state,
     /// and group counts
     fn get_status(&self) -> OpcResult<RemotePointer<crate::bindings::da::tagOPCSERVERSTATUS>> {
-        // SAFETY: Calling COM interface method GetStatus.
-        let status = unsafe { self.interface()?.GetStatus()? };
-        Ok(RemotePointer::from_raw(status))
+        let interface = self.interface()?;
+        // SAFETY: The wrapper receives ownership of any pointer written by GetStatus.
+        let mut status = unsafe {
+            RemotePointer::from_raw_with_cleanup(core::ptr::null_mut(), clear_server_status)
+        };
+        // SAFETY: The output pointer remains owned by status even when COM
+        // returns an error after allocating a partial result.
+        unsafe {
+            (windows::core::Interface::vtable(interface).GetStatus)(
+                windows::core::Interface::as_raw(interface),
+                status.as_mut_ptr(),
+            )
+            .ok()?;
+        }
+        Ok(status)
     }
 
     /// Removes a group from the server.

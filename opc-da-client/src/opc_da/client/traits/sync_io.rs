@@ -1,7 +1,7 @@
 use crate::opc_da::{
     com_utils::RemoteArray,
     errors::{OpcError, OpcResult},
-    typedefs::ItemHandle,
+    typedefs::{ItemHandle, clear_item_state},
 };
 use windows::Win32::System::Variant::VARIANT;
 
@@ -41,7 +41,7 @@ pub trait SyncIoTrait {
 
         let len = server_handles.len().try_into()?;
 
-        let mut item_values = RemoteArray::new(len);
+        let mut item_values = RemoteArray::new_with_cleanup(len, clear_item_state);
         let mut errors = RemoteArray::new(len);
 
         // SAFETY: Calling COM interface method Read with valid server handle and output array pointers.
@@ -54,6 +54,8 @@ pub trait SyncIoTrait {
                 errors.as_mut_ptr(),
             )?;
         }
+        item_values.validate_output("IOPCSyncIO::Read values")?;
+        errors.validate_output("IOPCSyncIO::Read errors")?;
 
         Ok((item_values, errors))
     }
@@ -99,6 +101,7 @@ pub trait SyncIoTrait {
                 errors.as_mut_ptr(),
             )?;
         }
+        errors.validate_output("IOPCSyncIO::Write errors")?;
 
         Ok(errors)
     }

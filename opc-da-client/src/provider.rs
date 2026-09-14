@@ -481,14 +481,35 @@ impl InventoryControl {
 pub struct InventoryStream {
     receiver: mpsc::Receiver<OpcResult<InventoryEvent>>,
     control: InventoryControl,
-    worker: Option<std::thread::JoinHandle<()>>,
+    worker: Option<std::thread::JoinHandle<InventoryWorkerExit>>,
+}
+
+#[derive(Debug)]
+pub enum InventoryWorkerExit {
+    Returned,
+    Panicked { payload_type: &'static str },
+}
+
+/// Result of joining a native inventory worker.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InventoryWorkerJoin {
+    /// The worker returned normally, whether inventory completed or reported
+    /// an operation error through the stream.
+    Returned,
+    /// The worker caught a panic inside its native panic boundary.
+    CaughtPanic {
+        /// The Rust panic payload type, without exposing its contents.
+        payload_type: &'static str,
+    },
+    /// The worker panicked outside its native panic boundary.
+    UncaughtPanic,
 }
 
 impl InventoryStream {
     pub(crate) fn new(
         receiver: mpsc::Receiver<OpcResult<InventoryEvent>>,
         control: InventoryControl,
-        worker: std::thread::JoinHandle<()>,
+        worker: std::thread::JoinHandle<InventoryWorkerExit>,
     ) -> Self {
         Self {
             receiver,
@@ -535,17 +556,53 @@ impl InventoryStream {
     pub fn set_batch_size(&self, batch_size: u32) -> OpcResult<()> {
         self.control.set_batch_size(batch_size)
     }
+
+    /// Return whether the native worker has finished and can be joined without
+    /// blocking for an unbounded native operation.
+    pub fn worker_finished(&self) -> bool {
+        match self.worker.as_ref() {
+            Some(worker) => worker.is_finished(),
+            None => true,
+        }
+    }
+
+    /// Join the native inventory worker and report whether it returned normally.
+    ///
+    /// Call this after consuming the terminal [`InventoryEvent::Completed`] or
+    /// stream error. The worker is joined at most once; a repeated call is
+    /// treated as a successful no-op.
+    ///
+    pub fn join_worker(&mut self) -> InventoryWorkerJoin {
+        self.receiver.close();
+        self.control.cancel();
+        let Some(worker) = self.worker.take() else {
+            return InventoryWorkerJoin::Returned;
+        };
+
+        match worker.join() {
+            Ok(InventoryWorkerExit::Returned) => InventoryWorkerJoin::Returned,
+            Ok(InventoryWorkerExit::Panicked { payload_type }) => {
+                InventoryWorkerJoin::CaughtPanic { payload_type }
+            }
+            Err(_) => InventoryWorkerJoin::UncaughtPanic,
+        }
+    }
+
+    /// Abandon the native worker handle after a bounded diagnostic grace period.
+    ///
+    /// Rust cannot safely terminate a thread blocked inside a native COM call.
+    /// Dropping the handle lets the diagnostic process exit while the worker
+    /// finishes independently or is terminated with the process.
+    pub fn detach_worker(&mut self) {
+        self.receiver.close();
+        self.control.cancel();
+        let _ = self.worker.take();
+    }
 }
 
 impl Drop for InventoryStream {
     fn drop(&mut self) {
-        // Close the receiver before joining so a worker blocked on a full
-        // event channel can observe the disconnect and finish.
-        self.receiver.close();
-        self.control.cancel();
-        if let Some(worker) = self.worker.take() {
-            let _ = worker.join();
-        }
+        let _ = self.join_worker();
     }
 }
 
@@ -565,10 +622,52 @@ mod inventory_stream_tests {
                 std::thread::yield_now();
             }
             worker_finished.store(true, Ordering::Release);
+            InventoryWorkerExit::Returned
         });
 
         drop(InventoryStream::new(receiver, control, worker));
         assert!(finished.load(Ordering::Acquire));
+    }
+
+    #[test]
+    fn joining_inventory_stream_reports_worker_panic() {
+        let control = InventoryControl::new();
+        let (_sender, receiver) = mpsc::channel(1);
+        let worker = std::thread::spawn(|| -> InventoryWorkerExit {
+            panic!("inventory worker test panic");
+        });
+
+        let mut stream = InventoryStream::new(receiver, control, worker);
+        assert_eq!(stream.join_worker(), InventoryWorkerJoin::UncaughtPanic);
+    }
+
+    #[test]
+    fn joining_inventory_stream_reports_caught_worker_panic() {
+        let control = InventoryControl::new();
+        let (_sender, receiver) = mpsc::channel(1);
+        let worker = std::thread::spawn(|| InventoryWorkerExit::Panicked {
+            payload_type: "String",
+        });
+
+        let mut stream = InventoryStream::new(receiver, control, worker);
+        assert_eq!(
+            stream.join_worker(),
+            InventoryWorkerJoin::CaughtPanic {
+                payload_type: "String"
+            }
+        );
+    }
+
+    #[test]
+    fn joining_inventory_stream_is_idempotent_after_the_worker_is_consumed() {
+        let control = InventoryControl::new();
+        let (_sender, receiver) = mpsc::channel(1);
+        let worker = std::thread::spawn(|| InventoryWorkerExit::Returned);
+
+        let mut stream = InventoryStream::new(receiver, control, worker);
+        assert_eq!(stream.join_worker(), InventoryWorkerJoin::Returned);
+        assert_eq!(stream.join_worker(), InventoryWorkerJoin::Returned);
+        assert!(stream.worker_finished());
     }
 }
 

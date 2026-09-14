@@ -2,7 +2,7 @@ use crate::opc_da::{
     client::ItemAttributeIterator,
     com_utils::RemoteArray,
     errors::{OpcError, OpcResult},
-    typedefs::ItemHandle,
+    typedefs::{ItemHandle, clear_item_result},
 };
 use windows::core::Interface as _;
 
@@ -42,7 +42,7 @@ pub trait ItemMgtTrait {
             item_count = len,
             "Adding items to OPC group natively via IOPCItemMgt"
         );
-        let mut results = RemoteArray::new(len);
+        let mut results = RemoteArray::new_with_cleanup(len, clear_item_result);
         let mut errors = RemoteArray::new(len);
 
         // SAFETY: Calling COM interface method AddItems with valid item definition pointers and output arrays.
@@ -54,6 +54,8 @@ pub trait ItemMgtTrait {
                 errors.as_mut_ptr(),
             )?;
         }
+        results.validate_output("IOPCItemMgt::AddItems results")?;
+        errors.validate_output("IOPCItemMgt::AddItems errors")?;
 
         Ok((results, errors))
     }
@@ -81,7 +83,7 @@ pub trait ItemMgtTrait {
         }
 
         let len = items.len().try_into()?;
-        let mut results = RemoteArray::new(len);
+        let mut results = RemoteArray::new_with_cleanup(len, clear_item_result);
         let mut errors = RemoteArray::new(len);
 
         // SAFETY: Calling COM interface method ValidateItems with valid item definition pointers and output arrays.
@@ -94,6 +96,8 @@ pub trait ItemMgtTrait {
                 errors.as_mut_ptr(),
             )?;
         }
+        results.validate_output("IOPCItemMgt::ValidateItems results")?;
+        errors.validate_output("IOPCItemMgt::ValidateItems errors")?;
 
         Ok((results, errors))
     }

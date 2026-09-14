@@ -1,6 +1,7 @@
 use crate::opc_da::{
-    com_utils::{RemoteArray, RemotePointer, TryToLocal as _},
+    com_utils::{RemoteArray, RemotePointer, TryToLocal as _, clear_pwstr},
     errors::{OpcError, OpcResult},
+    typedefs::clear_item_attributes,
 };
 use windows::core::Interface as _;
 
@@ -103,6 +104,22 @@ impl StringIterator {
             done: false,
         }
     }
+
+    fn clear_cache(&mut self) {
+        for value in self.cache.iter_mut() {
+            // SAFETY: Each non-null cache slot is an IEnumString allocation
+            // still owned by this iterator. `clear_pwstr` nulls the slot.
+            unsafe { clear_pwstr(value) };
+        }
+        self.index = 0;
+        self.count = 0;
+    }
+}
+
+impl Drop for StringIterator {
+    fn drop(&mut self) {
+        self.clear_cache();
+    }
 }
 
 impl Iterator for StringIterator {
@@ -115,8 +132,7 @@ impl Iterator for StringIterator {
             }
 
             if self.index >= self.count {
-                // Zero the cache to prevent stale freed pointers (OPC-BUG-001)
-                self.cache.fill(windows::core::PWSTR::null());
+                self.clear_cache();
 
                 // SAFETY: Calling IEnumString::Next COM interface method with valid mutable cache slice and count pointer.
                 let code = unsafe {
@@ -136,10 +152,12 @@ impl Iterator for StringIterator {
                         validate_fetched_count(self.count, self.cache.len(), "IEnumString")
                     {
                         self.done = true;
+                        self.clear_cache();
                         return Some(Err(error));
                     }
                     if self.count == 0 {
                         self.done = true;
+                        self.clear_cache();
                         return None;
                     }
 
@@ -159,6 +177,7 @@ impl Iterator for StringIterator {
                     self.index = 0;
                 } else {
                     self.done = true;
+                    self.clear_cache();
                     return Some(Err(windows::core::Error::new(
                         code,
                         "Failed to get next string",
@@ -168,7 +187,10 @@ impl Iterator for StringIterator {
             }
 
             // Skip null PWSTR entries instead of producing E_POINTER (OPC-BUG-001)
-            let pwstr = self.cache[self.index as usize];
+            let pwstr = core::mem::replace(
+                &mut self.cache[self.index as usize],
+                windows::core::PWSTR::null(),
+            );
             self.index += 1;
 
             if pwstr.is_null() {
@@ -180,7 +202,8 @@ impl Iterator for StringIterator {
                 continue; // Loop back to try the next entry
             }
 
-            let current = RemotePointer::from(pwstr);
+            // SAFETY: IEnumString transfers ownership of each returned string.
+            let current = unsafe { RemotePointer::from_raw(pwstr.as_ptr()) };
             return Some(current.try_into().map_err(OpcError::from));
         }
     }
@@ -289,7 +312,10 @@ impl Iterator for ItemAttributeIterator {
         }
 
         if self.index >= self.cache.len() {
-            let mut attrs = RemoteArray::new(MAX_CACHE_SIZE as u32);
+            let mut attrs = RemoteArray::with_capacity_and_cleanup(
+                MAX_CACHE_SIZE as u32,
+                clear_item_attributes,
+            );
 
             // SAFETY: Calling IEnumOPCItemAttributes::Next COM interface method with valid output array pointers.
             let result = unsafe {
@@ -302,6 +328,10 @@ impl Iterator for ItemAttributeIterator {
 
             match result {
                 Ok(_) => {
+                    if let Err(error) = attrs.validate_output("IEnumOPCItemAttributes::Next") {
+                        self.done = true;
+                        return Some(Err(error.into()));
+                    }
                     if attrs.is_empty() {
                         self.done = true;
                         return None;
@@ -418,6 +448,29 @@ mod tests {
         }
 
         assert_eq!(results, items);
+    }
+
+    #[test]
+    fn string_iterator_drop_releases_unconsumed_cache_entries() {
+        let cleanup_before = crate::opc_da::com_utils::PWSTR_CLEANUP_COUNT
+            .load(std::sync::atomic::Ordering::Relaxed);
+
+        {
+            let mock_enum: IEnumString = MockEnumString {
+                items: vec!["first".to_string(), "second".to_string()],
+                index: std::sync::atomic::AtomicUsize::new(0),
+            }
+            .into();
+
+            let mut iter = StringIterator::new(mock_enum);
+            assert_eq!(iter.next().unwrap().unwrap(), "first");
+            assert!(iter.cache[0].is_null());
+            assert!(!iter.cache[1].is_null());
+        }
+
+        let cleanup_after = crate::opc_da::com_utils::PWSTR_CLEANUP_COUNT
+            .load(std::sync::atomic::Ordering::Relaxed);
+        assert!(cleanup_after > cleanup_before);
     }
 
     /// Mock that writes only `valid_count` items but claims `pceltFetched = claimed_count`,

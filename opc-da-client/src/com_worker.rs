@@ -833,7 +833,15 @@ mod tests {
             unsafe {
                 std::ptr::write(res_ptr, res);
             }
-            let res_array = RemoteArray::from_mut_ptr(res_ptr, 1);
+            // SAFETY: res_ptr is a one-element COM task allocation initialized
+            // above, and ownership transfers to the returned array.
+            let res_array = unsafe {
+                RemoteArray::from_mut_ptr_with_cleanup(
+                    res_ptr,
+                    1,
+                    crate::opc_da::typedefs::clear_item_result,
+                )
+            };
 
             let err_ptr = unsafe {
                 windows::Win32::System::Com::CoTaskMemAlloc(std::mem::size_of::<
@@ -843,7 +851,8 @@ mod tests {
             unsafe {
                 std::ptr::write(err_ptr, S_OK);
             }
-            let err_array = RemoteArray::from_mut_ptr(err_ptr, 1);
+            // SAFETY: err_ptr is a one-element initialized COM task allocation.
+            let err_array = unsafe { RemoteArray::from_mut_ptr(err_ptr, 1) };
 
             Ok((res_array, err_array))
         }
@@ -883,8 +892,17 @@ mod tests {
             }
 
             Ok((
-                RemoteArray::from_mut_ptr(state_ptr, 1),
-                RemoteArray::from_mut_ptr(error_ptr, 1),
+                // SAFETY: state_ptr is a one-element initialized COM task
+                // allocation whose nested VARIANT uses the supplied cleanup.
+                unsafe {
+                    RemoteArray::from_mut_ptr_with_cleanup(
+                        state_ptr,
+                        1,
+                        crate::opc_da::typedefs::clear_item_state,
+                    )
+                },
+                // SAFETY: error_ptr is a one-element initialized COM task allocation.
+                unsafe { RemoteArray::from_mut_ptr(error_ptr, 1) },
             ))
         }
 
@@ -921,7 +939,8 @@ mod tests {
                 std::ptr::write(hr_ptr, hr);
             }
 
-            Ok(RemoteArray::from_mut_ptr(hr_ptr, 1))
+            // SAFETY: hr_ptr is a one-element initialized COM task allocation.
+            Ok(unsafe { RemoteArray::from_mut_ptr(hr_ptr, 1) })
         }
     }
 

@@ -24,8 +24,9 @@ See **[bytehound-opc-da-client architecture.md](./opc-da-client/architecture.md)
 - **Tag Write Support**: Write typed values (int, float, bool, string) to individual tags.
 - **Search & Filter**: Substring search with `Tab`/`Shift+Tab` cycling through matches.
 - **Rich Error Hints**: Human-readable explanations for cryptic Windows COM/DCOM HRESULT codes.
-- **Transparent COM Management**: COM initialization and apartment thread affinity are handled automatically by a dedicated worker; hosts performing additional COM work can initialize their own thread with `ComGuard`.
+- **Transparent COM Management**: COM initialization, apartment thread affinity, single-owner native result conversion, owned VQT write values, and nested allocation cleanup are handled automatically by a dedicated worker; hosts performing additional COM work can initialize their own thread with `ComGuard`.
 - **Mockable Backend**: Unit-test the TUI on any OS without a live OPC server.
+- **Opt-in Native Read Canary**: `bytehound-opc-da-client`'s `dev-diagnostics` feature provides a read-only direct-COM canary with JSON Lines output and a normal-worker comparison.
 
 ## 🚀 Getting Started
 
@@ -50,6 +51,38 @@ cargo run --bin opc-cli -- -vv
 # Run the full verification gate (format → lint → test)
 pwsh -File scripts/verify.ps1
 ```
+
+### Native OPC DA Diagnostics
+
+On a Windows host with the target OPC server registered, run the feature-gated,
+non-interactive canary with a ProgID and one or more exact ItemIDs:
+
+```powershell
+cargo run -p bytehound-opc-da-client --example native_read_canary --features dev-diagnostics -- Yokogawa.CSHIS_OPC.1 FCS0201!204FI00510.PV
+```
+
+The JSON Lines output reports native server/group/item metadata, explicit device and cache
+reads over two server-revised update intervals, HRESULT text from Windows and the vendor,
+standard item properties when supported, group cleanup, and a comparison with the normal
+`OpcDaClient` worker read. The canary does not write tags and does not fall back from device
+reads to cache reads.
+
+The same example supports a bounded, read-only inventory mode:
+
+```powershell
+cargo run -p bytehound-opc-da-client --example native_read_canary --features dev-diagnostics -- `
+  inventory Yokogawa.CSHIS_OPC.1 `
+  --start-path FCS0219 --start-path 203FI02005 `
+  --batch-size 25 --max-entries 1000 --deadline-secs 60
+```
+
+Inventory output is JSON Lines with explicit terminal and worker-lifecycle records; channel
+EOF, stream errors, deadlines, and blocked-worker detachment are reported as failures rather
+than clean completion.
+Repeated `--start-path <COMPONENT>` values are a diagnostic-only DA2 starting path. This
+targeted mode preserves exact ItemIDs and breadcrumbs while testing a nested branch directly;
+without it, inventory starts at the namespace root and retains the stable provider API and
+normal production behavior.
 
 
 ## ⌨️ Controls

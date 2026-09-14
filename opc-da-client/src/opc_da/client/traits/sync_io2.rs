@@ -1,7 +1,7 @@
 use crate::opc_da::{
-    com_utils::RemoteArray,
+    com_utils::{RemoteArray, clear_variant},
     errors::{OpcError, OpcResult},
-    typedefs::ItemHandle,
+    typedefs::{ItemHandle, OwnedItemVqt},
 };
 use windows::Win32::System::Variant::VARIANT;
 
@@ -52,7 +52,7 @@ pub trait SyncIo2Trait {
 
         let len = server_handles.len().try_into()?;
 
-        let mut values = RemoteArray::new(len);
+        let mut values = RemoteArray::new_with_cleanup(len, clear_variant);
         let mut qualities = RemoteArray::new(len);
         let mut timestamps = RemoteArray::new(len);
         let mut errors = RemoteArray::new(len);
@@ -69,6 +69,10 @@ pub trait SyncIo2Trait {
                 errors.as_mut_ptr(),
             )?;
         }
+        values.validate_output("IOPCSyncIO2::ReadMaxAge values")?;
+        qualities.validate_output("IOPCSyncIO2::ReadMaxAge qualities")?;
+        timestamps.validate_output("IOPCSyncIO2::ReadMaxAge timestamps")?;
+        errors.validate_output("IOPCSyncIO2::ReadMaxAge errors")?;
 
         Ok((values, qualities, timestamps, errors))
     }
@@ -87,7 +91,7 @@ pub trait SyncIo2Trait {
     fn write_vqt(
         &self,
         server_handles: &[ItemHandle],
-        values: &[crate::bindings::da::tagOPCITEMVQT],
+        values: &[OwnedItemVqt],
     ) -> OpcResult<RemoteArray<windows::core::HRESULT>> {
         if server_handles.len() != values.len() {
             return Err(OpcError::InvalidState(
@@ -110,10 +114,11 @@ pub trait SyncIo2Trait {
             self.interface()?.WriteVQT(
                 len,
                 server_handles.as_ptr() as *const u32,
-                values.as_ptr(),
+                OwnedItemVqt::as_native_slice(values).as_ptr(),
                 errors.as_mut_ptr(),
             )?;
         }
+        errors.validate_output("IOPCSyncIO2::WriteVQT errors")?;
 
         Ok(errors)
     }

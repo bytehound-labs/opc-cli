@@ -355,7 +355,7 @@ Defined in § 1.1. See table above.
 | :--- | :--- | :--- |
 | `opc-da-backend` | ✅ Yes | Compiles the `backend::opc_da` module and exports `OpcDaClient`. |
 | `test-support` | ❌ No | Enables `mockall` and exports `MockOpcProvider`. |
-| `dev-diagnostics` | ❌ No | Compiles verbose TRACE-level operation argument dumps into backend methods. |
+| `dev-diagnostics` | ❌ No | Enables the read-only native OPC DA canary and its JSON Lines diagnostic output. |
 
 ---
 

@@ -1,7 +1,155 @@
 use crate::opc_da::com_utils::{
-    IntoBridge, LocalPointer, RemoteArray, ToNative, TryFromNative, TryToNative,
+    IntoBridge, LocalPointer, RemoteArray, ToNative, TryFromNative, TryToNative, clear_pwstr,
+    clear_variant, clone_variant, task_mem_allocation_bytes,
 };
 use crate::try_from_native;
+use windows::Win32::System::Com::CoTaskMemFree;
+
+unsafe fn copy_com_slice<T: Copy>(
+    pointer: *const T,
+    len: u32,
+    field: &str,
+) -> windows::core::Result<Vec<T>> {
+    if len == 0 {
+        return Ok(Vec::new());
+    }
+    if pointer.is_null() {
+        return Err(windows::core::Error::new(
+            windows::Win32::Foundation::E_POINTER,
+            format!("{field} pointer is null for {len} elements"),
+        ));
+    }
+    let len = usize::try_from(len).map_err(|_| {
+        windows::core::Error::new(
+            windows::Win32::Foundation::E_INVALIDARG,
+            format!("{field} length does not fit in usize"),
+        )
+    })?;
+    let byte_len = core::mem::size_of::<T>().checked_mul(len).ok_or_else(|| {
+        windows::core::Error::new(
+            windows::Win32::Foundation::E_INVALIDARG,
+            format!("{field} byte length overflows usize"),
+        )
+    })?;
+    if byte_len > isize::MAX as usize {
+        return Err(windows::core::Error::new(
+            windows::Win32::Foundation::E_INVALIDARG,
+            format!("{field} byte length exceeds isize::MAX"),
+        ));
+    }
+    let allocation_bytes =
+        unsafe { task_mem_allocation_bytes(pointer.cast::<core::ffi::c_void>()) }.ok_or_else(
+            || {
+                windows::core::Error::new(
+                    windows::Win32::Foundation::E_INVALIDARG,
+                    format!("{field} is not a valid COM task allocation"),
+                )
+            },
+        )?;
+    if byte_len > allocation_bytes {
+        return Err(windows::core::Error::new(
+            windows::Win32::Foundation::E_INVALIDARG,
+            format!(
+                "{field} requires {byte_len} bytes, but its COM allocation is only \
+                 {allocation_bytes} bytes"
+            ),
+        ));
+    }
+    // SAFETY: The caller supplies a COM-returned pointer and its element count.
+    Ok(unsafe { core::slice::from_raw_parts(pointer, len) }.to_vec())
+}
+
+unsafe fn clear_com_blob(pointer: &mut *mut u8) {
+    if !pointer.is_null() {
+        // SAFETY: OPC DA allocates returned blobs with the COM task allocator.
+        unsafe { CoTaskMemFree(Some(pointer.cast())) };
+        *pointer = core::ptr::null_mut();
+    }
+}
+
+pub(crate) unsafe fn clear_server_status(native: *mut crate::bindings::da::tagOPCSERVERSTATUS) {
+    // SAFETY: The caller provides a valid COM-returned server-status pointer.
+    unsafe { clear_pwstr(&mut (*native).szVendorInfo) };
+}
+
+pub(crate) unsafe fn clear_item_result(native: &mut crate::bindings::da::tagOPCITEMRESULT) {
+    // SAFETY: The blob is nested in this COM-returned item result.
+    unsafe { clear_com_blob(&mut native.pBlob) };
+    native.dwBlobSize = 0;
+}
+
+pub(crate) unsafe fn clear_item_state(native: &mut crate::bindings::da::tagOPCITEMSTATE) {
+    // SAFETY: The VARIANT is nested in this COM-returned item state.
+    unsafe { clear_variant(&mut native.vDataValue) };
+}
+
+pub(crate) unsafe fn clear_item_attributes(native: &mut crate::bindings::da::tagOPCITEMATTRIBUTES) {
+    // SAFETY: These allocations are nested in this COM-returned item-attributes value.
+    unsafe {
+        clear_pwstr(&mut native.szAccessPath);
+        clear_pwstr(&mut native.szItemID);
+        clear_com_blob(&mut native.pBlob);
+        clear_variant(&mut native.vEUInfo);
+    }
+    native.dwBlobSize = 0;
+}
+
+pub(crate) unsafe fn clear_item_property(native: &mut crate::bindings::da::tagOPCITEMPROPERTY) {
+    // OPC DA requires clients to release the returned strings and clear the
+    // VARIANT for every returned property, including per-property failures.
+    // SAFETY: These fields belong to the COM-returned property structure.
+    unsafe {
+        clear_pwstr(&mut native.szItemID);
+        clear_pwstr(&mut native.szDescription);
+        clear_variant(&mut native.vValue);
+    }
+}
+
+pub(crate) unsafe fn clear_item_properties(native: &mut crate::bindings::da::tagOPCITEMPROPERTIES) {
+    if !native.pItemProperties.is_null() {
+        let can_clear_properties = usize::try_from(native.dwNumProperties)
+            .ok()
+            .and_then(|count| {
+                count.checked_mul(core::mem::size_of::<crate::bindings::da::tagOPCITEMPROPERTY>())
+            })
+            .and_then(|required_bytes| {
+                (required_bytes <= isize::MAX as usize).then_some(required_bytes)
+            })
+            .is_some_and(|required_bytes| {
+                // SAFETY: pItemProperties is documented as a COM task allocation.
+                unsafe {
+                    task_mem_allocation_bytes(native.pItemProperties.cast())
+                        .is_some_and(|allocated_bytes| required_bytes <= allocated_bytes)
+                }
+            });
+        if can_clear_properties {
+            // SAFETY: OPC DA returns dwNumProperties initialized entries.
+            let properties = unsafe {
+                core::slice::from_raw_parts_mut(
+                    native.pItemProperties,
+                    native.dwNumProperties as usize,
+                )
+            };
+            for property in properties {
+                // SAFETY: Each nested property is cleared exactly once.
+                unsafe { clear_item_property(property) };
+            }
+        }
+        // SAFETY: OPC DA allocates the property array with the COM task allocator.
+        unsafe { CoTaskMemFree(Some(native.pItemProperties.cast())) };
+        native.pItemProperties = core::ptr::null_mut();
+    }
+    native.dwNumProperties = 0;
+}
+
+pub(crate) unsafe fn clear_browse_element(native: &mut crate::bindings::da::tagOPCBROWSEELEMENT) {
+    // SAFETY: These allocations are nested in this COM-returned browse element.
+    unsafe {
+        clear_pwstr(&mut native.szName);
+        clear_pwstr(&mut native.szItemID);
+        clear_item_properties(&mut native.ItemProperties);
+    }
+}
 
 /// Opaque handle for an OPC group.
 ///
@@ -201,9 +349,9 @@ impl TryFromNative<crate::bindings::da::tagOPCITEMRESULT> for ItemResult {
             server_handle: ItemHandle(native.hServer),
             data_type: native.vtCanonicalDataType,
             access_rights: native.dwAccessRights,
-            blob: RemoteArray::from_mut_ptr(native.pBlob, native.dwBlobSize)
-                .as_slice()
-                .to_vec(),
+            // SAFETY: This conversion borrows the blob. The containing remote
+            // item-result array remains responsible for freeing it.
+            blob: unsafe { copy_com_slice(native.pBlob, native.dwBlobSize, "item result blob")? },
         })
     }
 }
@@ -320,13 +468,15 @@ impl TryFromNative<crate::bindings::da::tagOPCITEMATTRIBUTES> for ItemAttributes
             client_handle: ItemHandle(native.hClient),
             server_handle: ItemHandle(native.hServer),
             access_rights: native.dwAccessRights,
-            blob: RemoteArray::from_mut_ptr(native.pBlob, native.dwBlobSize)
-                .as_slice()
-                .to_vec(),
+            // SAFETY: This conversion borrows the blob. The containing remote
+            // attributes array remains responsible for freeing it.
+            blob: unsafe {
+                copy_com_slice(native.pBlob, native.dwBlobSize, "item attributes blob")?
+            },
             requested_data_type: native.vtRequestedDataType,
             canonical_data_type: native.vtCanonicalDataType,
             eu_type: try_from_native!(&native.dwEUType),
-            eu_info: native.vEUInfo.clone(),
+            eu_info: clone_variant(&native.vEUInfo)?,
         })
     }
 }
@@ -368,7 +518,7 @@ impl TryFromNative<crate::bindings::da::tagOPCITEMSTATE> for ItemState {
             client_handle: ItemHandle(native.hClient),
             timestamp: try_from_native!(&native.ftTimeStamp),
             quality: native.wQuality,
-            data_value: native.vDataValue.clone(),
+            data_value: clone_variant(&native.vDataValue)?,
         })
     }
 }
@@ -442,6 +592,10 @@ impl
         ),
     ) -> windows::core::Result<Self> {
         let (values, qualities, timestamps, errors) = native;
+        values.validate_output("item values")?;
+        qualities.validate_output("item qualities")?;
+        timestamps.validate_output("item timestamps")?;
+        errors.validate_output("item errors")?;
 
         if values.len() != qualities.len()
             || values.len() != timestamps.len()
@@ -462,7 +616,7 @@ impl
             .map(|(((value, quality), timestamp), error)| {
                 if error.is_ok() {
                     Ok(ItemValue {
-                        value: value.clone(),
+                        value: clone_variant(value)?,
                         quality: *quality,
                         timestamp: try_from_native!(timestamp),
                     })
@@ -481,21 +635,59 @@ pub struct ItemPartialValue {
     pub timestamp: Option<std::time::SystemTime>,
 }
 
-// try to native
-impl TryToNative<crate::bindings::da::tagOPCITEMVQT> for ItemPartialValue {
-    fn try_to_native(&self) -> windows::core::Result<crate::bindings::da::tagOPCITEMVQT> {
-        Ok(crate::bindings::da::tagOPCITEMVQT {
-            vDataValue: self.value.clone(),
-            bQualitySpecified: self.quality.is_some().into(),
-            wQuality: self.quality.unwrap_or_default(),
-            bTimeStampSpecified: self.timestamp.is_some().into(),
-            ftTimeStamp: self
-                .timestamp
-                .map(|t| t.try_to_native())
-                .transpose()?
-                .unwrap_or_default(),
-            wReserved: 0,
-            dwReserved: 0,
+/// An owning OPC DA value-quality-timestamp input.
+///
+/// The generated `tagOPCITEMVQT` binding has a shallow `Clone` implementation
+/// and no destructor. This wrapper owns the cloned `VARIANT`, prevents shallow
+/// copies at the Rust API boundary, and releases the value after the COM call.
+#[repr(transparent)]
+pub(crate) struct OwnedItemVqt {
+    native: crate::bindings::da::tagOPCITEMVQT,
+}
+
+impl OwnedItemVqt {
+    /// Views a borrowed wrapper slice as the native VQT slice required by COM.
+    ///
+    /// The returned slice must not outlive `values`; each wrapper remains the
+    /// unique owner of its nested `VARIANT`.
+    pub(crate) fn as_native_slice(values: &[Self]) -> &[crate::bindings::da::tagOPCITEMVQT] {
+        if values.is_empty() {
+            return &[];
+        }
+        // SAFETY: `Self` is repr(transparent) over tagOPCITEMVQT, so the
+        // contiguous wrapper slice has identical layout and alignment.
+        unsafe {
+            core::slice::from_raw_parts(
+                values.as_ptr().cast::<crate::bindings::da::tagOPCITEMVQT>(),
+                values.len(),
+            )
+        }
+    }
+}
+
+impl Drop for OwnedItemVqt {
+    fn drop(&mut self) {
+        // SAFETY: The wrapper is the sole owner of this cloned VARIANT.
+        unsafe { clear_variant(&mut self.native.vDataValue) };
+    }
+}
+
+impl TryToNative<OwnedItemVqt> for ItemPartialValue {
+    fn try_to_native(&self) -> windows::core::Result<OwnedItemVqt> {
+        Ok(OwnedItemVqt {
+            native: crate::bindings::da::tagOPCITEMVQT {
+                vDataValue: clone_variant(&self.value)?,
+                bQualitySpecified: self.quality.is_some().into(),
+                wQuality: self.quality.unwrap_or_default(),
+                bTimeStampSpecified: self.timestamp.is_some().into(),
+                ftTimeStamp: self
+                    .timestamp
+                    .map(|t| t.try_to_native())
+                    .transpose()?
+                    .unwrap_or_default(),
+                wReserved: 0,
+                dwReserved: 0,
+            },
         })
     }
 }
@@ -807,5 +999,217 @@ impl ToNative<windows::Win32::System::Com::CLSCTX> for ClassContext {
             }
             ClassContext::PsDll => windows::Win32::System::Com::CLSCTX_PS_DLL,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use windows::Win32::System::Variant::{VT_BSTR, VT_EMPTY};
+    use windows::core::{BSTR, PWSTR};
+
+    fn com_wide(value: &str) -> PWSTR {
+        let value = value
+            .encode_utf16()
+            .chain(core::iter::once(0))
+            .collect::<Vec<_>>();
+        // SAFETY: Allocate enough COM task memory for the terminated string.
+        let pointer =
+            unsafe { windows::Win32::System::Com::CoTaskMemAlloc(core::mem::size_of_val(&*value)) }
+                .cast::<u16>();
+        assert!(!pointer.is_null());
+        // SAFETY: The allocation is large enough and does not overlap value.
+        unsafe {
+            core::ptr::copy_nonoverlapping(value.as_ptr(), pointer, value.len());
+        }
+        PWSTR(pointer)
+    }
+
+    fn bstr_variant(value: &str) -> windows::Win32::System::Variant::VARIANT {
+        let mut variant = windows::Win32::System::Variant::VARIANT::default();
+        // SAFETY: The discriminant and matching union field are set together.
+        unsafe {
+            (*variant.Anonymous.Anonymous).vt = VT_BSTR;
+            (*variant.Anonymous.Anonymous).Anonymous.bstrVal =
+                core::mem::ManuallyDrop::new(BSTR::from(value));
+        }
+        variant
+    }
+
+    #[test]
+    fn item_result_conversion_borrows_blob_until_owner_cleanup() {
+        let source = [1_u8, 2, 3];
+        // SAFETY: Allocate enough COM task memory for the blob.
+        let blob =
+            unsafe { windows::Win32::System::Com::CoTaskMemAlloc(source.len()) }.cast::<u8>();
+        assert!(!blob.is_null());
+        // SAFETY: The allocation is large enough and does not overlap source.
+        unsafe {
+            core::ptr::copy_nonoverlapping(source.as_ptr(), blob, source.len());
+        }
+        let mut native = crate::bindings::da::tagOPCITEMRESULT {
+            dwBlobSize: u32::try_from(source.len()).unwrap(),
+            pBlob: blob,
+            ..Default::default()
+        };
+
+        let converted = ItemResult::try_from_native(&native).unwrap();
+
+        assert_eq!(converted.blob, source);
+        // SAFETY: Conversion borrowed the native blob; its owner can still
+        // inspect and then release it exactly once.
+        assert_eq!(
+            unsafe { core::slice::from_raw_parts(native.pBlob, 3) },
+            source
+        );
+        // SAFETY: native owns its nested COM blob.
+        unsafe { clear_item_result(&mut native) };
+        assert!(native.pBlob.is_null());
+        assert_eq!(native.dwBlobSize, 0);
+    }
+
+    #[test]
+    fn item_result_rejects_blob_length_larger_than_com_allocation() {
+        // SAFETY: Allocate a COM task buffer.
+        let blob = unsafe { windows::Win32::System::Com::CoTaskMemAlloc(2) }.cast::<u8>();
+        assert!(!blob.is_null());
+        let capacity = unsafe { task_mem_allocation_bytes(blob.cast()) }
+            .expect("the test allocation must have a measurable COM capacity");
+        let invalid_size = u32::try_from(capacity)
+            .expect("the test allocator capacity must fit in u32")
+            .checked_add(1)
+            .expect("the test allocator capacity must fit in u32");
+        let mut native = crate::bindings::da::tagOPCITEMRESULT {
+            dwBlobSize: invalid_size,
+            pBlob: blob,
+            ..Default::default()
+        };
+
+        let error = ItemResult::try_from_native(&native).unwrap_err();
+
+        assert_eq!(error.code(), windows::Win32::Foundation::E_INVALIDARG);
+        // SAFETY: native still owns the blob after the failed conversion.
+        unsafe { clear_item_result(&mut native) };
+        assert!(native.pBlob.is_null());
+    }
+
+    #[test]
+    fn item_result_conversion_rejects_nonempty_null_blob() {
+        let native = crate::bindings::da::tagOPCITEMRESULT {
+            dwBlobSize: 3,
+            pBlob: core::ptr::null_mut(),
+            ..Default::default()
+        };
+
+        let error = ItemResult::try_from_native(&native)
+            .expect_err("a nonempty null blob must be rejected");
+
+        assert_eq!(error.code(), windows::Win32::Foundation::E_POINTER);
+    }
+
+    #[test]
+    fn item_state_conversion_deep_copies_the_variant() {
+        let native = crate::bindings::da::tagOPCITEMSTATE {
+            ftTimeStamp: std::time::UNIX_EPOCH.try_to_native().unwrap(),
+            vDataValue: bstr_variant("value"),
+            ..Default::default()
+        };
+
+        let converted = ItemState::try_from_native(&native).unwrap();
+
+        assert_eq!(
+            crate::helpers::variant_to_string(&converted.data_value),
+            "value"
+        );
+        assert_eq!(
+            crate::helpers::variant_to_string(&native.vDataValue),
+            "value"
+        );
+    }
+
+    #[test]
+    fn item_partial_value_uses_an_owning_vqt_wrapper() {
+        let mut partial = ItemPartialValue {
+            value: bstr_variant("value"),
+            quality: Some(0xC0),
+            timestamp: None,
+        };
+
+        let native = partial.try_to_native().unwrap();
+        let native_slice = OwnedItemVqt::as_native_slice(std::slice::from_ref(&native));
+
+        assert_eq!(
+            crate::helpers::variant_to_string(&native_slice[0].vDataValue),
+            "value"
+        );
+        assert_eq!(native_slice[0].wQuality, 0xC0);
+        assert!(native_slice[0].bQualitySpecified.as_bool());
+        assert!(!native_slice[0].bTimeStampSpecified.as_bool());
+
+        drop(native);
+        assert_eq!(crate::helpers::variant_to_string(&partial.value), "value");
+        // SAFETY: The test-created source VARIANT owns its BSTR.
+        unsafe { clear_variant(&mut partial.value) };
+    }
+
+    #[test]
+    fn item_property_cleanup_releases_strings_and_variant() {
+        let mut property = crate::bindings::da::tagOPCITEMPROPERTY {
+            szItemID: com_wide("item"),
+            szDescription: com_wide("description"),
+            vValue: bstr_variant("value"),
+            ..Default::default()
+        };
+
+        // SAFETY: property owns each nested COM allocation.
+        unsafe { clear_item_property(&mut property) };
+
+        assert!(property.szItemID.is_null());
+        assert!(property.szDescription.is_null());
+        assert_eq!(property.vValue.vt(), VT_EMPTY);
+    }
+
+    #[test]
+    fn failed_item_property_cleanup_releases_returned_fields() {
+        let mut property = crate::bindings::da::tagOPCITEMPROPERTY {
+            szItemID: com_wide("item"),
+            szDescription: com_wide("description"),
+            vValue: bstr_variant("value"),
+            hrErrorID: windows::Win32::Foundation::E_FAIL,
+            ..Default::default()
+        };
+        // SAFETY: OPC DA requires returned property strings and VARIANTs to
+        // be released even when the individual property reports an error.
+        unsafe { clear_item_property(&mut property) };
+
+        assert!(property.szItemID.is_null());
+        assert!(property.szDescription.is_null());
+        assert_eq!(property.vValue.vt(), VT_EMPTY);
+    }
+
+    #[test]
+    fn malformed_item_property_count_does_not_walk_past_allocation() {
+        let pointer = unsafe {
+            windows::Win32::System::Com::CoTaskMemAlloc(core::mem::size_of::<
+                crate::bindings::da::tagOPCITEMPROPERTY,
+            >())
+        }
+        .cast::<crate::bindings::da::tagOPCITEMPROPERTY>();
+        assert!(!pointer.is_null());
+        // SAFETY: The allocation is large enough for one initialized property.
+        unsafe { pointer.write(crate::bindings::da::tagOPCITEMPROPERTY::default()) };
+
+        let mut properties = crate::bindings::da::tagOPCITEMPROPERTIES {
+            dwNumProperties: 2,
+            pItemProperties: pointer,
+            ..Default::default()
+        };
+
+        // SAFETY: The outer pointer is a COM task allocation. The deliberately
+        // inflated count must be rejected before nested cleanup dereferences it.
+        unsafe { clear_item_properties(&mut properties) };
+
+        assert!(properties.pItemProperties.is_null());
+        assert_eq!(properties.dwNumProperties, 0);
     }
 }

@@ -25,6 +25,7 @@
 //! |------|---------|--------|
 //! | `opc-da-backend` | ✅ | Native OPC DA backend via `windows-rs` |
 //! | `test-support` | ❌ | Enables `MockOpcProvider` via `mockall` |
+//! | `dev-diagnostics` | ❌ | Enables the read-only native OPC DA canary and JSON Lines output |
 //!
 //! ## Platform
 //!
@@ -32,6 +33,8 @@
 
 mod com_guard;
 pub use com_guard::ComGuard;
+#[cfg(feature = "dev-diagnostics")]
+pub mod diagnostics;
 mod helpers;
 #[cfg(feature = "opc-da-backend")]
 mod inventory;
@@ -58,7 +61,8 @@ pub use provider::{
     BrowseNodeToken, BrowsePage, BrowsePageRequest, BrowsePageToken, BrowseSessionToken,
     InventoryCompleted, InventoryControl, InventoryEntry, InventoryEvent, InventoryOptions,
     InventoryPacing, InventoryProgress, InventorySliceBackend, InventorySliceObservation,
-    InventoryStream, MAX_INVENTORY_BATCH_SIZE, OpcProvider, OpcValue, TagValue, WriteResult,
+    InventoryStream, InventoryWorkerJoin, MAX_INVENTORY_BATCH_SIZE, OpcProvider, OpcValue,
+    TagValue, WriteResult,
 };
 
 #[cfg(feature = "opc-da-backend")]

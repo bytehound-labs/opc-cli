@@ -260,6 +260,8 @@ The library exposes two browse surfaces:
    - Closing or expiring a session drops its dedicated connection and continuation enumerators on the COM worker. A cancelled open/page request avoids or closes the associated session.
    - Inventory shares the same DA 3.0 root negotiation and records DA 2.x as the effective source when compatibility fallback occurs. Terminal warnings are merged so later truncation or malformed-branch diagnostics do not replace the fallback warning. A non-progressing DA 2.x branch iterator is recoverable and does not prevent the independent item iterator from completing; item-side non-progress remains terminal.
    - Internal DA 3.0 inventory continuation state is bounded per branch by token uniqueness and the consecutive-empty-page threshold. This protects the full traversal worker from malformed servers without changing the public session API's explicit, caller-driven continuation semantics.
+   - `start_inventory_at_root` is an additive provider capability for diagnostic subtree inventories. The native implementation creates a fresh worker and server object, passes the requested canonical ItemID unchanged into the shared DA3/DA2 worker, and never derives DA2 path components from ItemID punctuation.
+   - DA3 compatibility fallback is scoped to the true server root. A compatibility HRESULT while opening a requested subtree is terminal, preventing a failed subtree request from turning into an unrelated full-server inventory.
 
 ---
 

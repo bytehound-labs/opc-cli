@@ -197,11 +197,27 @@ fn paced_call<T>(
     }
 }
 
-/// Traverse one server without exposing browse-session state to the caller.
-#[allow(clippy::redundant_pub_crate, clippy::too_many_lines)]
-pub fn run_inventory<C: ServerConnector>(
+#[cfg(test)]
+fn run_inventory<C: ServerConnector>(
     connector: &C,
     server_name: &str,
+    options: InventoryOptions,
+    control: &InventoryControl,
+    sender: &mpsc::Sender<OpcResult<InventoryEvent>>,
+) -> OpcResult<()> {
+    run_inventory_at_root(connector, server_name, None, options, control, sender)
+}
+
+/// Traverse one server, optionally starting at an exact canonical ItemID.
+#[allow(
+    clippy::needless_pass_by_value,
+    clippy::redundant_pub_crate,
+    clippy::too_many_lines
+)]
+pub fn run_inventory_at_root<C: ServerConnector>(
+    connector: &C,
+    server_name: &str,
+    root_item_id: Option<&str>,
     options: InventoryOptions,
     control: &InventoryControl,
     sender: &mpsc::Sender<OpcResult<InventoryEvent>>,
@@ -263,7 +279,7 @@ pub fn run_inventory<C: ServerConnector>(
         elapsed_ms = startup_started.elapsed().as_millis(),
         "native inventory capability detection completed"
     );
-    let mut queue = VecDeque::from([initial_work(capabilities)]);
+    let mut queue = VecDeque::from([initial_work(capabilities, root_item_id)]);
     let mut seen_items = HashSet::new();
     let mut current_da2_path = Vec::new();
     let mut branches_visited = 0_u64;
@@ -362,7 +378,7 @@ pub fn run_inventory<C: ServerConnector>(
                     terminal.capabilities.supports_da3 = false;
                     branches_visited = branches_visited.saturating_sub(1);
                     queue.clear();
-                    queue.push_back(initial_work(terminal.capabilities));
+                    queue.push_back(initial_work(terminal.capabilities, root_item_id));
                     current_da2_path.clear();
                     continue;
                 }
@@ -530,18 +546,22 @@ pub fn run_inventory<C: ServerConnector>(
     Ok(())
 }
 
-fn initial_work(capabilities: BrowseCapabilities) -> BranchWork {
+fn initial_work(capabilities: BrowseCapabilities, root_item_id: Option<&str>) -> BranchWork {
     let location = if capabilities.supports_da3 {
-        BranchLocation::Da3(None)
+        BranchLocation::Da3(root_item_id.map(str::to_owned))
     } else {
         BranchLocation::Da2(Da2Path {
-            components: Vec::new(),
-            item_id: None,
+            components: root_item_id
+                .map(|item_id| vec![item_id.to_owned()])
+                .unwrap_or_default(),
+            item_id: root_item_id.map(str::to_owned),
         })
     };
     BranchWork {
         location,
-        breadcrumbs: Vec::new(),
+        breadcrumbs: root_item_id
+            .map(|item_id| vec![item_id.to_owned()])
+            .unwrap_or_default(),
         da3_continuation: None,
         da3_seen_continuations: HashSet::new(),
         da3_consecutive_empty_pages: 0,
@@ -1959,6 +1979,82 @@ mod tests {
                             && warning.contains("continued through OPC DA 2.x")
                     })
             }));
+            assert!(error.is_none());
+        }
+    }
+
+    #[test]
+    fn da3_subtree_inventory_starts_with_the_requested_root_breadcrumb() {
+        let connector = Arc::new(SharedConnector {
+            server: Arc::new(Mutex::new(Some(Da3Server {
+                total: 1,
+                browse_calls: Arc::new(AtomicUsize::new(0)),
+                batch_sizes: Arc::new(Mutex::new(Vec::new())),
+                fail: false,
+                da3_hresult: None,
+                supports_da2: false,
+                da2_items: Vec::new(),
+            }))),
+        });
+        let (sender, mut receiver) = mpsc::channel(16);
+
+        run_inventory_at_root(
+            connector.as_ref(),
+            "test",
+            Some("FCS0207"),
+            InventoryOptions {
+                batch_size: 10,
+                max_entries: None,
+            },
+            &InventoryControl::new(),
+            &sender,
+        )
+        .unwrap();
+
+        let (entries, completed, error) = collect(&mut receiver);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].breadcrumbs, vec!["FCS0207".to_string()]);
+        assert!(completed.is_some_and(|value| value.complete));
+        assert!(error.is_none());
+    }
+
+    #[test]
+    fn da3_subtree_compatibility_failure_is_terminal_without_da2_fallback() {
+        for hresult in [RPC_X_NULL_REF_POINTER_HRESULT, E_NOTIMPL_HRESULT] {
+            let connector = Arc::new(SharedConnector {
+                server: Arc::new(Mutex::new(Some(Da3Server {
+                    total: 0,
+                    browse_calls: Arc::new(AtomicUsize::new(0)),
+                    batch_sizes: Arc::new(Mutex::new(Vec::new())),
+                    fail: false,
+                    da3_hresult: Some(hresult),
+                    supports_da2: true,
+                    da2_items: vec!["must-not-fallback".to_string()],
+                }))),
+            });
+            let (sender, mut receiver) = mpsc::channel(16);
+
+            let result = run_inventory_at_root(
+                connector.as_ref(),
+                "test",
+                Some("FCS0207"),
+                InventoryOptions {
+                    batch_size: 10,
+                    max_entries: None,
+                },
+                &InventoryControl::new(),
+                &sender,
+            );
+
+            assert!(matches!(
+                result,
+                Err(OpcError::Internal(message))
+                    if message.contains("browse_da3")
+                        && message.contains("FCS0207")
+            ));
+            let (entries, completed, error) = collect(&mut receiver);
+            assert!(entries.is_empty());
+            assert!(completed.is_none());
             assert!(error.is_none());
         }
     }

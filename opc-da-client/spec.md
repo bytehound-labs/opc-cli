@@ -28,6 +28,7 @@ All methods use `#[async_trait]`.
 | `browse_page` | `async fn browse_page(&self, session: &BrowseSessionToken, request: BrowsePageRequest) -> OpcResult<BrowsePage>` | Return one bounded level of branches/items without recursively enumerating descendants. |
 | `close_browse_session` | `async fn close_browse_session(&self, session: &BrowseSessionToken) -> OpcResult<()>` | Close a browse session and release its server connection and continuation state. |
 | `start_inventory` | `async fn start_inventory(&self, server: &str, options: InventoryOptions) -> OpcResult<InventoryStream>` | Start a bounded, cancellable namespace inventory that streams exact ItemIDs and breadcrumb labels. |
+| `start_inventory_at_root` | `async fn start_inventory_at_root(&self, server: &str, root_item_id: &str, options: InventoryOptions) -> OpcResult<InventoryStream>` | Start a bounded, cancellable namespace inventory at one exact canonical ItemID without changing `InventoryOptions`. |
 | `read_tag_values` | `async fn read_tag_values(&self, server: &str, tag_ids: Vec<String>) -> Result<Vec<TagValue>>` | Read current value, quality, and timestamp; `VT_BSTR` values contain the exact COM string contents. |
 | `read_tag_values_for_display` | `async fn read_tag_values_for_display(&self, server: &str, tag_ids: Vec<String>) -> Result<Vec<TagValue>>` | Read values for human display, quoting BSTR contents in the native provider; defaults to `read_tag_values` for third-party providers. |
 | `write_tag_value` | `async fn write_tag_value(&self, server: &str, tag_id: &str, value: OpcValue) -> Result<WriteResult>` | Write a typed value to a single tag on `server`. |
@@ -72,6 +73,7 @@ All methods use `#[async_trait]`.
     guard does not apply to public `browse_page`, which returns one bounded page and leaves
     continuation control to the caller.
 *   Inventory pacing charges DA3 operations by their requested page size, while native DA2 string enumeration charges only actual `IEnumString::Next` refills using the iterator cache capacity; cached DA2 items do not consume additional item-rate budget.
+*   Full hierarchical inventory uses deterministic breadth-first traversal. Path navigation uses the standard `OPC_BROWSE_TO` operation when supported and falls back to browse-name components without inferring a separator from canonical ItemIDs.
 *   Inventory cancellation is observed before the next bounded native operation; a cancelled or
     truncated inventory never claims `complete = true`, and native DA2 cancellation is also checked
     between cached items.

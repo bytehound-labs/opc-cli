@@ -14,6 +14,8 @@ Backend-agnostic OPC DA client library for Rust — async, trait-based, with tra
 - **Read & Write Support**: Read tag values and write typed values (`Int`, `Float`, `Bool`, `String`) to OPC tags.
 - **Scalable Native Browsing**: Open isolated sessions and request bounded, one-level pages through OPC DA 3.0, with a narrowly negotiated OPC DA 2.x compatibility fallback.
 - **Bounded Namespace Inventory**: Stream exact ItemIDs with breadcrumb labels through a cancellable, bounded DA 3.0/2.x traversal.
+- **Deterministic Inventory Order**: Full hierarchical inventory uses breadth-first traversal by default, while standard `OPC_BROWSE_TO` navigation and component-wise fallback preserve exact canonical ItemIDs without assuming an ItemID separator.
+- **Typed Inventory Telemetry**: Each completed slice reports the legacy aggregate native-operation count plus typed per-operation summaries with counts, elapsed time, max latency, histogram buckets, and percentiles.
 - **Startup Boundary Diagnostics**: Low-volume informational logs mark COM worker startup,
   ProgID resolution, server connection, capability detection, namespace organization, and the
   first native inventory operation, making startup stalls distinguishable from traversal stalls.
@@ -232,6 +234,25 @@ disconnect, timeout, and other COM failures remain visible and never trigger a
 fallback. After the first DA 3.0 root page succeeds, the session remains on DA
 3.0 so existing node and continuation tokens cannot be mixed with DA 2.x state.
 
+Diagnostic subtree inventories use
+`OpcProvider::start_inventory_at_root(server, root_item_id, options)` to begin
+at a requested canonical ItemID. The DA 3.0 compatibility fallback is limited
+to the true server root: a compatibility HRESULT while browsing a non-empty
+requested subtree remains terminal rather than guessing how that canonical
+ItemID maps to DA 2.x path components. This prevents a failed subtree request
+from silently becoming a full-server inventory or producing incorrect
+breadcrumbs and ItemIDs.
+
+For coordinated gateway workers, callers that need an independent subtree stream
+should use `OpcProvider::start_inventory_at_root(server, root_item_id, options)`.
+The native `OpcDaClient` implementation creates a fresh COM worker and OPC DA
+server object for that stream, so each root has independent browse-position state.
+The provider method has a compatibility default that returns
+`OpcError::NotImplemented`; gateway code treats that as an unavailable
+coordination capability and falls back to the full-root inventory. The root
+ItemID is passed to the native DA3/DA2 inventory as an exact canonical value;
+the client never splits it on vendor-specific `.`, `!`, or `/` separators.
+
 For large namespaces, `start_inventory` streams a bounded inventory without
 persisting browse-session or continuation tokens:
 
@@ -264,18 +285,36 @@ async fn main() -> anyhow::Result<()> {
             InventoryEvent::Entry(entry) => println!("{}: {}", entry.display_name, entry.item_id),
             InventoryEvent::Slice(slice) => {
                 println!("slice {}: {} native operations", slice.sequence, slice.native_operations);
+                for observation in slice.native_operation_observations {
+                    println!("  - {:?}: {} calls", observation.kind, observation.count);
+                }
             }
             InventoryEvent::Progress(progress) => {
                 println!("{} items discovered", progress.unique_items);
             }
             InventoryEvent::Completed(result) => {
                 println!("complete: {}", result.complete);
+                for observation in result.startup_native_operation_observations {
+                    println!(
+                        "  startup - {:?}: {} calls",
+                        observation.kind, observation.count
+                    );
+                }
                 break;
             }
         }
     }
     Ok(())
 }
+```
+
+For a bounded diagnostic inventory rooted at one exact canonical ItemID, the
+checkout includes an `inventory-root` example that writes JSONL progress and
+entry records:
+
+```powershell
+cargo run -p bytehound-opc-da-client --example inventory-root -- `
+  "Matrikon.OPC.Simulation.1" "Root.Item" "inventory.jsonl" 256 10000
 ```
 
 The returned `InventoryStream` exposes pause, resume, and cancellation controls.
@@ -293,15 +332,25 @@ Use `InventoryStream::set_batch_size(batch_size)` to change the bounded request
 size before the next slice; values must be between 1 and
 `MAX_INVENTORY_BATCH_SIZE` (1000).
 Each completed slice emits an `InventoryEvent::Slice` observation with its
-backend, result count, operation count, and cumulative progress totals.
-For DA2 hierarchical namespaces, every server-reported branch is validated with
-a bounded native navigation probe. Branch-only names rejected with
-`E_INVALIDARG` are skipped and reported in the inventory completion warning;
-names that resolve to exact items remain selectable even when they are not
-navigable. If the DA2 branch iterator itself reaches the non-progress threshold,
-only that iterator is discarded and item enumeration continues. The completion
-warning identifies the skipped branch iterator; non-progressing item iterators
-and unrelated native errors remain terminal.
+backend, result count, operation count, typed native-operation observations, and
+cumulative progress totals. The `InventoryEvent::Completed` result carries
+`startup_native_operation_observations`, keeping capability-detection work
+separate from the first slice's native-operation count while still exposing it
+to telemetry consumers.
+For DA2 hierarchical namespaces, inventory trusts the server-reported branch and
+leaf classifications and defers branch navigation until the branch is expanded.
+The namespace organization is queried once during capability detection and reused
+for every DA2 page. This avoids a serial `DOWN`/`UP` probe for every reported name while preserving
+exact `GetItemID` resolution and branch-and-item entries. When a branch has a
+canonical item ID, inventory first attempts the standard `OPC_BROWSE_TO`
+operation; unsupported or explicitly invalid direct navigation falls back to
+component-wise `DOWN`/`UP` movement, while unexpected navigation errors remain
+terminal. Branches that reject deferred navigation with `E_INVALIDARG` are
+skipped and reported in the inventory completion warning. If the DA2 branch
+iterator itself reaches the non-progress threshold, only that iterator is
+discarded and item enumeration continues. The completion warning identifies the
+skipped branch or iterator, and an item emitted before a later child-expansion
+failure remains indexed.
 Inventory uses the same first-root-page DA 3.0 negotiation as interactive
 browsing and reports DA 2.x as its source when compatibility fallback is used.
 Completion warnings are cumulative, so an entry limit or skipped branch does

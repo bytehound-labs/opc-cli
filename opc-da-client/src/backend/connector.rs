@@ -4,6 +4,7 @@
 //! traits that decouple [`super::opc_da::OpcDaClient`] from concrete COM types.
 //! This enables mock implementations for unit testing without a live COM server.
 
+use crate::bindings::da::OPC_BROWSE_TO;
 pub use crate::bindings::da::tagOPCITEMDEF;
 pub use crate::bindings::da::{tagOPCITEMRESULT, tagOPCITEMSTATE};
 pub use crate::opc_da::client::*;
@@ -298,6 +299,18 @@ pub trait ConnectedServer {
     ///
     /// Returns an error if the position change is rejected by the server.
     fn change_browse_position(&self, direction: u32, name: &str) -> OpcResult<()>;
+
+    /// Change the current browse position directly to a canonical DA2 item ID.
+    ///
+    /// Servers that reject `OPC_BROWSE_TO` leave callers free to fall back to
+    /// component-wise movement through [`Self::change_browse_position`].
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the server rejects the direct position change.
+    fn change_browse_position_to(&self, item_id: &str) -> OpcResult<()> {
+        self.change_browse_position(OPC_BROWSE_TO.0.cast_unsigned(), item_id)
+    }
 
     /// Resolve a browse name to its fully-qualified item ID.
     ///
@@ -984,5 +997,36 @@ mod guarded_iterator_tests {
                 && yielded == 64
         ));
         assert!(iterator.next_string().is_none());
+    }
+}
+
+#[cfg(test)]
+mod real_server_cursor_probe {
+    use super::*;
+
+    #[test]
+    #[ignore = "requires the live Yokogawa OPC DA server"]
+    fn failed_browse_to_preserves_the_yokogawa_cursor() -> anyhow::Result<()> {
+        let _com = crate::ComGuard::new()?;
+        let server = ComConnector.connect("Yokogawa.CSHIS_OPC.1")?;
+        let down = crate::bindings::da::OPC_BROWSE_DOWN.0.cast_unsigned();
+        let up = crate::bindings::da::OPC_BROWSE_UP.0.cast_unsigned();
+
+        ConnectedServer::change_browse_position(&server, down, "FCS0220")?;
+
+        let invalid_item_id = "FCS0220!205AI00030.PV!__bhtune_invalid__";
+        let error = server
+            .change_browse_position_to(invalid_item_id)
+            .expect_err("the deliberately invalid canonical item ID must be rejected");
+        println!("invalid_browse_to_error={error}");
+
+        ConnectedServer::change_browse_position(&server, down, "205AI00030")?;
+        let resolved = ConnectedServer::get_item_id(&server, "PV")?;
+        println!("resolved_item_id={resolved}");
+        assert_eq!(resolved, "FCS0220!205AI00030.PV");
+
+        ConnectedServer::change_browse_position(&server, up, "")?;
+        ConnectedServer::change_browse_position(&server, up, "")?;
+        Ok(())
     }
 }

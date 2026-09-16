@@ -85,6 +85,114 @@ impl<C: ServerConnector + 'static> OpcDaClient<C> {
     }
 }
 
+impl<C: ServerConnector + 'static> OpcDaClient<C> {
+    fn start_inventory_with_root(
+        &self,
+        server: &str,
+        options: InventoryOptions,
+        root_item_id: Option<&str>,
+    ) -> OpcResult<InventoryStream> {
+        self.start_inventory(server, options, root_item_id)
+    }
+
+    fn start_inventory(
+        &self,
+        server: &str,
+        options: InventoryOptions,
+        root_item_id: Option<&str>,
+    ) -> OpcResult<InventoryStream> {
+        if options.batch_size == 0 || options.batch_size > MAX_INVENTORY_BATCH_SIZE {
+            return Err(crate::opc_da::errors::OpcError::InvalidState(format!(
+                "Inventory batch size must be between 1 and {MAX_INVENTORY_BATCH_SIZE}"
+            )));
+        }
+        let root_item_id = root_item_id.map(str::to_owned);
+        if self.inventory_active.swap(true, Ordering::AcqRel) {
+            return Err(crate::opc_da::errors::OpcError::InvalidState(
+                "An OPC namespace inventory is already running".to_string(),
+            ));
+        }
+
+        let (sender, receiver) = mpsc::channel(64);
+        let control = InventoryControl::new_with_batch_size(options.batch_size);
+        let worker_control = control.clone();
+        let active = Arc::clone(&self.inventory_active);
+        let connector = Arc::clone(&self.connector);
+        let server = server.to_string();
+        let startup_started = Instant::now();
+        tracing::info!(
+            server = %server,
+            batch_size = options.batch_size,
+            "native inventory worker spawn requested"
+        );
+        let spawn_result = std::thread::Builder::new()
+            .name("opc-da-inventory".to_string())
+            .spawn(move || {
+                let _active_guard = InventoryActiveGuard(active);
+                tracing::info!(
+                    server = %server,
+                    thread_id = ?std::thread::current().id(),
+                    elapsed_ms = startup_started.elapsed().as_millis(),
+                    "native inventory worker thread started"
+                );
+                let result = catch_unwind(AssertUnwindSafe(|| {
+                    let _guard = crate::ComGuard::new().map_err(|error| {
+                        crate::opc_da::errors::OpcError::Internal(error.to_string())
+                    })?;
+                    crate::inventory::run_inventory_at_root(
+                        &*connector,
+                        &server,
+                        root_item_id.as_deref(),
+                        options,
+                        &worker_control,
+                        &sender,
+                    )
+                }));
+                match result {
+                    Ok(Ok(())) => {}
+                    Ok(Err(error)) => {
+                        tracing::error!(server = %server, error = %error, "OPC namespace inventory failed");
+                        if sender.blocking_send(Err(error)).is_err() {
+                            tracing::debug!(
+                                server = %server,
+                                "OPC namespace inventory receiver was closed before failure could be delivered"
+                            );
+                        }
+                    }
+                    Err(payload) => {
+                        let payload_type = panic_payload_type(&*payload);
+                        tracing::error!(
+                            server = %server,
+                            payload_type,
+                            "OPC namespace inventory worker panicked"
+                        );
+                        let error = crate::opc_da::errors::OpcError::Internal(
+                            "OPC namespace inventory worker panicked".to_string(),
+                        );
+                        if sender.blocking_send(Err(error)).is_err() {
+                            tracing::debug!(
+                                server = %server,
+                                "OPC namespace inventory worker receiver was closed before panic could be delivered"
+                            );
+                        }
+                    }
+                }
+            });
+
+        let worker = match spawn_result {
+            Ok(worker) => worker,
+            Err(error) => {
+                self.inventory_active.store(false, Ordering::Release);
+                return Err(crate::opc_da::errors::OpcError::Internal(format!(
+                    "failed to start OPC inventory worker: {error}"
+                )));
+            }
+        };
+
+        Ok(InventoryStream::new(receiver, control, worker))
+    }
+}
+
 #[allow(clippy::too_many_lines)]
 #[async_trait]
 impl<C: ServerConnector + 'static> OpcProvider for OpcDaClient<C> {
@@ -164,93 +272,16 @@ impl<C: ServerConnector + 'static> OpcProvider for OpcDaClient<C> {
         server: &str,
         options: InventoryOptions,
     ) -> OpcResult<InventoryStream> {
-        if options.batch_size == 0 || options.batch_size > MAX_INVENTORY_BATCH_SIZE {
-            return Err(crate::opc_da::errors::OpcError::InvalidState(format!(
-                "Inventory batch size must be between 1 and {MAX_INVENTORY_BATCH_SIZE}"
-            )));
-        }
-        if self.inventory_active.swap(true, Ordering::AcqRel) {
-            return Err(crate::opc_da::errors::OpcError::InvalidState(
-                "An OPC namespace inventory is already running".to_string(),
-            ));
-        }
+        self.start_inventory_with_root(server, options, None)
+    }
 
-        let (sender, receiver) = mpsc::channel(64);
-        let control = InventoryControl::new_with_batch_size(options.batch_size);
-        let worker_control = control.clone();
-        let active = Arc::clone(&self.inventory_active);
-        let connector = Arc::clone(&self.connector);
-        let server = server.to_string();
-        let startup_started = Instant::now();
-        tracing::info!(
-            server = %server,
-            batch_size = options.batch_size,
-            "native inventory worker spawn requested"
-        );
-        let spawn_result = std::thread::Builder::new()
-            .name("opc-da-inventory".to_string())
-            .spawn(move || {
-                let _active_guard = InventoryActiveGuard(active);
-                tracing::info!(
-                    server = %server,
-                    thread_id = ?std::thread::current().id(),
-                    elapsed_ms = startup_started.elapsed().as_millis(),
-                    "native inventory worker thread started"
-                );
-                let result = catch_unwind(AssertUnwindSafe(|| {
-                    let _guard = crate::ComGuard::new().map_err(|error| {
-                        crate::opc_da::errors::OpcError::Internal(error.to_string())
-                    })?;
-                    crate::inventory::run_inventory(
-                        &*connector,
-                        &server,
-                        options,
-                        &worker_control,
-                        &sender,
-                    )
-                }));
-                match result {
-                    Ok(Ok(())) => {}
-                    Ok(Err(error)) => {
-                        tracing::error!(server = %server, error = %error, "OPC namespace inventory failed");
-                        if sender.blocking_send(Err(error)).is_err() {
-                            tracing::debug!(
-                                server = %server,
-                                "OPC namespace inventory receiver was closed before failure could be delivered"
-                            );
-                        }
-                    }
-                    Err(payload) => {
-                        let payload_type = panic_payload_type(&*payload);
-                        tracing::error!(
-                            server = %server,
-                            payload_type,
-                            "OPC namespace inventory worker panicked"
-                        );
-                        let error = crate::opc_da::errors::OpcError::Internal(
-                            "OPC namespace inventory worker panicked".to_string(),
-                        );
-                        if sender.blocking_send(Err(error)).is_err() {
-                            tracing::debug!(
-                                server = %server,
-                                "OPC namespace inventory receiver was closed before panic could be delivered"
-                            );
-                        }
-                    }
-                }
-            });
-
-        let worker = match spawn_result {
-            Ok(worker) => worker,
-            Err(error) => {
-                self.inventory_active.store(false, Ordering::Release);
-                return Err(crate::opc_da::errors::OpcError::Internal(format!(
-                    "failed to start OPC inventory worker: {error}"
-                )));
-            }
-        };
-
-        Ok(InventoryStream::new(receiver, control, worker))
+    async fn start_inventory_at_root(
+        &self,
+        server: &str,
+        root_item_id: &str,
+        options: InventoryOptions,
+    ) -> OpcResult<InventoryStream> {
+        self.start_inventory_with_root(server, options, Some(root_item_id))
     }
 
     async fn read_tag_values(

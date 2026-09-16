@@ -164,6 +164,62 @@ impl<C: ServerConnector + 'static> OpcProvider for OpcDaClient<C> {
         server: &str,
         options: InventoryOptions,
     ) -> OpcResult<InventoryStream> {
+        self.start_inventory_with_root(server, None, options)
+    }
+
+    async fn start_inventory_at_root(
+        &self,
+        server: &str,
+        root_item_id: &str,
+        options: InventoryOptions,
+    ) -> OpcResult<InventoryStream> {
+        self.start_inventory_with_root(server, Some(root_item_id), options)
+    }
+
+    async fn read_tag_values(
+        &self,
+        server: &str,
+        tag_ids: Vec<String>,
+    ) -> OpcResult<Vec<TagValue>> {
+        self.read_tag_values_with_presentation(server, tag_ids, ReadPresentation::Semantic)
+            .await
+    }
+
+    async fn read_tag_values_for_display(
+        &self,
+        server: &str,
+        tag_ids: Vec<String>,
+    ) -> OpcResult<Vec<TagValue>> {
+        self.read_tag_values_with_presentation(server, tag_ids, ReadPresentation::Display)
+            .await
+    }
+
+    async fn write_tag_value(
+        &self,
+        server: &str,
+        tag_id: &str,
+        value: OpcValue,
+    ) -> OpcResult<WriteResult> {
+        let server_owned = server.to_string();
+        let tag_id_owned = tag_id.to_string();
+        self.worker
+            .send_request(|reply| ComRequest::WriteTagValue {
+                server: server_owned,
+                tag_id: tag_id_owned,
+                value,
+                reply,
+            })
+            .await
+    }
+}
+
+impl<C: ServerConnector + 'static> OpcDaClient<C> {
+    fn start_inventory_with_root(
+        &self,
+        server: &str,
+        root_item_id: Option<&str>,
+        options: InventoryOptions,
+    ) -> OpcResult<InventoryStream> {
         if options.batch_size == 0 || options.batch_size > MAX_INVENTORY_BATCH_SIZE {
             return Err(crate::opc_da::errors::OpcError::InvalidState(format!(
                 "Inventory batch size must be between 1 and {MAX_INVENTORY_BATCH_SIZE}"
@@ -181,10 +237,12 @@ impl<C: ServerConnector + 'static> OpcProvider for OpcDaClient<C> {
         let active = Arc::clone(&self.inventory_active);
         let connector = Arc::clone(&self.connector);
         let server = server.to_string();
+        let root_item_id = root_item_id.map(str::to_owned);
         let startup_started = Instant::now();
         tracing::info!(
             server = %server,
             batch_size = options.batch_size,
+            root_item_id = ?root_item_id,
             "native inventory worker spawn requested"
         );
         let spawn_result = std::thread::Builder::new()
@@ -201,9 +259,10 @@ impl<C: ServerConnector + 'static> OpcProvider for OpcDaClient<C> {
                     let _guard = crate::ComGuard::new().map_err(|error| {
                         crate::opc_da::errors::OpcError::Internal(error.to_string())
                     })?;
-                    crate::inventory::run_inventory(
+                    crate::inventory::run_inventory_at_root(
                         &*connector,
                         &server,
+                        root_item_id.as_deref(),
                         options,
                         &worker_control,
                         &sender,
@@ -251,42 +310,6 @@ impl<C: ServerConnector + 'static> OpcProvider for OpcDaClient<C> {
         };
 
         Ok(InventoryStream::new(receiver, control, worker))
-    }
-
-    async fn read_tag_values(
-        &self,
-        server: &str,
-        tag_ids: Vec<String>,
-    ) -> OpcResult<Vec<TagValue>> {
-        self.read_tag_values_with_presentation(server, tag_ids, ReadPresentation::Semantic)
-            .await
-    }
-
-    async fn read_tag_values_for_display(
-        &self,
-        server: &str,
-        tag_ids: Vec<String>,
-    ) -> OpcResult<Vec<TagValue>> {
-        self.read_tag_values_with_presentation(server, tag_ids, ReadPresentation::Display)
-            .await
-    }
-
-    async fn write_tag_value(
-        &self,
-        server: &str,
-        tag_id: &str,
-        value: OpcValue,
-    ) -> OpcResult<WriteResult> {
-        let server_owned = server.to_string();
-        let tag_id_owned = tag_id.to_string();
-        self.worker
-            .send_request(|reply| ComRequest::WriteTagValue {
-                server: server_owned,
-                tag_id: tag_id_owned,
-                value,
-                reply,
-            })
-            .await
     }
 }
 

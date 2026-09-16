@@ -232,6 +232,24 @@ disconnect, timeout, and other COM failures remain visible and never trigger a
 fallback. After the first DA 3.0 root page succeeds, the session remains on DA
 3.0 so existing node and continuation tokens cannot be mixed with DA 2.x state.
 
+Diagnostic subtree inventories use
+`OpcProvider::start_inventory_at_root(server, root_item_id, options)` to begin
+at a requested canonical ItemID. The DA 3.0 compatibility fallback is limited
+to the true server root: a compatibility HRESULT while browsing a non-empty
+requested subtree remains terminal rather than guessing how that canonical
+ItemID maps to DA 2.x path components. This prevents a failed subtree request
+from silently becoming a full-server inventory or producing incorrect
+breadcrumbs and ItemIDs.
+
+The native `OpcDaClient` implementation creates a fresh COM worker and OPC DA
+server object for each root-scoped stream, so independent roots do not share
+browse-position state. The provider method has a compatibility default that
+returns `OpcError::NotImplemented`; gateway code can treat that as an
+unavailable coordination capability and fall back to the full-root inventory.
+The root ItemID is passed to the native DA3/DA2 inventory as an exact canonical
+value; the client never splits it on vendor-specific `.`, `!`, or `/`
+separators.
+
 For large namespaces, `start_inventory` streams a bounded inventory without
 persisting browse-session or continuation tokens:
 
@@ -276,6 +294,15 @@ async fn main() -> anyhow::Result<()> {
     }
     Ok(())
 }
+```
+
+For a bounded diagnostic inventory rooted at one exact canonical ItemID, the
+checkout includes an `inventory-root` example that writes JSONL progress and
+entry records:
+
+```powershell
+cargo run -p bytehound-opc-da-client --example inventory-root -- `
+  "Matrikon.OPC.Simulation.1" "Root.Item" "inventory.jsonl" 256 10000
 ```
 
 The returned `InventoryStream` exposes pause, resume, and cancellation controls.

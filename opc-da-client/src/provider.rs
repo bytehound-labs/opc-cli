@@ -497,6 +497,7 @@ pub struct InventoryStream {
     receiver: mpsc::Receiver<OpcResult<InventoryEvent>>,
     control: InventoryControl,
     worker: Option<std::thread::JoinHandle<()>>,
+    terminal_event_seen: bool,
 }
 
 impl InventoryStream {
@@ -509,6 +510,7 @@ impl InventoryStream {
             receiver,
             control,
             worker: Some(worker),
+            terminal_event_seen: false,
         }
     }
 
@@ -518,7 +520,11 @@ impl InventoryStream {
     /// terminal event for the stream. A successful or cancelled inventory
     /// ends with an [`InventoryEvent::Completed`] message.
     pub async fn message(&mut self) -> Option<OpcResult<InventoryEvent>> {
-        self.receiver.recv().await
+        let event = self.receiver.recv().await;
+        if matches!(event.as_ref(), Some(Ok(InventoryEvent::Completed(_)))) {
+            self.terminal_event_seen = true;
+        }
+        event
     }
 
     /// Return a control handle for this inventory.
@@ -557,7 +563,9 @@ impl Drop for InventoryStream {
         // Close the receiver before joining so a worker blocked on a full
         // event channel can observe the disconnect and finish.
         self.receiver.close();
-        self.control.cancel_with_reason("stream_drop");
+        if !self.terminal_event_seen {
+            self.control.cancel_with_reason("stream_drop");
+        }
         if let Some(worker) = self.worker.take() {
             let _ = worker.join();
         }
@@ -584,6 +592,39 @@ mod inventory_stream_tests {
 
         drop(InventoryStream::new(receiver, control, worker));
         assert!(finished.load(Ordering::Acquire));
+    }
+
+    #[tokio::test]
+    async fn dropping_after_terminal_completion_does_not_cancel_inventory() {
+        let control = InventoryControl::new();
+        let (sender, receiver) = mpsc::channel(1);
+        sender
+            .send(Ok(InventoryEvent::Completed(InventoryCompleted {
+                complete: true,
+                cancelled: false,
+                truncated: true,
+                warning: Some("entry limit reached".to_string()),
+                capabilities: BrowseCapabilities {
+                    namespace: BrowseNamespace::Hierarchical,
+                    supports_da3: false,
+                    supports_da2: true,
+                    max_page_size: 256,
+                },
+            })))
+            .await
+            .unwrap();
+        drop(sender);
+
+        let worker = std::thread::spawn(|| {});
+        let mut stream = InventoryStream::new(receiver, control.clone(), worker);
+
+        assert!(matches!(
+            stream.message().await,
+            Some(Ok(InventoryEvent::Completed(completed))) if completed.truncated
+        ));
+        drop(stream);
+
+        assert!(!control.is_cancelled());
     }
 }
 
@@ -741,6 +782,29 @@ pub trait OpcProvider: Send + Sync {
         let _ = (server, options);
         Err(OpcError::NotImplemented(
             "Namespace inventory is not implemented by this provider".to_string(),
+        ))
+    }
+
+    /// Start a cancellable, bounded namespace inventory rooted at one exact
+    /// canonical ItemID on an independent browse connection.
+    ///
+    /// The default implementation returns [`OpcError::NotImplemented`].
+    /// Providers that support isolated subtree workers should override this
+    /// method rather than requiring callers to construct an [`InventoryOptions`]
+    /// value with an embedded root.
+    ///
+    /// # Errors
+    /// Returns `Err` if the provider cannot create the independent connection,
+    /// the root is invalid, or the inventory worker cannot be started.
+    async fn start_inventory_at_root(
+        &self,
+        server: &str,
+        root_item_id: &str,
+        options: InventoryOptions,
+    ) -> OpcResult<InventoryStream> {
+        let _ = (server, root_item_id, options);
+        Err(OpcError::NotImplemented(
+            "Root-scoped namespace inventory is not implemented by this provider".to_string(),
         ))
     }
 

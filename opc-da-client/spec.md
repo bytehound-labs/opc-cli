@@ -28,6 +28,7 @@ All methods use `#[async_trait]`.
 | `browse_page` | `async fn browse_page(&self, session: &BrowseSessionToken, request: BrowsePageRequest) -> OpcResult<BrowsePage>` | Return one bounded level of branches/items without recursively enumerating descendants. |
 | `close_browse_session` | `async fn close_browse_session(&self, session: &BrowseSessionToken) -> OpcResult<()>` | Close a browse session and release its server connection and continuation state. |
 | `start_inventory` | `async fn start_inventory(&self, server: &str, options: InventoryOptions) -> OpcResult<InventoryStream>` | Start a bounded, cancellable namespace inventory that streams exact ItemIDs and breadcrumb labels. |
+| `start_inventory_at_root` | `async fn start_inventory_at_root(&self, server: &str, root_item_id: &str, options: InventoryOptions) -> OpcResult<InventoryStream>` | Start a bounded, cancellable namespace inventory at one exact canonical ItemID without changing `InventoryOptions`. |
 | `read_tag_values` | `async fn read_tag_values(&self, server: &str, tag_ids: Vec<String>) -> Result<Vec<TagValue>>` | Read current value, quality, and timestamp; `VT_BSTR` values contain the exact COM string contents. |
 | `read_tag_values_for_display` | `async fn read_tag_values_for_display(&self, server: &str, tag_ids: Vec<String>) -> Result<Vec<TagValue>>` | Read values for human display, quoting BSTR contents in the native provider; defaults to `read_tag_values` for third-party providers. |
 | `write_tag_value` | `async fn write_tag_value(&self, server: &str, tag_id: &str, value: OpcValue) -> Result<WriteResult>` | Write a typed value to a single tag on `server`. |
@@ -68,6 +69,9 @@ All methods use `#[async_trait]`.
 *   A compatibility browse wrapper replaces a root-scoped `BrowseNonProgress` path with the active DA 2.x browse path before returning it to inventory callers.
 *   `start_inventory` requests no more than `batch_size` native entries per operation and never exposes
     browse-session or continuation tokens.
+*   `start_inventory_at_root` passes the requested ItemID as an exact canonical value to native DA3/DA2 inventory and never infers path components by splitting on `.`, `!`, or `/`.
+*   A DA3 compatibility HRESULT may fall back to DA2 only when the requested root is the true server root. A non-empty root-scoped request remains terminal rather than silently becoming a full-server inventory.
+*   The default `OpcProvider::start_inventory_at_root` implementation returns `OpcError::NotImplemented`, so existing third-party providers remain source-compatible.
 *   Internal DA3 inventory traversal requires a non-empty continuation token whenever a page reports
     more elements, rejects a token already returned for the same branch (including cycles), and
     treats 64 consecutive empty continuation pages as non-progress and reports a typed

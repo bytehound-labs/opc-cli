@@ -636,6 +636,7 @@ fn da3_continuation_error(work: &BranchWork, detail: String) -> InventoryError {
     ))
 }
 
+#[allow(clippy::too_many_lines)]
 fn next_page<S: ConnectedServer>(
     server: &S,
     work: &mut BranchWork,
@@ -2948,6 +2949,7 @@ mod tests {
                 "FCS0528.LeafOnly" => {
                     let mut position = self.position.lock().unwrap();
                     *position = vec!["FCS0528".to_string(), "LeafOnly".to_string()];
+                    drop(position);
                     Ok(())
                 }
                 _ => Err(OpcError::InvalidState("unknown direct target".to_string())),

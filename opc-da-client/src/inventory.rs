@@ -721,18 +721,56 @@ fn next_page<S: ConnectedServer>(
         }
         BranchLocation::Da2(path) => {
             if work.da2_state.is_none() {
-                work.da2_state = Some(start_da2_page(
-                    server,
-                    path,
-                    context.current_da2_path,
-                    context.namespace,
-                    context.boundary,
-                )?);
+                work.da2_state = Some(
+                    match start_da2_page(
+                        server,
+                        path,
+                        context.current_da2_path,
+                        context.namespace,
+                        context.boundary,
+                    ) {
+                        Ok(state) => state,
+                        Err(InventoryError::InvalidDa2Branch {
+                            parent_path,
+                            branch,
+                        }) => {
+                            record_skipped_invalid_branch(
+                                context.skipped_invalid_branches,
+                                context.first_skipped_invalid_branch,
+                                &parent_path,
+                                &branch,
+                            );
+                            return Ok(InventoryPage {
+                                nodes: Vec::new(),
+                                continuation: None,
+                            });
+                        }
+                        Err(error) => return Err(error),
+                    },
+                );
             }
             let state = work.da2_state.take().ok_or_else(|| {
                 OpcError::Internal("DA2 inventory page state disappeared".to_string())
             })?;
-            let (nodes, state) = browse_da2_page(server, state, batch_size, context)?;
+            let (nodes, state) = match browse_da2_page(server, state, batch_size, context) {
+                Ok(page) => page,
+                Err(InventoryError::InvalidDa2Branch {
+                    parent_path,
+                    branch,
+                }) => {
+                    record_skipped_invalid_branch(
+                        context.skipped_invalid_branches,
+                        context.first_skipped_invalid_branch,
+                        &parent_path,
+                        &branch,
+                    );
+                    return Ok(InventoryPage {
+                        nodes: Vec::new(),
+                        continuation: None,
+                    });
+                }
+                Err(error) => return Err(error),
+            };
             Ok(InventoryPage {
                 nodes,
                 continuation: state.map(|state| InventoryContinuation::Da2(Box::new(state))),
@@ -1172,7 +1210,9 @@ fn move_to_da2_path<S: ConnectedServer>(
     target: &Da2Path,
     boundary: &mut InventoryBoundary<'_>,
 ) -> Result<(), InventoryError> {
-    if let Some(item_id) = target.item_id.as_deref() {
+    if let Some(item_id) = target.item_id.as_deref()
+        && *current_path != target.components
+    {
         match paced_call(boundary, || server.change_browse_position_to(item_id)) {
             Ok(()) => {
                 current_path.clone_from(&target.components);
@@ -2746,8 +2786,9 @@ mod tests {
                 position.pop();
             }
             drop(position);
+            let cancel_on_down = self.cancel_on_first_down.lock().unwrap().take();
             if direction == OPC_BROWSE_DOWN.0.cast_unsigned()
-                && let Some(control) = self.cancel_on_first_down.lock().unwrap().take()
+                && let Some(control) = cancel_on_down
             {
                 control.cancel_with_reason("test_deferred_branch_open");
             }
@@ -2756,7 +2797,8 @@ mod tests {
 
         fn change_browse_position_to(&self, item_id: &str) -> OpcResult<()> {
             self.browse_to_calls.fetch_add(1, Ordering::Relaxed);
-            if let Some(control) = self.cancel_on_first_browse_to.lock().unwrap().take() {
+            let cancel_on_browse_to = self.cancel_on_first_browse_to.lock().unwrap().take();
+            if let Some(control) = cancel_on_browse_to {
                 control.cancel_with_reason("test_browse_to");
             }
             match self.browse_to_behavior {
@@ -2902,9 +2944,9 @@ mod tests {
         }
 
         fn change_browse_position_to(&self, item_id: &str) -> OpcResult<()> {
-            let mut position = self.position.lock().unwrap();
             match item_id {
                 "FCS0528.LeafOnly" => {
+                    let mut position = self.position.lock().unwrap();
                     *position = vec!["FCS0528".to_string(), "LeafOnly".to_string()];
                     Ok(())
                 }

@@ -2485,7 +2485,7 @@ mod tests {
                 ..Default::default()
             }))),
         });
-        let (sender, mut receiver) = mpsc::channel(128);
+        let (sender, mut receiver) = mpsc::channel(256);
         run_inventory(
             connector.as_ref(),
             "test",

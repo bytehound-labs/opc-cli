@@ -79,6 +79,9 @@ All methods use `#[async_trait]`.
     guard does not apply to public `browse_page`, which returns one bounded page and leaves
     continuation control to the caller.
 *   Inventory pacing charges DA3 operations by their requested page size, while native DA2 string enumeration charges only actual `IEnumString::Next` refills using the iterator cache capacity; cached DA2 items do not consume additional item-rate budget.
+*   Each completed inventory slice includes typed `native_operation_observations`, preserving first-seen operation-kind order. A summary contains the native call count, total and maximum elapsed time, a fixed nanosecond histogram, and approximate p50/p95/p99 latency values. Pacing waits are not included in native elapsed time.
+*   `InventoryCompleted::startup_native_operation_observations` contains capability-detection observations separately from slice observations. The startup list is emitted once, before traversal slices, and is empty when no startup native operation was completed.
+*   Native operation telemetry is best-effort accounting: a failed native call is still timed and counted when it was entered, while cancellation or pacing that prevents the call from starting produces no native observation.
 *   Inventory cancellation is observed before the next bounded native operation; a cancelled or
     truncated inventory never claims `complete = true`, and native DA2 cancellation is also checked
     between cached items.

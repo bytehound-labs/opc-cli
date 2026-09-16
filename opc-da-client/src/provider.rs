@@ -296,11 +296,171 @@ pub enum InventorySliceBackend {
     Da2,
 }
 
+/// Fixed latency buckets used by native inventory telemetry.
+///
+/// Buckets are upper bounds in nanoseconds. The final bucket captures any
+/// latency that exceeds the largest bound.
+pub const INVENTORY_NATIVE_OPERATION_LATENCY_BUCKET_UPPER_BOUNDS_NS: [u64; 12] = [
+    50_000,      // 50 µs
+    100_000,     // 100 µs
+    250_000,     // 250 µs
+    500_000,     // 500 µs
+    1_000_000,   // 1 ms
+    2_500_000,   // 2.5 ms
+    5_000_000,   // 5 ms
+    10_000_000,  // 10 ms
+    25_000_000,  // 25 ms
+    50_000_000,  // 50 ms
+    100_000_000, // 100 ms
+    250_000_000, // 250 ms
+];
+
+/// Native inventory operation categories recorded within one slice.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum InventoryNativeOperationKind {
+    /// The initial namespace organization query.
+    NamespaceOrganizationQuery,
+    /// Creation of a DA 2.x branch enumerator.
+    Da2BranchEnumeratorCreation,
+    /// Creation of a DA 2.x leaf enumerator.
+    Da2LeafEnumeratorCreation,
+    /// Creation of a DA 2.x flat enumerator.
+    Da2FlatEnumeratorCreation,
+    /// A real `IEnumString::Next` refill from the native DA 2.x cache.
+    Da2StringRefill,
+    /// `GetItemID` on a DA 2.x browse name.
+    GetItemId,
+    /// A DA 2.x classification probe using `OPC_BROWSE_DOWN`.
+    ///
+    /// Inventory no longer emits this operation; it remains for diagnostics
+    /// and compatibility with callers that inspect the telemetry vocabulary.
+    Da2ClassificationDown,
+    /// A DA 2.x classification probe using `OPC_BROWSE_UP`.
+    ///
+    /// Inventory no longer emits this operation; it remains for diagnostics
+    /// and compatibility with callers that inspect the telemetry vocabulary.
+    Da2ClassificationUp,
+    /// Ordinary DA 2.x path descent using `OPC_BROWSE_DOWN`.
+    Da2PathDown,
+    /// DA 2.x path movement using `OPC_BROWSE_TO` and a canonical item ID.
+    Da2PathTo,
+    /// Ordinary DA 2.x path ascent using `OPC_BROWSE_UP`.
+    Da2PathUp,
+    /// DA 2.x child-navigation probe using `OPC_BROWSE_DOWN`.
+    ///
+    /// Inventory no longer emits this operation; it remains for diagnostics
+    /// and compatibility with callers that inspect the telemetry vocabulary.
+    Da2ProbeDown,
+    /// DA 2.x child-navigation probe using `OPC_BROWSE_UP`.
+    ///
+    /// Inventory no longer emits this operation; it remains for diagnostics
+    /// and compatibility with callers that inspect the telemetry vocabulary.
+    Da2ProbeUp,
+    /// One DA 3.0 page request.
+    Da3Page,
+}
+
+/// Fixed-bucket latency histogram for one native inventory operation kind.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct InventoryNativeOperationLatencyHistogram {
+    /// Count of samples that fell into each histogram bucket.
+    pub bucket_counts: [u64; INVENTORY_NATIVE_OPERATION_LATENCY_BUCKET_UPPER_BOUNDS_NS.len() + 1],
+}
+
+impl InventoryNativeOperationLatencyHistogram {
+    fn bucket_index(elapsed: Duration) -> usize {
+        let nanos = u64::try_from(elapsed.as_nanos().min(u128::from(u64::MAX))).unwrap_or(u64::MAX);
+        INVENTORY_NATIVE_OPERATION_LATENCY_BUCKET_UPPER_BOUNDS_NS
+            .iter()
+            .position(|bound| nanos <= *bound)
+            .unwrap_or(INVENTORY_NATIVE_OPERATION_LATENCY_BUCKET_UPPER_BOUNDS_NS.len())
+    }
+
+    /// Record one latency sample.
+    pub fn record(&mut self, elapsed: Duration) {
+        let index = Self::bucket_index(elapsed);
+        self.bucket_counts[index] = self.bucket_counts[index].saturating_add(1);
+    }
+
+    fn percentile_from_rank(&self, total: u64, rank: u64, max_elapsed: Duration) -> Duration {
+        if total == 0 {
+            return Duration::ZERO;
+        }
+
+        let mut cumulative = 0_u64;
+        for (index, count) in self.bucket_counts.iter().enumerate() {
+            cumulative = cumulative.saturating_add(*count);
+            if cumulative >= rank {
+                return if index < INVENTORY_NATIVE_OPERATION_LATENCY_BUCKET_UPPER_BOUNDS_NS.len() {
+                    Duration::from_nanos(
+                        INVENTORY_NATIVE_OPERATION_LATENCY_BUCKET_UPPER_BOUNDS_NS[index],
+                    )
+                } else {
+                    max_elapsed
+                };
+            }
+        }
+
+        max_elapsed
+    }
+
+    /// Derive a percentile summary from a fixed latency histogram.
+    pub fn percentiles(
+        &self,
+        total: u64,
+        max_elapsed: Duration,
+    ) -> InventoryNativeOperationPercentiles {
+        if total == 0 {
+            return InventoryNativeOperationPercentiles::default();
+        }
+
+        let rank = |percentile: u64| -> u64 {
+            (((total.saturating_mul(percentile)).saturating_add(99)) / 100).max(1)
+        };
+
+        InventoryNativeOperationPercentiles {
+            p50: self.percentile_from_rank(total, rank(50), max_elapsed),
+            p95: self.percentile_from_rank(total, rank(95), max_elapsed),
+            p99: self.percentile_from_rank(total, rank(99), max_elapsed),
+        }
+    }
+}
+
+/// Percentile summaries derived from a fixed latency histogram.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct InventoryNativeOperationPercentiles {
+    /// Approximate 50th percentile latency.
+    pub p50: std::time::Duration,
+    /// Approximate 95th percentile latency.
+    pub p95: std::time::Duration,
+    /// Approximate 99th percentile latency.
+    pub p99: std::time::Duration,
+}
+
+/// One typed native-operation summary recorded for a slice.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InventoryNativeOperationObservation {
+    /// Operation category.
+    pub kind: InventoryNativeOperationKind,
+    /// Number of actual native calls in this category.
+    pub count: u64,
+    /// Total native-call elapsed time, excluding pacing waits.
+    pub total_elapsed: std::time::Duration,
+    /// Maximum single-call elapsed time, excluding pacing waits.
+    pub max_elapsed: std::time::Duration,
+    /// Fixed-bucket latency histogram for this category.
+    pub latency_histogram: InventoryNativeOperationLatencyHistogram,
+    /// Approximate percentiles derived from the histogram.
+    pub percentiles: InventoryNativeOperationPercentiles,
+}
+
 /// Observation emitted after each bounded inventory slice.
 ///
 /// A slice is one page-sized inventory step. Native DA2 enumeration may use
 /// several COM calls to produce one slice; `native_operations` reports that
-/// bounded work without exposing COM implementation details.
+/// bounded work without exposing COM implementation details. The typed
+/// operation observations summarize the individual native call categories
+/// inside the slice without emitting one event per COM call.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InventorySliceObservation {
     /// Monotonically increasing slice number, starting at one.
@@ -313,6 +473,8 @@ pub struct InventorySliceObservation {
     pub has_more: bool,
     /// Number of bounded native operations performed for this slice.
     pub native_operations: u64,
+    /// Typed summaries of the native operations recorded for this slice.
+    pub native_operation_observations: Vec<InventoryNativeOperationObservation>,
     /// Wall-clock duration of the slice, including pacing waits.
     pub elapsed_ms: u64,
     /// Total native nodes observed through this slice.
@@ -329,6 +491,9 @@ pub struct InventoryCompleted {
     pub truncated: bool,
     pub warning: Option<String>,
     pub capabilities: BrowseCapabilities,
+    /// Typed native operations performed during capability detection before
+    /// the first inventory slice.
+    pub startup_native_operation_observations: Vec<InventoryNativeOperationObservation>,
 }
 
 /// Event emitted by [`InventoryStream`].
@@ -610,6 +775,7 @@ mod inventory_stream_tests {
                     supports_da2: true,
                     max_page_size: 256,
                 },
+                startup_native_operation_observations: Vec::new(),
             })))
             .await
             .unwrap();
@@ -625,6 +791,58 @@ mod inventory_stream_tests {
         drop(stream);
 
         assert!(!control.is_cancelled());
+    }
+}
+
+#[cfg(test)]
+mod native_operation_telemetry_tests {
+    use super::*;
+
+    #[test]
+    fn latency_histogram_uses_inclusive_bounds_and_overflow() {
+        let mut histogram = InventoryNativeOperationLatencyHistogram::default();
+        for (index, upper_bound) in INVENTORY_NATIVE_OPERATION_LATENCY_BUCKET_UPPER_BOUNDS_NS
+            .iter()
+            .enumerate()
+        {
+            histogram.record(Duration::from_nanos(*upper_bound));
+            assert_eq!(histogram.bucket_counts[index], 1);
+        }
+        histogram.record(Duration::from_nanos(
+            INVENTORY_NATIVE_OPERATION_LATENCY_BUCKET_UPPER_BOUNDS_NS
+                .last()
+                .copied()
+                .unwrap()
+                + 1,
+        ));
+        assert_eq!(
+            histogram.bucket_counts
+                [INVENTORY_NATIVE_OPERATION_LATENCY_BUCKET_UPPER_BOUNDS_NS.len()],
+            1
+        );
+        assert_eq!(histogram.bucket_counts.iter().sum::<u64>(), 13);
+    }
+
+    #[test]
+    fn histogram_percentiles_use_bucket_upper_bounds_and_overflow_maximum() {
+        let mut histogram = InventoryNativeOperationLatencyHistogram::default();
+        histogram.record(Duration::from_micros(50));
+        histogram.record(Duration::from_micros(250));
+        histogram.record(Duration::from_millis(300));
+
+        let percentiles = histogram.percentiles(3, Duration::from_millis(300));
+        assert_eq!(percentiles.p50, Duration::from_micros(250));
+        assert_eq!(percentiles.p95, Duration::from_millis(300));
+        assert_eq!(percentiles.p99, Duration::from_millis(300));
+    }
+
+    #[test]
+    fn empty_histogram_percentiles_are_zero() {
+        let histogram = InventoryNativeOperationLatencyHistogram::default();
+        assert_eq!(
+            histogram.percentiles(0, Duration::from_secs(1)),
+            InventoryNativeOperationPercentiles::default()
+        );
     }
 }
 

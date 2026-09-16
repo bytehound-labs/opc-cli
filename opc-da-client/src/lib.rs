@@ -56,9 +56,12 @@ pub use helpers::{format_hresult, friendly_com_hint, log_opc_error};
 pub use provider::{
     BrowseCapabilities, BrowseNamespace, BrowseNode, BrowseNodeFilter, BrowseNodeKind,
     BrowseNodeToken, BrowsePage, BrowsePageRequest, BrowsePageToken, BrowseSessionToken,
-    InventoryCompleted, InventoryControl, InventoryEntry, InventoryEvent, InventoryOptions,
-    InventoryPacing, InventoryProgress, InventorySliceBackend, InventorySliceObservation,
-    InventoryStream, MAX_INVENTORY_BATCH_SIZE, OpcProvider, OpcValue, TagValue, WriteResult,
+    INVENTORY_NATIVE_OPERATION_LATENCY_BUCKET_UPPER_BOUNDS_NS, InventoryCompleted,
+    InventoryControl, InventoryEntry, InventoryEvent, InventoryNativeOperationKind,
+    InventoryNativeOperationLatencyHistogram, InventoryNativeOperationObservation,
+    InventoryNativeOperationPercentiles, InventoryOptions, InventoryPacing, InventoryProgress,
+    InventorySliceBackend, InventorySliceObservation, InventoryStream, MAX_INVENTORY_BATCH_SIZE,
+    OpcProvider, OpcValue, TagValue, WriteResult,
 };
 
 #[cfg(feature = "opc-da-backend")]

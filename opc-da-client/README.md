@@ -281,7 +281,16 @@ async fn main() -> anyhow::Result<()> {
         match event? {
             InventoryEvent::Entry(entry) => println!("{}: {}", entry.display_name, entry.item_id),
             InventoryEvent::Slice(slice) => {
-                println!("slice {}: {} native operations", slice.sequence, slice.native_operations);
+                println!(
+                    "slice {}: {} native operations",
+                    slice.sequence, slice.native_operations
+                );
+                for observation in slice.native_operation_observations {
+                    println!(
+                        "  {:?}: {} calls, p95 {:?}",
+                        observation.kind, observation.count, observation.percentiles.p95
+                    );
+                }
             }
             InventoryEvent::Progress(progress) => {
                 println!("{} items discovered", progress.unique_items);
@@ -320,7 +329,17 @@ Use `InventoryStream::set_batch_size(batch_size)` to change the bounded request
 size before the next slice; values must be between 1 and
 `MAX_INVENTORY_BATCH_SIZE` (1000).
 Each completed slice emits an `InventoryEvent::Slice` observation with its
-backend, result count, operation count, and cumulative progress totals.
+backend, result count, operation count, cumulative progress totals, and
+`native_operation_observations`. Each observation is grouped by
+`InventoryNativeOperationKind` and reports the number of native calls, total
+and maximum native-call duration, a fixed nanosecond latency histogram, and
+approximate p50/p95/p99 values. Native duration excludes pacing waits. The
+`InventoryEvent::Completed` value carries startup observations separately, so
+capability detection and namespace traversal can be measured independently.
+The operation kinds cover DA3 pages, DA2 enumerator creation, native DA2
+string refills, `GetItemID`, and DA2 path movement; compatibility-only
+classification/probe kinds remain in the public vocabulary but are not emitted
+by the current deferred traversal.
 For DA2 hierarchical inventory, branch expansion is deferred until the branch is
 actually visited. Inventory does not issue eager child-existence or
 branch-classification `DOWN`/`UP` probes. `GetItemID` is used only to detect

@@ -7,8 +7,54 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-09-16
+
+### Added
+
+- `OpcProvider::start_inventory_at_root(server, root_item_id, options)` streams a
+  bounded, cancellable namespace inventory from one exact canonical ItemID using a
+  fresh independent connection, without parsing vendor-specific `.`, `!`, or `/`
+  separators. The default implementation returns `OpcError::NotImplemented`, so
+  third-party providers are unaffected; the native provider opts in. Includes the
+  `inventory-root` example.
+- Typed native inventory telemetry: per-slice and startup-capability-detection
+  operation summaries via `native_operation_observations` on
+  `InventorySliceObservation` and `startup_native_operation_observations` on
+  `InventoryCompleted`, with `InventoryNativeOperationKind`,
+  `InventoryNativeOperationObservation`, and
+  `INVENTORY_NATIVE_OPERATION_LATENCY_BUCKET_UPPER_BOUNDS_NS` re-exported from the
+  crate root.
+- Inventory pacing can cap the requested item rate in addition to the minimum
+  interval between native operation starts. A bounded operation is charged
+  for its requested batch size before the COM call begins.
+- Inventory cancellation logs identify the requesting source and whether the
+  control was already cancelled, including explicit stream cancellation and
+  stream-drop cleanup. Dropping a stream after a normal `Completed` event no
+  longer records a false cancellation.
+
+### Changed
+
+- DA 2.x inventory navigates with a canonical `OPC_BROWSE_TO` first when an exact
+  ItemID is available, falling back to component-wise `OPC_BROWSE_UP`/
+  `OPC_BROWSE_DOWN` only for classified compatibility errors (unsupported or
+  invalid navigation, unknown or invalid ItemID). Unrelated direct-navigation
+  errors remain terminal.
+- DA 2.x inventory no longer probes every enumerated name with
+  `OPC_BROWSE_DOWN`/`OPC_BROWSE_UP` to determine child existence or branch
+  classification. The branch enumeration itself is treated as evidence of
+  expandability, `GetItemID` is consulted only to detect branch-and-item nodes,
+  and branch expansion is deferred until the branch is visited. General
+  session-backed browsing still classifies branches as before.
+- Pacing accounting now charges DA 3.0 pages by requested page size and native
+  DA 2.x work by actual enumerator refills and cache capacity; values already in
+  the cache no longer consume additional budget.
+
 ### Fixed
 
+- Recoverable DA 2.x branch navigation and branch-iterator failures now skip the
+  affected branch while independent item enumeration continues, and same-named
+  branch/item entries are preserved as expandable `BranchAndItem` entries with
+  their exact ItemIDs instead of being duplicated or dropped.
 - DA 3.0 `IOPCBrowse::Browse` sends a true null property-ID pointer when
   `dwPropertyCount` is zero, while retaining the generated binding path for
   non-empty property-ID lists.
@@ -24,14 +70,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - DA 2.x browse wrappers preserve the active browse path when a lower-level
   iterator reports a root-scoped non-progress error.
 
-### Added
+### Compatibility
 
-- Inventory pacing can cap the requested item rate in addition to the minimum
-  interval between native operation starts. A bounded operation is charged
-  for its requested batch size before the COM call begins.
-- Inventory cancellation logs identify the requesting source and whether the
-  control was already cancelled, including explicit stream cancellation and
-  stream-drop cleanup.
+- Public struct field additions on `InventoryPacing`, `InventorySliceObservation`,
+  and `InventoryCompleted` can break downstream code that constructs those
+  structs with exhaustive struct literals; field reads and `..` rest syntax are
+  unaffected. `OpcError` gains variants and remains `#[non_exhaustive]`.
 
 ## [0.2.7] - 2026-08-25
 

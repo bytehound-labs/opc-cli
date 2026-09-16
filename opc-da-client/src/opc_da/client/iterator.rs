@@ -1,9 +1,11 @@
+use crate::inventory::record_native_operation;
 use crate::opc_da::{
     com_utils::{RemoteArray, RemotePointer, TryToLocal as _},
     errors::{
         MAX_CONSECUTIVE_IDENTICAL_BROWSE_VALUES, OpcError, OpcResult, browse_non_progress_error,
     },
 };
+use crate::provider::InventoryNativeOperationKind;
 use std::time::Instant;
 use windows::core::Interface as _;
 
@@ -168,13 +170,15 @@ impl StringIterator {
                         .Next(self.cache.as_mut_slice(), Some(&mut self.count))
                 };
 
+                let elapsed = started.elapsed();
                 tracing::trace!(
                     hresult = format_args!("{:#010X}", code.0),
                     celt = self.cache.len(),
                     fetched = self.count,
-                    elapsed_ms = started.elapsed().as_millis(),
+                    elapsed_ms = elapsed.as_millis(),
                     "IEnumString::Next returned"
                 );
+                record_native_operation(InventoryNativeOperationKind::Da2StringRefill, elapsed);
 
                 self.populated = (self.count as usize).min(self.cache.len());
                 if code.is_ok() {

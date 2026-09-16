@@ -15,10 +15,13 @@ use crate::opc_da::errors::{
 };
 use crate::provider::{
     BrowseCapabilities, BrowseNamespace, BrowseNodeFilter, BrowseNodeKind, InventoryCompleted,
-    InventoryControl, InventoryEntry, InventoryEvent, InventoryOptions, InventoryProgress,
-    InventorySliceBackend, InventorySliceObservation,
+    InventoryControl, InventoryEntry, InventoryEvent, InventoryNativeOperationKind,
+    InventoryNativeOperationLatencyHistogram, InventoryNativeOperationObservation,
+    InventoryOptions, InventoryProgress, InventorySliceBackend, InventorySliceObservation,
 };
+use std::cell::RefCell;
 use std::collections::{HashSet, VecDeque};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 
@@ -101,6 +104,103 @@ fn contextual_inventory_error(
     }
 }
 
+#[derive(Debug, Default)]
+struct InventoryNativeOperationStats {
+    count: u64,
+    total_elapsed: Duration,
+    max_elapsed: Duration,
+    latency_histogram: InventoryNativeOperationLatencyHistogram,
+}
+
+impl InventoryNativeOperationStats {
+    fn record(&mut self, elapsed: Duration) {
+        self.count = self.count.saturating_add(1);
+        self.total_elapsed = self.total_elapsed.saturating_add(elapsed);
+        self.max_elapsed = self.max_elapsed.max(elapsed);
+        self.latency_histogram.record(elapsed);
+    }
+
+    fn finish(self, kind: InventoryNativeOperationKind) -> InventoryNativeOperationObservation {
+        let percentiles = self
+            .latency_histogram
+            .percentiles(self.count, self.max_elapsed);
+        InventoryNativeOperationObservation {
+            kind,
+            count: self.count,
+            total_elapsed: self.total_elapsed,
+            max_elapsed: self.max_elapsed,
+            latency_histogram: self.latency_histogram,
+            percentiles,
+        }
+    }
+}
+
+#[derive(Debug, Default)]
+struct InventoryNativeOperationTelemetryCollector {
+    observations: Vec<(InventoryNativeOperationKind, InventoryNativeOperationStats)>,
+}
+
+impl InventoryNativeOperationTelemetryCollector {
+    fn record(&mut self, kind: InventoryNativeOperationKind, elapsed: Duration) {
+        if let Some((_, stats)) = self
+            .observations
+            .iter_mut()
+            .find(|(existing_kind, _)| *existing_kind == kind)
+        {
+            stats.record(elapsed);
+            return;
+        }
+
+        let mut stats = InventoryNativeOperationStats::default();
+        stats.record(elapsed);
+        self.observations.push((kind, stats));
+    }
+
+    fn take(&mut self) -> Vec<InventoryNativeOperationObservation> {
+        self.observations
+            .drain(..)
+            .map(|(kind, stats)| stats.finish(kind))
+            .collect()
+    }
+}
+
+thread_local! {
+    static CURRENT_NATIVE_OPERATION_TELEMETRY: RefCell<
+        Option<Arc<Mutex<InventoryNativeOperationTelemetryCollector>>>,
+    > = const { RefCell::new(None) };
+}
+
+struct NativeOperationTelemetryScope {
+    previous: Option<Arc<Mutex<InventoryNativeOperationTelemetryCollector>>>,
+}
+
+impl Drop for NativeOperationTelemetryScope {
+    fn drop(&mut self) {
+        let previous = self.previous.take();
+        CURRENT_NATIVE_OPERATION_TELEMETRY.with(|slot| {
+            let _ = slot.replace(previous);
+        });
+    }
+}
+
+fn install_native_operation_telemetry(
+    recorder: Arc<Mutex<InventoryNativeOperationTelemetryCollector>>,
+) -> NativeOperationTelemetryScope {
+    let previous = CURRENT_NATIVE_OPERATION_TELEMETRY.with(|slot| slot.replace(Some(recorder)));
+    NativeOperationTelemetryScope { previous }
+}
+
+#[allow(clippy::redundant_pub_crate)]
+pub(crate) fn record_native_operation(kind: InventoryNativeOperationKind, elapsed: Duration) {
+    CURRENT_NATIVE_OPERATION_TELEMETRY.with(|slot| {
+        let Some(recorder) = slot.borrow().as_ref().cloned() else {
+            return;
+        };
+        let mut recorder = recorder.lock().unwrap();
+        recorder.record(kind, elapsed);
+    });
+}
+
 /// Gate every bounded native operation on pause/cancellation and current pacing.
 struct InventoryBoundary<'a> {
     control: &'a InventoryControl,
@@ -108,6 +208,7 @@ struct InventoryBoundary<'a> {
     paused_time: Duration,
     native_operations: u64,
     first_operation_reported: bool,
+    telemetry: Arc<Mutex<InventoryNativeOperationTelemetryCollector>>,
 }
 
 fn pacing_interval(pacing: crate::provider::InventoryPacing, item_cost: u32) -> Duration {
@@ -128,11 +229,10 @@ impl<'a> InventoryBoundary<'a> {
             paused_time: Duration::ZERO,
             native_operations: 0,
             first_operation_reported: false,
+            telemetry: Arc::new(Mutex::new(
+                InventoryNativeOperationTelemetryCollector::default(),
+            )),
         }
-    }
-
-    fn before_operation(&mut self) -> BoundaryResult {
-        self.before_operation_with_cost(1)
     }
 
     fn before_operation_with_cost(&mut self, item_cost: u32) -> BoundaryResult {
@@ -185,14 +285,33 @@ impl<'a> InventoryBoundary<'a> {
     fn paused_time(&self) -> Duration {
         self.paused_time
     }
+
+    fn record_operation(&self, kind: InventoryNativeOperationKind, elapsed: Duration) {
+        self.telemetry.lock().unwrap().record(kind, elapsed);
+    }
+
+    fn take_operation_observations(&self) -> Vec<InventoryNativeOperationObservation> {
+        self.telemetry.lock().unwrap().take()
+    }
+
+    fn telemetry_recorder(&self) -> Arc<Mutex<InventoryNativeOperationTelemetryCollector>> {
+        Arc::clone(&self.telemetry)
+    }
 }
 
 fn paced_call<T>(
     boundary: &mut InventoryBoundary<'_>,
+    kind: InventoryNativeOperationKind,
+    item_cost: u32,
     operation: impl FnOnce() -> OpcResult<T>,
 ) -> Result<T, InventoryError> {
-    match boundary.before_operation() {
-        BoundaryResult::Proceed => operation().map_err(InventoryError::from),
+    match boundary.before_operation_with_cost(item_cost) {
+        BoundaryResult::Proceed => {
+            let started = Instant::now();
+            let result = operation().map_err(InventoryError::from);
+            boundary.record_operation(kind, started.elapsed());
+            result
+        }
         BoundaryResult::Cancelled => Err(InventoryError::Cancelled),
     }
 }
@@ -246,6 +365,8 @@ pub fn run_inventory_at_root<C: ServerConnector>(
         "native inventory server connection completed"
     );
     let mut boundary = InventoryBoundary::new(control);
+    let _native_operation_telemetry_scope =
+        install_native_operation_telemetry(boundary.telemetry_recorder());
     tracing::info!(server = %server_name, "native inventory capability detection started");
     let capabilities = if control.is_cancelled() {
         crate::provider::BrowseCapabilities {
@@ -279,6 +400,7 @@ pub fn run_inventory_at_root<C: ServerConnector>(
         elapsed_ms = startup_started.elapsed().as_millis(),
         "native inventory capability detection completed"
     );
+    let startup_native_operation_observations = boundary.take_operation_observations();
     let mut queue = VecDeque::from([initial_work(capabilities, root_item_id)]);
     let mut seen_items = HashSet::new();
     let mut current_da2_path = Vec::new();
@@ -296,6 +418,7 @@ pub fn run_inventory_at_root<C: ServerConnector>(
         truncated: false,
         warning: None,
         capabilities,
+        startup_native_operation_observations,
     };
 
     if !send_event(
@@ -477,6 +600,7 @@ pub fn run_inventory_at_root<C: ServerConnector>(
                 nodes_returned,
                 has_more,
                 native_operations: boundary.operations().saturating_sub(operations_before),
+                native_operation_observations: boundary.take_operation_observations(),
                 elapsed_ms: slice_elapsed.as_millis().try_into().unwrap_or(u64::MAX),
                 entries_seen,
                 unique_items: seen_items.len() as u64,
@@ -619,10 +743,12 @@ fn capabilities_for_inventory<S: ConnectedServer>(
         .into());
     }
     let namespace = if supports_da2 {
-        let organization = match boundary.before_operation() {
-            BoundaryResult::Proceed => server.query_organization()?,
-            BoundaryResult::Cancelled => return Err(InventoryError::Cancelled),
-        };
+        let organization = paced_call(
+            boundary,
+            InventoryNativeOperationKind::NamespaceOrganizationQuery,
+            1,
+            || server.query_organization(),
+        )?;
         match organization {
             value if value == OPC_NS_FLAT.0.cast_unsigned() => {
                 crate::provider::BrowseNamespace::Flat
@@ -666,26 +792,33 @@ fn next_page<S: ConnectedServer>(
     match &work.location {
         BranchLocation::Da3(item_id) => {
             let is_root = item_id.is_none() && work.breadcrumbs.is_empty();
-            let page = match context.boundary.before_operation_with_cost(batch_size) {
-                BoundaryResult::Proceed => server.browse_da3(
-                    item_id.as_deref(),
-                    work.da3_continuation.as_deref(),
-                    batch_size,
-                    BrowseNodeFilter::All,
-                ),
-                BoundaryResult::Cancelled => return Err(InventoryError::Cancelled),
-            }
-            .map_err(|error| {
-                if is_root && is_da3_browse_compatibility_error(&error) {
-                    error
-                } else {
-                    contextual_browse_error(
-                        error,
-                        "browse_da3",
-                        &work.breadcrumbs,
+            let page = paced_call(
+                context.boundary,
+                InventoryNativeOperationKind::Da3Page,
+                batch_size,
+                || {
+                    server.browse_da3(
                         item_id.as_deref(),
+                        work.da3_continuation.as_deref(),
+                        batch_size,
+                        BrowseNodeFilter::All,
                     )
+                },
+            )
+            .map_err(|error| match error {
+                InventoryError::Cancelled => InventoryError::Cancelled,
+                InventoryError::Failed(error)
+                    if is_root && is_da3_browse_compatibility_error(&error) =>
+                {
+                    InventoryError::Failed(error)
                 }
+                InventoryError::Failed(error) => InventoryError::Failed(contextual_browse_error(
+                    error,
+                    "browse_da3",
+                    &work.breadcrumbs,
+                    item_id.as_deref(),
+                )),
+                error @ InventoryError::InvalidDa2Branch { .. } => error,
             })?;
             let crate::backend::connector::NativeBrowsePage {
                 elements,
@@ -867,9 +1000,12 @@ fn start_da2_page<S: ConnectedServer>(
     let branches = if flat {
         None
     } else {
-        let iterator = paced_call(boundary, || {
-            server.begin_da2_browse(OPC_BRANCH.0.cast_unsigned(), Some(""), 0, 0)
-        })
+        let iterator = paced_call(
+            boundary,
+            InventoryNativeOperationKind::Da2BranchEnumeratorCreation,
+            1,
+            || server.begin_da2_browse(OPC_BRANCH.0.cast_unsigned(), Some(""), 0, 0),
+        )
         .map_err(|error| match error {
             InventoryError::Failed(error) => InventoryError::Failed(contextual_browse_error(
                 error,
@@ -886,18 +1022,27 @@ fn start_da2_page<S: ConnectedServer>(
             parent_components,
         ))
     };
-    let iterator = paced_call(boundary, || {
-        server.begin_da2_browse(
-            if flat {
-                OPC_FLAT.0.cast_unsigned()
-            } else {
-                OPC_LEAF.0.cast_unsigned()
-            },
-            Some(""),
-            0,
-            0,
-        )
-    })
+    let iterator = paced_call(
+        boundary,
+        if flat {
+            InventoryNativeOperationKind::Da2FlatEnumeratorCreation
+        } else {
+            InventoryNativeOperationKind::Da2LeafEnumeratorCreation
+        },
+        1,
+        || {
+            server.begin_da2_browse(
+                if flat {
+                    OPC_FLAT.0.cast_unsigned()
+                } else {
+                    OPC_LEAF.0.cast_unsigned()
+                },
+                Some(""),
+                0,
+                0,
+            )
+        },
+    )
     .map_err(|error| match error {
         InventoryError::Failed(error) => InventoryError::Failed(contextual_browse_error(
             error,
@@ -977,7 +1122,12 @@ fn browse_da2_page<S: ConnectedServer>(
                 let item_id = if state.flat {
                     name.clone()
                 } else {
-                    match paced_call(context.boundary, || server.get_item_id(&name)) {
+                    match paced_call(
+                        context.boundary,
+                        InventoryNativeOperationKind::GetItemId,
+                        1,
+                        || server.get_item_id(&name),
+                    ) {
                         Ok(item_id) => item_id,
                         Err(InventoryError::Failed(error)) => {
                             return Err(contextual_browse_error(
@@ -1025,7 +1175,9 @@ fn map_inventory_da2_branch<S: ConnectedServer>(
 ) -> Result<Option<InventoryDa2BranchNode>, InventoryError> {
     let mut child_path = state.parent_path.clone();
     child_path.push(name.to_string());
-    let item_id = match paced_call(boundary, || server.resolve_da2_item_id(name)) {
+    let item_id = match paced_call(boundary, InventoryNativeOperationKind::GetItemId, 1, || {
+        server.resolve_da2_item_id(name)
+    }) {
         Ok(item_id) => item_id,
         Err(InventoryError::Failed(error)) if is_com_hresult(&error, E_INVALIDARG_HRESULT) => None,
         Err(InventoryError::Failed(error)) => {
@@ -1234,7 +1386,9 @@ fn move_to_da2_path<S: ConnectedServer>(
     if let Some(item_id) = target.item_id.as_deref()
         && *current_path != target.components
     {
-        match paced_call(boundary, || server.change_browse_position_to(item_id)) {
+        match paced_call(boundary, InventoryNativeOperationKind::Da2PathTo, 1, || {
+            server.change_browse_position_to(item_id)
+        }) {
             Ok(()) => {
                 current_path.clone_from(&target.components);
                 return Ok(());
@@ -1261,7 +1415,7 @@ fn move_to_da2_path<S: ConnectedServer>(
         .take_while(|(left, right)| left == right)
         .count();
     for _ in shared..current_path.len() {
-        paced_call(boundary, || {
+        paced_call(boundary, InventoryNativeOperationKind::Da2PathUp, 1, || {
             server.change_browse_position(OPC_BROWSE_UP.0.cast_unsigned(), "")
         })
         .map_err(|error| {
@@ -1275,9 +1429,12 @@ fn move_to_da2_path<S: ConnectedServer>(
     }
     current_path.truncate(shared);
     for branch in &target_components[shared..] {
-        match paced_call(boundary, || {
-            server.change_browse_position(OPC_BROWSE_DOWN.0.cast_unsigned(), branch)
-        }) {
+        match paced_call(
+            boundary,
+            InventoryNativeOperationKind::Da2PathDown,
+            1,
+            || server.change_browse_position(OPC_BROWSE_DOWN.0.cast_unsigned(), branch),
+        ) {
             Ok(()) => current_path.push(branch.clone()),
             Err(InventoryError::Failed(error)) if is_com_hresult(&error, E_INVALIDARG_HRESULT) => {
                 return Err(InventoryError::InvalidDa2Branch {
@@ -1381,6 +1538,10 @@ mod tests {
                     return None;
                 }
                 self.costs.lock().unwrap().push(self.refill_size);
+                record_native_operation(
+                    InventoryNativeOperationKind::Da2StringRefill,
+                    Duration::from_nanos(1),
+                );
                 if should_cancel() {
                     return None;
                 }
@@ -2110,7 +2271,10 @@ mod tests {
             ..Default::default()
         });
         let mut boundary = InventoryBoundary::new(&control);
-        assert_eq!(boundary.before_operation(), BoundaryResult::Proceed);
+        assert_eq!(
+            boundary.before_operation_with_cost(1),
+            BoundaryResult::Proceed
+        );
         let updater = {
             let control = control.clone();
             std::thread::spawn(move || {
@@ -2122,7 +2286,10 @@ mod tests {
             })
         };
         let started = Instant::now();
-        assert_eq!(boundary.before_operation(), BoundaryResult::Proceed);
+        assert_eq!(
+            boundary.before_operation_with_cost(1),
+            BoundaryResult::Proceed
+        );
         updater.join().unwrap();
         assert!(started.elapsed() < Duration::from_millis(90));
     }
@@ -2166,6 +2333,7 @@ mod tests {
         );
         let control = InventoryControl::new();
         let mut boundary = InventoryBoundary::new(&control);
+        let _telemetry_scope = install_native_operation_telemetry(boundary.telemetry_recorder());
         let mut values = Vec::new();
 
         while let Some(value) = iterator.next(&mut boundary) {
@@ -2182,6 +2350,169 @@ mod tests {
         );
         assert_eq!(*costs.lock().unwrap(), vec![256, 256]);
         assert_eq!(boundary.operations(), 2);
+        let observations = boundary.take_operation_observations();
+        assert_eq!(observations.len(), 1);
+        assert_eq!(
+            observations[0].kind,
+            InventoryNativeOperationKind::Da2StringRefill
+        );
+        assert_eq!(observations[0].count, 2);
+    }
+
+    #[test]
+    #[allow(clippy::too_many_lines)]
+    fn paced_calls_record_typed_native_operation_observations_in_order() {
+        let control = InventoryControl::new();
+        let mut boundary = InventoryBoundary::new(&control);
+
+        let result_a = paced_call(
+            &mut boundary,
+            InventoryNativeOperationKind::NamespaceOrganizationQuery,
+            1,
+            || Ok::<_, OpcError>("namespace"),
+        )
+        .unwrap();
+        let result_b = paced_call(
+            &mut boundary,
+            InventoryNativeOperationKind::Da2BranchEnumeratorCreation,
+            2,
+            || Ok::<_, OpcError>("branch"),
+        )
+        .unwrap();
+        let result_c = paced_call(
+            &mut boundary,
+            InventoryNativeOperationKind::Da2LeafEnumeratorCreation,
+            3,
+            || Ok::<_, OpcError>("leaf"),
+        )
+        .unwrap();
+        let result_d = paced_call(
+            &mut boundary,
+            InventoryNativeOperationKind::Da2FlatEnumeratorCreation,
+            4,
+            || Ok::<_, OpcError>("flat"),
+        )
+        .unwrap();
+        let result_e = paced_call(
+            &mut boundary,
+            InventoryNativeOperationKind::Da2StringRefill,
+            256,
+            || Ok::<_, OpcError>("refill"),
+        )
+        .unwrap();
+        let result_f = paced_call(
+            &mut boundary,
+            InventoryNativeOperationKind::GetItemId,
+            1,
+            || Ok::<_, OpcError>("item"),
+        )
+        .unwrap();
+        let result_g = paced_call(
+            &mut boundary,
+            InventoryNativeOperationKind::Da2ClassificationDown,
+            1,
+            || Ok::<_, OpcError>("classify-down"),
+        )
+        .unwrap();
+        let result_h = paced_call(
+            &mut boundary,
+            InventoryNativeOperationKind::Da2ClassificationUp,
+            1,
+            || Ok::<_, OpcError>("classify-up"),
+        )
+        .unwrap();
+        let result_i = paced_call(
+            &mut boundary,
+            InventoryNativeOperationKind::Da2PathDown,
+            1,
+            || Ok::<_, OpcError>("path-down"),
+        )
+        .unwrap();
+        let result_j = paced_call(
+            &mut boundary,
+            InventoryNativeOperationKind::Da2PathUp,
+            1,
+            || Ok::<_, OpcError>("path-up"),
+        )
+        .unwrap();
+        let result_k = paced_call(
+            &mut boundary,
+            InventoryNativeOperationKind::Da2ProbeDown,
+            1,
+            || Ok::<_, OpcError>("probe-down"),
+        )
+        .unwrap();
+        let result_l = paced_call(
+            &mut boundary,
+            InventoryNativeOperationKind::Da2ProbeUp,
+            1,
+            || Ok::<_, OpcError>("probe-up"),
+        )
+        .unwrap();
+        let result_m = paced_call(
+            &mut boundary,
+            InventoryNativeOperationKind::Da3Page,
+            10,
+            || Ok::<_, OpcError>("page"),
+        )
+        .unwrap();
+
+        assert_eq!(result_a, "namespace");
+        assert_eq!(result_b, "branch");
+        assert_eq!(result_c, "leaf");
+        assert_eq!(result_d, "flat");
+        assert_eq!(result_e, "refill");
+        assert_eq!(result_f, "item");
+        assert_eq!(result_g, "classify-down");
+        assert_eq!(result_h, "classify-up");
+        assert_eq!(result_i, "path-down");
+        assert_eq!(result_j, "path-up");
+        assert_eq!(result_k, "probe-down");
+        assert_eq!(result_l, "probe-up");
+        assert_eq!(result_m, "page");
+
+        let observations = boundary.take_operation_observations();
+        assert_eq!(
+            observations
+                .iter()
+                .map(|observation| observation.kind)
+                .collect::<Vec<_>>(),
+            vec![
+                InventoryNativeOperationKind::NamespaceOrganizationQuery,
+                InventoryNativeOperationKind::Da2BranchEnumeratorCreation,
+                InventoryNativeOperationKind::Da2LeafEnumeratorCreation,
+                InventoryNativeOperationKind::Da2FlatEnumeratorCreation,
+                InventoryNativeOperationKind::Da2StringRefill,
+                InventoryNativeOperationKind::GetItemId,
+                InventoryNativeOperationKind::Da2ClassificationDown,
+                InventoryNativeOperationKind::Da2ClassificationUp,
+                InventoryNativeOperationKind::Da2PathDown,
+                InventoryNativeOperationKind::Da2PathUp,
+                InventoryNativeOperationKind::Da2ProbeDown,
+                InventoryNativeOperationKind::Da2ProbeUp,
+                InventoryNativeOperationKind::Da3Page,
+            ]
+        );
+        assert_eq!(
+            observations
+                .iter()
+                .map(|observation| observation.count)
+                .collect::<Vec<_>>(),
+            vec![1; 13]
+        );
+        assert!(observations.iter().all(|observation| {
+            observation
+                .latency_histogram
+                .bucket_counts
+                .iter()
+                .sum::<u64>()
+                == observation.count
+        }));
+        assert!(
+            observations
+                .iter()
+                .all(|observation| observation.total_elapsed >= observation.max_elapsed)
+        );
     }
 
     #[test]
@@ -2277,7 +2608,77 @@ mod tests {
         assert_eq!(slices[0].backend, InventorySliceBackend::Da3);
         assert_eq!(slices[0].nodes_returned, 2);
         assert_eq!(slices[0].native_operations, 1);
+        assert_eq!(
+            slices[0]
+                .native_operation_observations
+                .iter()
+                .map(|observation| observation.kind)
+                .collect::<Vec<_>>(),
+            vec![InventoryNativeOperationKind::Da3Page]
+        );
+        assert_eq!(slices[0].native_operation_observations[0].count, 1);
         assert_eq!(slices[1].sequence, 2);
+    }
+
+    #[test]
+    fn startup_telemetry_is_separate_from_the_first_slice() {
+        let connector = Arc::new(SharedConnector {
+            server: Arc::new(Mutex::new(Some(Da3Server {
+                total: 1,
+                browse_calls: Arc::new(AtomicUsize::new(0)),
+                batch_sizes: Arc::new(Mutex::new(Vec::new())),
+                fail: false,
+                da3_hresult: None,
+                supports_da2: true,
+                da2_items: Vec::new(),
+            }))),
+        });
+        let (sender, mut receiver) = mpsc::channel(16);
+        run_inventory(
+            connector.as_ref(),
+            "test",
+            InventoryOptions {
+                batch_size: 2,
+                max_entries: None,
+            },
+            &InventoryControl::new(),
+            &sender,
+        )
+        .unwrap();
+
+        let mut completed = None;
+        let mut slices = Vec::new();
+        let mut error = None;
+        while let Ok(event) = receiver.try_recv() {
+            match event {
+                Ok(InventoryEvent::Slice(slice)) => slices.push(slice),
+                Ok(InventoryEvent::Completed(result)) => completed = Some(result),
+                Ok(InventoryEvent::Entry(_) | InventoryEvent::Progress(_)) => {}
+                Err(value) => error = Some(value),
+            }
+        }
+
+        assert!(error.is_none());
+        let completed = completed.expect("inventory should complete");
+        assert_eq!(
+            completed
+                .startup_native_operation_observations
+                .iter()
+                .map(|observation| observation.kind)
+                .collect::<Vec<_>>(),
+            vec![InventoryNativeOperationKind::NamespaceOrganizationQuery]
+        );
+        assert_eq!(completed.startup_native_operation_observations[0].count, 1);
+        assert_eq!(slices.len(), 1);
+        assert_eq!(slices[0].native_operations, 1);
+        assert_eq!(
+            slices[0]
+                .native_operation_observations
+                .iter()
+                .map(|observation| observation.kind)
+                .collect::<Vec<_>>(),
+            vec![InventoryNativeOperationKind::Da3Page]
+        );
     }
 
     #[test]
@@ -2360,7 +2761,19 @@ mod tests {
         )
         .unwrap();
 
-        let (entries, completed, error) = collect(&mut receiver);
+        let mut entries = Vec::new();
+        let mut slices = Vec::new();
+        let mut completed = None;
+        let mut error = None;
+        while let Ok(event) = receiver.try_recv() {
+            match event {
+                Ok(InventoryEvent::Entry(entry)) => entries.push(entry),
+                Ok(InventoryEvent::Slice(slice)) => slices.push(slice),
+                Ok(InventoryEvent::Completed(result)) => completed = Some(result),
+                Ok(InventoryEvent::Progress(_)) => {}
+                Err(value) => error = Some(value),
+            }
+        }
         assert_eq!(
             entries
                 .iter()
@@ -2372,6 +2785,29 @@ mod tests {
         assert_eq!(browse_to_calls.load(Ordering::Relaxed), 1);
         assert_eq!(down_calls.load(Ordering::Relaxed), 0);
         assert_eq!(up_calls.load(Ordering::Relaxed), 0);
+        let observations = slices
+            .iter()
+            .flat_map(|slice| slice.native_operation_observations.iter())
+            .collect::<Vec<_>>();
+        assert!(
+            !observations
+                .iter()
+                .any(|observation| observation.kind == InventoryNativeOperationKind::Da2PathDown)
+        );
+        assert!(
+            observations
+                .iter()
+                .any(|observation| observation.kind == InventoryNativeOperationKind::Da2PathTo)
+        );
+        assert!(!observations.iter().any(|observation| {
+            matches!(
+                observation.kind,
+                InventoryNativeOperationKind::Da2ClassificationDown
+                    | InventoryNativeOperationKind::Da2ClassificationUp
+                    | InventoryNativeOperationKind::Da2ProbeDown
+                    | InventoryNativeOperationKind::Da2ProbeUp
+            )
+        }));
         assert!(completed.is_some_and(|value| value.complete));
         assert!(error.is_none());
     }

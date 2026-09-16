@@ -111,6 +111,30 @@ does not fill the normal informational log stream. Native iterator refills and
 per-entry null handling are more frequent and remain at `trace!`; failures and
 operator-relevant transitions remain at `warn!` or `error!`.
 
+### Typed Inventory Operation Telemetry
+
+The inventory worker keeps a per-scope, first-seen ordered aggregation of
+native operations. `paced_call` checks cancellation and pacing before entering
+the COM call, then records only the native call's elapsed time; pacing waits
+are intentionally excluded. A call that reaches COM and fails is still
+counted, which makes transport and server failures visible in the same
+accounting as successful calls.
+
+The public `InventorySliceObservation::native_operation_observations` field
+summarizes traversal work by `InventoryNativeOperationKind`. The
+`InventoryCompleted::startup_native_operation_observations` field keeps
+capability detection separate from the first traversal slice. Each summary
+contains count, total duration, maximum duration, a fixed nanosecond histogram,
+and approximate p50/p95/p99 values. The histogram uses inclusive upper bounds
+and an overflow bucket whose percentile value is the observed maximum.
+
+Pacing costs describe bounded work rather than returned rows: a DA3 page is
+charged at its requested page size, while a DA2 string iterator charges only
+actual native refills at the iterator cache capacity. Values already in the
+cache do not invoke the pacing gate or consume item-rate budget. The iterator
+reports refill observations through a thread-local inventory scope so the
+public iterator traits do not carry telemetry state outside an inventory run.
+
 ---
 
 ## 7. Testing Strategy

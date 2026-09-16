@@ -9,7 +9,7 @@ use crate::bindings::da::{
 };
 use crate::opc_da::errors::{
     E_INVALIDARG_HRESULT, MAX_CONSECUTIVE_EMPTY_DA3_PAGES, OpcError, OpcResult,
-    browse_continuation_non_progress_error, com_hresult, contextual_browse_error,
+    browse_continuation_non_progress_error, com_hresult, contextual_browse_error, is_com_hresult,
     is_da2_browse_to_fallback_error, is_da3_browse_compatibility_error,
     is_non_progress_browse_error,
 };
@@ -248,6 +248,11 @@ pub fn run_inventory<C: ServerConnector>(
                 max_page_size: 1_000,
             },
             Err(InventoryError::Failed(error)) => return Err(error),
+            Err(InventoryError::InvalidDa2Branch { .. }) => {
+                return Err(OpcError::Internal(
+                    "invalid DA2 branch escaped capability detection".to_string(),
+                ));
+            }
         }
     };
     tracing::info!(
@@ -925,6 +930,9 @@ fn browse_da2_page<S: ConnectedServer>(
                             .into());
                         }
                         Err(InventoryError::Cancelled) => return Err(InventoryError::Cancelled),
+                        Err(error @ InventoryError::InvalidDa2Branch { .. }) => {
+                            return Err(error);
+                        }
                     }
                 };
                 (Some(item_id), None)
@@ -960,11 +968,7 @@ fn map_inventory_da2_branch<S: ConnectedServer>(
     child_path.push(name.to_string());
     let item_id = match paced_call(boundary, || server.resolve_da2_item_id(name)) {
         Ok(item_id) => item_id,
-        Err(InventoryError::Failed(error))
-            if crate::opc_da::errors::is_com_hresult(&error, E_INVALIDARG_HRESULT) =>
-        {
-            None
-        }
+        Err(InventoryError::Failed(error)) if is_com_hresult(&error, E_INVALIDARG_HRESULT) => None,
         Err(InventoryError::Failed(error)) => {
             return Err(contextual_browse_error(
                 error,
@@ -975,6 +979,7 @@ fn map_inventory_da2_branch<S: ConnectedServer>(
             .into());
         }
         Err(InventoryError::Cancelled) => return Err(InventoryError::Cancelled),
+        Err(error @ InventoryError::InvalidDa2Branch { .. }) => return Err(error),
     };
     let kind = if item_id.is_some() {
         state.merged_items.insert(name.to_string());
@@ -2540,6 +2545,7 @@ mod tests {
         let mut boundary = InventoryBoundary::new(&control);
         let mut state = Da2PageState {
             parent_path: vec!["FCS0528".to_string()],
+            parent_item_id: None,
             branches: Some(BufferedBrowseIterator::new(
                 Box::new(std::iter::repeat_with(|| {
                     Ok::<String, OpcError>("\u{1}".to_string())

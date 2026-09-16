@@ -142,6 +142,14 @@ pub(crate) fn is_da3_browse_compatibility_error(error: &OpcError) -> bool {
         || is_com_hresult(error, E_NOTIMPL_HRESULT)
 }
 
+pub(crate) fn is_da2_browse_to_fallback_error(error: &OpcError) -> bool {
+    matches!(error, OpcError::NotImplemented(_))
+        || is_com_hresult(error, E_INVALIDARG_HRESULT)
+        || is_com_hresult(error, E_NOTIMPL_HRESULT)
+        || is_com_hresult(error, RPC_X_NULL_REF_POINTER_HRESULT)
+        || matches!(com_hresult(error), Some(0xC004_0007 | 0xC004_0008))
+}
+
 pub(crate) fn is_non_progress_browse_error(error: &OpcError) -> bool {
     matches!(error, OpcError::BrowseNonProgress { .. })
 }
@@ -292,6 +300,43 @@ mod tests {
         }
         assert!(!is_da3_browse_compatibility_error(&OpcError::Internal(
             "not a COM compatibility failure".to_string()
+        )));
+    }
+
+    #[test]
+    fn da2_browse_to_fallback_accepts_unsupported_and_invalid_navigation() {
+        for error in [
+            OpcError::NotImplemented("unsupported".to_string()),
+            OpcError::Com {
+                source: windows::core::Error::from_hresult(HRESULT(E_INVALIDARG_HRESULT as i32)),
+            },
+            OpcError::Com {
+                source: windows::core::Error::from_hresult(HRESULT(E_NOTIMPL_HRESULT as i32)),
+            },
+            OpcError::Com {
+                source: windows::core::Error::from_hresult(HRESULT(
+                    RPC_X_NULL_REF_POINTER_HRESULT as i32,
+                )),
+            },
+            OpcError::Com {
+                source: windows::core::Error::from_hresult(HRESULT(0xC004_0007_u32 as i32)),
+            },
+            OpcError::Com {
+                source: windows::core::Error::from_hresult(HRESULT(0xC004_0008_u32 as i32)),
+            },
+        ] {
+            assert!(is_da2_browse_to_fallback_error(&error));
+        }
+    }
+
+    #[test]
+    fn da2_browse_to_fallback_rejects_unrelated_errors() {
+        let error = OpcError::Com {
+            source: windows::core::Error::from_hresult(HRESULT(0x8007_0005_u32 as i32)),
+        };
+        assert!(!is_da2_browse_to_fallback_error(&error));
+        assert!(!is_da2_browse_to_fallback_error(&OpcError::Internal(
+            "unexpected browse failure".to_string()
         )));
     }
 

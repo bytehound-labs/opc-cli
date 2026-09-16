@@ -61,6 +61,9 @@ All methods use `#[async_trait]`.
 *   DA 3.0 root and unused-filter strings are always represented by non-null NUL-terminated UTF-16 values. The initial continuation pointer itself is non-null and contains a null value. A zero property count uses a true null property-ID pointer.
 *   A first-root-page `RPC_X_NULL_REF_POINTER` or `E_NOTIMPL` response falls back to DA 2.x only when DA 2.x is available. Other COM failures do not change browse strategy, and a successful root page locks the session to DA 3.0.
 *   During hierarchical DA 2.x inventory, a `BrowseNonProgress` error from the branch iterator is recoverable: the branch iterator is dropped, the independent item iterator continues, and the completion warning records the skipped iterator. The same error from the item iterator, or any unrelated error, remains terminal.
+*   During hierarchical DA 2.x inventory, branch expansion is deferred until a branch is visited; inventory does not issue eager child-existence or branch-classification `DOWN`/`UP` probes.
+*   Inventory uses `GetItemID` only to detect a same-named branch-and-item and preserve its exact item ID. When that ID is available, `OPC_BROWSE_TO` is attempted first; only `NotImplemented`, `E_INVALIDARG`, `E_NOTIMPL`, `RPC_X_NULL_REF_POINTER`, `OPC_E_UNKNOWNITEMID`, and `OPC_E_INVALIDITEMID` trigger component-wise fallback. Other direct-navigation failures remain terminal.
+*   A branch that fails during deferred component-wise traversal with a compatibility navigation error is skipped, while independent item enumeration continues. Same-named branch-and-item nodes remain selectable and retain their child traversal.
 *   Native `IEnumGUID` and `IEnumString` fetched counts are validated against their fixed cache capacities before indexing. `StringIterator` releases all COM-owned strings that remain after a failed or malformed fetch, and bounds consecutive null-only batches with the same non-progress threshold used for repeated values.
 *   A compatibility browse wrapper replaces a root-scoped `BrowseNonProgress` path with the active DA 2.x browse path before returning it to inventory callers.
 *   `start_inventory` requests no more than `batch_size` native entries per operation and never exposes
@@ -289,11 +292,15 @@ empty continuation pages. Temporary empty pages are valid below that threshold.
 The public `browse_page` operation remains strictly one page per call and does
 not recursively drain or apply the inventory worker's progress guard.
 When DA 3.0 browsing is unavailable or this compatibility fallback is selected, hierarchical DA 2.x
-sessions enumerate immediate `OPC_BRANCH` and `OPC_LEAF` children and resolve
-leaf names through `GetItemID`; flat sessions page `OPC_FLAT` results. The DA
-2.x fallback never recursively enumerates descendants. When a browse name is
-both a branch and a leaf, it is emitted once as `BranchAndItem` with the exact
-`GetItemID` value.
+sessions enumerate immediate `OPC_BRANCH` and `OPC_LEAF` children; flat sessions
+page `OPC_FLAT` results. The DA 2.x fallback never recursively enumerates
+descendants in a public page. Internal inventory expansion is deferred and uses
+canonical `OPC_BROWSE_TO` navigation when a branch-and-item `GetItemID` is
+available, with only the classified compatibility fallback to component-wise
+`DOWN` traversal. A branch that remains non-navigable is skipped without
+discarding the sibling item iterator. When a browse name is both a branch and a
+leaf, it is emitted once as `BranchAndItem` with the exact `GetItemID` value and
+its child traversal is retained.
 
 `start_inventory` uses the same negotiation and returns capabilities with DA 3.0
 disabled when the effective inventory source is DA 2.x. Its completion warning
@@ -394,7 +401,7 @@ Defined in § 1.1. See table above.
 | Server enumeration | `Client.get_servers()` |
 | Server connection | `Client.create_server()` |
 | Namespace detection | `Server.query_organization()` |
-| Tag browsing | DA 3.0 `IOPCBrowse::Browse`; DA 2.x `Server.browse_opc_item_ids()` (`OPC_LEAF`, `OPC_BRANCH`, or flat-only `OPC_FLAT`), `Server.change_browse_position()`, `Server.get_item_id()` |
+| Tag browsing | DA 3.0 `IOPCBrowse::Browse`; DA 2.x `Server.browse_opc_item_ids()` (`OPC_LEAF`, `OPC_BRANCH`, or flat-only `OPC_FLAT`), `Server.change_browse_position()`/`change_browse_position_to()`, `Server.get_item_id()` |
 | Tag reading | `Server.add_group()`, group `.add_items()`, group `.read()`, `Server.remove_group()` |
 | Tag writing | `Server.add_group()`, group `.add_items()`, group `.write()`, `Server.remove_group()` |
 | String iteration | `StringIterator::new()` |

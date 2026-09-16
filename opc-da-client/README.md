@@ -294,14 +294,23 @@ size before the next slice; values must be between 1 and
 `MAX_INVENTORY_BATCH_SIZE` (1000).
 Each completed slice emits an `InventoryEvent::Slice` observation with its
 backend, result count, operation count, and cumulative progress totals.
-For DA2 hierarchical namespaces, every server-reported branch is validated with
-a bounded native navigation probe. Branch-only names rejected with
-`E_INVALIDARG` are skipped and reported in the inventory completion warning;
-names that resolve to exact items remain selectable even when they are not
-navigable. If the DA2 branch iterator itself reaches the non-progress threshold,
+For DA2 hierarchical inventory, branch expansion is deferred until the branch is
+actually visited. Inventory does not issue eager child-existence or
+branch-classification `DOWN`/`UP` probes. `GetItemID` is used only to detect
+same-named branch-and-item nodes and preserve their exact item ID. When a
+canonical item ID is available, the worker first uses `OPC_BROWSE_TO` to reach
+the branch; only the narrowly classified compatibility errors
+(`NotImplemented`, `E_INVALIDARG`, `E_NOTIMPL`, `RPC_X_NULL_REF_POINTER`,
+`OPC_E_UNKNOWNITEMID`, and `OPC_E_INVALIDITEMID`) fall back to component-wise
+`DOWN` traversal. Other direct-navigation failures remain terminal.
+Branch-only names that cannot be opened with component-wise `DOWN` (including
+`E_INVALIDARG`) are skipped and reported in the inventory completion warning,
+while independent item enumeration continues. A same-named branch-and-item is
+emitted once with `BranchAndItem` kind and remains eligible for child
+expansion. If the DA2 branch iterator itself reaches the non-progress threshold,
 only that iterator is discarded and item enumeration continues. The completion
-warning identifies the skipped branch iterator; non-progressing item iterators
-and unrelated native errors remain terminal.
+warning identifies skipped branch iterators; non-progressing item iterators and
+unrelated native errors remain terminal.
 Inventory uses the same first-root-page DA 3.0 negotiation as interactive
 browsing and reports DA 2.x as its source when compatibility fallback is used.
 Completion warnings are cumulative, so an entry limit or skipped branch does

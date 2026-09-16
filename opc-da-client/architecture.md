@@ -243,8 +243,10 @@ The library exposes two browse surfaces:
    - DA 3.0 servers use native `IOPCBrowse::Browse`, including branch/item/all filters and private continuation strings.
    - DA 3.0 root and unused-filter arguments are non-null empty UTF-16 strings. The initial continuation uses a non-null outer pointer whose value is null, and a zero property count uses a true null property-ID pointer.
    - The first real DA 3.0 root page negotiates usability without consuming a separate continuation. `RPC_X_NULL_REF_POINTER` and `E_NOTIMPL` fall back to DA 2.x only when that interface is available; other COM failures remain terminal. A successful root page locks the session to DA 3.0 so later errors cannot invalidate previously issued node or continuation tokens.
-   - DA 2.x hierarchical servers enumerate only immediate `OPC_BRANCH` and/or `OPC_LEAF` children and resolve leaves with exact `GetItemID` values.
-   - A DA 2.x browse name present as both a branch and a leaf is emitted once as `BranchAndItem`, with its exact `GetItemID` value.
+   - DA 2.x hierarchical servers enumerate only immediate `OPC_BRANCH` and/or `OPC_LEAF` children. Inventory defers branch expansion and does not issue eager child-existence or branch-classification `DOWN`/`UP` probes.
+   - Inventory uses `GetItemID` only to detect a same-named item alongside a branch. A canonical item ID is used with `OPC_BROWSE_TO` first; only narrowly classified compatibility errors fall back to component-wise `DOWN` traversal. Unexpected direct-navigation failures remain terminal.
+   - A DA 2.x browse name present as both a branch and a leaf is emitted once as `BranchAndItem`, with its exact `GetItemID` value, and its child traversal is retained.
+   - A branch that cannot be opened during deferred component-wise traversal is skipped without preventing independent item enumeration; branch-iterator non-progress is recoverable while item-iterator non-progress remains terminal.
    - DA 2.x flat servers page `OPC_FLAT` results without recursive traversal.
    - During hierarchical DA 2.x inventory, a branch-side `BrowseNonProgress` terminates only the malformed branch iterator; item enumeration continues and reports a cumulative completion warning. Item-side non-progress and unrelated errors remain terminal.
    - Public session, node, and continuation tokens are random UUIDs with string encode/parse support for transport adapters; raw COM pointers and DA continuation strings remain on the worker.

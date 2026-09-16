@@ -19,6 +19,7 @@ See **[bytehound-opc-da-client architecture.md](./opc-da-client/architecture.md)
 
 - **Server Discovery**: Enumerate OPC DA servers on local or remote hosts.
 - **Hierarchical Browsing**: Recursive tag discovery for the TUI plus bounded, one-level native browse pages with OPC DA 3.0 support and a one-time, narrowly classified DA 2.x compatibility fallback before the first successful root page.
+- **Direct DA2 Inventory Navigation**: Large hierarchical inventories use canonical `OPC_BROWSE_TO` navigation first, fall back only for known compatibility errors, defer branch expansion, and preserve same-named branch/item nodes without eager probe traffic.
 - **Inventory Telemetry**: Library consumers can pace bounded inventory operations, adjust their batch size at runtime, and receive typed observations for each completed slice.
 - **Quiet Normal Operation**: Successful list, read, write, and browse operations are debug-level events; failures remain visible at warning or error level without producing one informational record per inventory operation.
 - **Bounded Browse Safety**: Native and compatibility browse iterators stop after 64 consecutive identical values and report the iterator, browse path, repeated value, and progress counters instead of stalling indefinitely.

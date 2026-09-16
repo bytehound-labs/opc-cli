@@ -2,14 +2,15 @@
 
 use crate::backend::connector::{
     BrowseStringIterator, ConnectedServer, Da2BranchNavigation, NativeBrowseElement,
-    ServerConnector,
+    ServerConnector, guard_browse_iterator,
 };
 use crate::bindings::da::{
     OPC_BRANCH, OPC_BROWSE_DOWN, OPC_BROWSE_UP, OPC_FLAT, OPC_LEAF, OPC_NS_FLAT,
 };
 use crate::opc_da::errors::{
-    E_INVALIDARG_HRESULT, OpcError, OpcResult, com_hresult, contextual_browse_error,
-    is_da3_browse_compatibility_error,
+    E_INVALIDARG_HRESULT, MAX_CONSECUTIVE_EMPTY_DA3_PAGES, OpcError, OpcResult,
+    browse_continuation_non_progress_error, com_hresult, contextual_browse_error,
+    is_da3_browse_compatibility_error, is_non_progress_browse_error,
 };
 use crate::provider::{
     BrowseCapabilities, BrowseNodeFilter, BrowseNodeKind, InventoryCompleted, InventoryControl,
@@ -24,6 +25,8 @@ struct BranchWork {
     location: BranchLocation,
     breadcrumbs: Vec<String>,
     da3_continuation: Option<String>,
+    da3_seen_continuations: HashSet<String>,
+    da3_consecutive_empty_pages: usize,
     da2_state: Option<Da2PageState>,
 }
 
@@ -46,7 +49,7 @@ struct InventoryPage {
 
 enum InventoryContinuation {
     Da3(String),
-    Da2(Da2PageState),
+    Da2(Box<Da2PageState>),
 }
 
 struct InventoryDa2BranchNode {
@@ -61,6 +64,7 @@ enum BoundaryResult {
     Cancelled,
 }
 
+#[derive(Debug)]
 enum InventoryError {
     Cancelled,
     Failed(OpcError),
@@ -92,6 +96,7 @@ struct InventoryBoundary<'a> {
     last_started: Option<Instant>,
     paused_time: Duration,
     native_operations: u64,
+    first_operation_reported: bool,
 }
 
 fn pacing_interval(pacing: crate::provider::InventoryPacing, item_cost: u32) -> Duration {
@@ -111,6 +116,7 @@ impl<'a> InventoryBoundary<'a> {
             last_started: None,
             paused_time: Duration::ZERO,
             native_operations: 0,
+            first_operation_reported: false,
         }
     }
 
@@ -144,6 +150,16 @@ impl<'a> InventoryBoundary<'a> {
 
             if self.control.is_cancelled() || self.control.is_paused() {
                 continue;
+            }
+            if !self.first_operation_reported {
+                let pacing = self.control.pacing();
+                tracing::info!(
+                    item_cost,
+                    item_rate_per_second = ?pacing.item_rate_per_second,
+                    min_interval_ms = pacing.min_interval.as_millis(),
+                    "native inventory first operation starting"
+                );
+                self.first_operation_reported = true;
             }
             self.last_started = Some(Instant::now());
             self.native_operations = self.native_operations.saturating_add(1);
@@ -187,8 +203,23 @@ pub fn run_inventory<C: ServerConnector>(
     }
 
     let mut active_time = Duration::ZERO;
+    let startup_started = Instant::now();
+    tracing::info!(
+        server = %server_name,
+        batch_size = options.batch_size,
+        thread_id = ?std::thread::current().id(),
+        "native inventory startup started"
+    );
+    let connect_started = Instant::now();
     let connected = connector.connect(server_name)?;
+    tracing::info!(
+        server = %server_name,
+        elapsed_ms = connect_started.elapsed().as_millis(),
+        total_elapsed_ms = startup_started.elapsed().as_millis(),
+        "native inventory server connection completed"
+    );
     let mut boundary = InventoryBoundary::new(control);
+    tracing::info!(server = %server_name, "native inventory capability detection started");
     let capabilities = if control.is_cancelled() {
         crate::provider::BrowseCapabilities {
             namespace: crate::provider::BrowseNamespace::Unknown,
@@ -208,6 +239,14 @@ pub fn run_inventory<C: ServerConnector>(
             Err(InventoryError::Failed(error)) => return Err(error),
         }
     };
+    tracing::info!(
+        server = %server_name,
+        supports_da2 = capabilities.supports_da2,
+        supports_da3 = capabilities.supports_da3,
+        namespace = ?capabilities.namespace,
+        elapsed_ms = startup_started.elapsed().as_millis(),
+        "native inventory capability detection completed"
+    );
     let mut queue = VecDeque::from([initial_work(capabilities)]);
     let mut seen_items = HashSet::new();
     let mut current_da2_path = Vec::new();
@@ -215,6 +254,8 @@ pub fn run_inventory<C: ServerConnector>(
     let mut entries_seen = 0_u64;
     let mut skipped_invalid_branches = 0_u64;
     let mut first_skipped_invalid_branch = None;
+    let mut skipped_non_progressing_branches = 0_u64;
+    let mut first_skipped_non_progressing_branch = None;
     let mut slice_sequence = 0_u64;
 
     let mut terminal = InventoryCompleted {
@@ -254,16 +295,25 @@ pub fn run_inventory<C: ServerConnector>(
         let paused_before = boundary.paused_time();
         let batch_size = control.batch_size().unwrap_or(options.batch_size);
         let operations_before = boundary.operations();
-        let page_result = next_page(
-            &connected,
-            &mut work,
-            batch_size,
-            &mut current_da2_path,
-            &mut skipped_invalid_branches,
-            &mut first_skipped_invalid_branch,
-            &mut boundary,
-        );
+        let first_native_operation = operations_before == 0;
+        let mut page_context = InventoryPageContext {
+            current_da2_path: &mut current_da2_path,
+            skipped_invalid_branches: &mut skipped_invalid_branches,
+            first_skipped_invalid_branch: &mut first_skipped_invalid_branch,
+            skipped_non_progressing_branches: &mut skipped_non_progressing_branches,
+            first_skipped_non_progressing_branch: &mut first_skipped_non_progressing_branch,
+            boundary: &mut boundary,
+        };
+        let page_result = next_page(&connected, &mut work, batch_size, &mut page_context);
         let slice_elapsed = call_started.elapsed();
+        if first_native_operation && boundary.operations() > operations_before {
+            tracing::info!(
+                server = %server_name,
+                elapsed_ms = startup_started.elapsed().as_millis(),
+                first_operation_elapsed_ms = slice_elapsed.as_millis(),
+                "native inventory first operation completed"
+            );
+        }
         active_time +=
             slice_elapsed.saturating_sub(boundary.paused_time().saturating_sub(paused_before));
         let page = match page_result {
@@ -364,6 +414,8 @@ pub fn run_inventory<C: ServerConnector>(
                     location,
                     breadcrumbs,
                     da3_continuation: None,
+                    da3_seen_continuations: HashSet::new(),
+                    da3_consecutive_empty_pages: 0,
                     da2_state: None,
                 });
             }
@@ -399,7 +451,7 @@ pub fn run_inventory<C: ServerConnector>(
                     work.da3_continuation = Some(continuation);
                 }
                 InventoryContinuation::Da2(state) => {
-                    work.da2_state = Some(state);
+                    work.da2_state = Some(*state);
                 }
             }
             queue.push_front(work);
@@ -435,6 +487,16 @@ pub fn run_inventory<C: ServerConnector>(
         );
         merge_warning(&mut terminal.warning, warning);
     }
+    if skipped_non_progressing_branches > 0 {
+        let warning = format!(
+            "skipped {skipped_non_progressing_branches} non-progressing DA2 branch iterator(s); \
+             first skipped iterator: {}",
+            first_skipped_non_progressing_branch
+                .as_deref()
+                .unwrap_or("<unknown>")
+        );
+        merge_warning(&mut terminal.warning, warning);
+    }
     let _ = send_event(sender, InventoryEvent::Completed(terminal));
     Ok(())
 }
@@ -449,6 +511,8 @@ fn initial_work(capabilities: BrowseCapabilities) -> BranchWork {
         location,
         breadcrumbs: Vec::new(),
         da3_continuation: None,
+        da3_seen_continuations: HashSet::new(),
+        da3_consecutive_empty_pages: 0,
         da2_state: None,
     }
 }
@@ -512,19 +576,23 @@ fn capabilities_for_inventory<S: ConnectedServer>(
     })
 }
 
+fn da3_continuation_error(work: &BranchWork, detail: String) -> InventoryError {
+    InventoryError::Failed(browse_continuation_non_progress_error(
+        &work.breadcrumbs,
+        detail,
+    ))
+}
+
 fn next_page<S: ConnectedServer>(
     server: &S,
     work: &mut BranchWork,
     batch_size: u32,
-    current_da2_path: &mut Vec<String>,
-    skipped_invalid_branches: &mut u64,
-    first_skipped_invalid_branch: &mut Option<String>,
-    boundary: &mut InventoryBoundary<'_>,
+    context: &mut InventoryPageContext<'_, '_>,
 ) -> Result<InventoryPage, InventoryError> {
     match &work.location {
         BranchLocation::Da3(item_id) => {
             let is_root = item_id.is_none() && work.breadcrumbs.is_empty();
-            let page = match boundary.before_operation_with_cost(batch_size) {
+            let page = match context.boundary.before_operation_with_cost(batch_size) {
                 BoundaryResult::Proceed => server.browse_da3(
                     item_id.as_deref(),
                     work.da3_continuation.as_deref(),
@@ -545,44 +613,75 @@ fn next_page<S: ConnectedServer>(
                     )
                 }
             })?;
-            let nodes = page
-                .elements
+            let crate::backend::connector::NativeBrowsePage {
+                elements,
+                more_elements,
+                continuation,
+            } = page;
+            let continuation = if more_elements {
+                let value = continuation.as_deref().ok_or_else(|| {
+                    da3_continuation_error(
+                        work,
+                        "server reported more elements without a continuation point".to_string(),
+                    )
+                })?;
+                if value.is_empty() {
+                    return Err(da3_continuation_error(
+                        work,
+                        "server returned an empty continuation token".to_string(),
+                    ));
+                }
+                if !work.da3_seen_continuations.insert(value.to_string()) {
+                    return Err(da3_continuation_error(
+                        work,
+                        format!("server repeated continuation token {value:?}"),
+                    ));
+                }
+                if elements.is_empty() {
+                    work.da3_consecutive_empty_pages =
+                        work.da3_consecutive_empty_pages.saturating_add(1);
+                    if work.da3_consecutive_empty_pages >= MAX_CONSECUTIVE_EMPTY_DA3_PAGES {
+                        return Err(da3_continuation_error(
+                            work,
+                            format!(
+                                "server returned {} consecutive empty pages",
+                                work.da3_consecutive_empty_pages
+                            ),
+                        ));
+                    }
+                } else {
+                    work.da3_consecutive_empty_pages = 0;
+                }
+                Some(value.to_string())
+            } else {
+                work.da3_consecutive_empty_pages = 0;
+                None
+            };
+            let nodes = elements
                 .into_iter()
                 .map(map_da3_node)
                 .collect::<OpcResult<Vec<_>>>()?;
-            let continuation = page
-                .continuation
-                .filter(|_| page.more_elements)
-                .map(InventoryContinuation::Da3);
-            if page.more_elements && continuation.is_none() {
-                return Err(InventoryError::Failed(OpcError::Internal(
-                    "DA3 server reported more elements without a continuation point".to_string(),
-                )));
-            }
             Ok(InventoryPage {
                 nodes,
-                continuation,
+                continuation: continuation.map(InventoryContinuation::Da3),
             })
         }
         BranchLocation::Da2(path) => {
             if work.da2_state.is_none() {
-                work.da2_state = Some(start_da2_page(server, path, current_da2_path, boundary)?);
+                work.da2_state = Some(start_da2_page(
+                    server,
+                    path,
+                    context.current_da2_path,
+                    context.boundary,
+                )?);
             }
             let state = work.da2_state.take().ok_or_else(|| {
                 OpcError::Internal("DA2 inventory page state disappeared".to_string())
             })?;
-            let (nodes, state) = browse_da2_page(
-                server,
-                state,
-                batch_size,
-                current_da2_path,
-                skipped_invalid_branches,
-                first_skipped_invalid_branch,
-                boundary,
-            )?;
+            let (nodes, state) = browse_da2_page(server, state, batch_size, context)?;
             Ok(InventoryPage {
                 nodes,
-                continuation: state.map(InventoryContinuation::Da2),
+                continuation: state.map(|state| InventoryContinuation::Da2(Box::new(state))),
             })
         }
     }
@@ -631,6 +730,15 @@ struct Da2PageState {
     merged_items: HashSet<String>,
 }
 
+struct InventoryPageContext<'a, 'control> {
+    current_da2_path: &'a mut Vec<String>,
+    skipped_invalid_branches: &'a mut u64,
+    first_skipped_invalid_branch: &'a mut Option<String>,
+    skipped_non_progressing_branches: &'a mut u64,
+    first_skipped_non_progressing_branch: &'a mut Option<String>,
+    boundary: &'a mut InventoryBoundary<'control>,
+}
+
 fn start_da2_page<S: ConnectedServer>(
     server: &S,
     parent_path: &[String],
@@ -662,7 +770,11 @@ fn start_da2_page<S: ConnectedServer>(
             )),
             InventoryError::Cancelled => InventoryError::Cancelled,
         })?;
-        Some(BufferedBrowseIterator::new(iterator))
+        Some(BufferedBrowseIterator::new(
+            iterator,
+            "inventory DA2 branch iterator",
+            parent_path,
+        ))
     };
     let iterator = paced_call(boundary, || {
         server.begin_da2_browse(
@@ -689,7 +801,15 @@ fn start_da2_page<S: ConnectedServer>(
         )),
         InventoryError::Cancelled => InventoryError::Cancelled,
     })?;
-    let items = Some(BufferedBrowseIterator::new(iterator));
+    let items = Some(BufferedBrowseIterator::new(
+        iterator,
+        if flat {
+            "inventory DA2 flat iterator"
+        } else {
+            "inventory DA2 item iterator"
+        },
+        parent_path,
+    ));
     Ok(Da2PageState {
         parent_path: parent_path.to_vec(),
         branches,
@@ -703,17 +823,25 @@ fn browse_da2_page<S: ConnectedServer>(
     server: &S,
     mut state: Da2PageState,
     batch_size: u32,
-    current_path: &mut Vec<String>,
-    skipped_invalid_branches: &mut u64,
-    first_skipped_invalid_branch: &mut Option<String>,
-    boundary: &mut InventoryBoundary<'_>,
+    context: &mut InventoryPageContext<'_, '_>,
 ) -> Result<(Vec<InventoryNode>, Option<Da2PageState>), InventoryError> {
-    move_to_da2_path(server, current_path, &state.parent_path, boundary)?;
+    move_to_da2_path(
+        server,
+        context.current_da2_path,
+        &state.parent_path,
+        context.boundary,
+    )?;
     let mut nodes = Vec::with_capacity(batch_size as usize);
     while nodes.len() < batch_size as usize {
-        let Some((mut kind, name)) = state.next(boundary).map_err(|error| {
-            contextual_inventory_error(error, "enumerate_da2_names", &state.parent_path, None)
-        })?
+        let Some((mut kind, name)) = state
+            .next(
+                context.boundary,
+                context.skipped_non_progressing_branches,
+                context.first_skipped_non_progressing_branch,
+            )
+            .map_err(|error| {
+                contextual_inventory_error(error, "enumerate_da2_names", &state.parent_path, None)
+            })?
         else {
             break;
         };
@@ -726,9 +854,9 @@ fn browse_da2_page<S: ConnectedServer>(
                     server,
                     &mut state,
                     &name,
-                    skipped_invalid_branches,
-                    first_skipped_invalid_branch,
-                    boundary,
+                    context.skipped_invalid_branches,
+                    context.first_skipped_invalid_branch,
+                    context.boundary,
                 )?
                 else {
                     continue;
@@ -740,7 +868,7 @@ fn browse_da2_page<S: ConnectedServer>(
                 let item_id = if state.flat {
                     name.clone()
                 } else {
-                    match paced_call(boundary, || server.get_item_id(&name)) {
+                    match paced_call(context.boundary, || server.get_item_id(&name)) {
                         Ok(item_id) => item_id,
                         Err(InventoryError::Failed(error)) => {
                             return Err(contextual_browse_error(
@@ -755,8 +883,12 @@ fn browse_da2_page<S: ConnectedServer>(
                     }
                 };
                 let child = if !state.flat
-                    && probe_da2_name_has_children(server, &name, &state.parent_path, boundary)?
-                {
+                    && probe_da2_name_has_children(
+                        server,
+                        &name,
+                        &state.parent_path,
+                        context.boundary,
+                    )? {
                     let mut child_path = state.parent_path.clone();
                     child_path.push(name.clone());
                     kind = BrowseNodeKind::BranchAndItem;
@@ -779,7 +911,11 @@ fn browse_da2_page<S: ConnectedServer>(
             child,
         });
     }
-    let has_more = state.has_more(boundary)?;
+    let has_more = state.has_more(
+        context.boundary,
+        context.skipped_non_progressing_branches,
+        context.first_skipped_non_progressing_branch,
+    )?;
     Ok((nodes, has_more.then_some(state)))
 }
 
@@ -929,36 +1065,91 @@ impl Da2PageState {
     fn next(
         &mut self,
         boundary: &mut InventoryBoundary<'_>,
+        skipped_non_progressing_branches: &mut u64,
+        first_skipped_non_progressing_branch: &mut Option<String>,
     ) -> Result<Option<(BrowseNodeKind, String)>, InventoryError> {
-        if let Some(branches) = &mut self.branches {
-            match branches.next(boundary) {
-                Some(Ok(name)) => return Ok(Some((BrowseNodeKind::Branch, name))),
-                Some(Err(error)) => return Err(error),
-                None => self.branches = None,
+        let branch_result = self
+            .branches
+            .as_mut()
+            .map(|branches| branches.next(boundary));
+        match branch_result {
+            Some(Some(Ok(name))) => return Ok(Some((BrowseNodeKind::Branch, name))),
+            Some(Some(Err(InventoryError::Failed(error))))
+                if is_non_progress_browse_error(&error) =>
+            {
+                self.skip_non_progressing_branch(
+                    &error,
+                    skipped_non_progressing_branches,
+                    first_skipped_non_progressing_branch,
+                );
             }
+            Some(Some(Err(error))) => return Err(error),
+            Some(None) => self.branches = None,
+            None => {}
         }
-        if let Some(items) = &mut self.items {
-            match items.next(boundary) {
-                Some(Ok(name)) => return Ok(Some((BrowseNodeKind::Item, name))),
-                Some(Err(error)) => return Err(error),
-                None => self.items = None,
-            }
+        let item_result = self.items.as_mut().map(|items| items.next(boundary));
+        match item_result {
+            Some(Some(Ok(name))) => return Ok(Some((BrowseNodeKind::Item, name))),
+            Some(Some(Err(error))) => return Err(error),
+            Some(None) => self.items = None,
+            None => {}
         }
         Ok(None)
     }
 
-    fn has_more(&mut self, boundary: &mut InventoryBoundary<'_>) -> Result<bool, InventoryError> {
-        if let Some(branches) = &mut self.branches
-            && branches.has_more(boundary)?
-        {
-            return Ok(true);
+    fn has_more(
+        &mut self,
+        boundary: &mut InventoryBoundary<'_>,
+        skipped_non_progressing_branches: &mut u64,
+        first_skipped_non_progressing_branch: &mut Option<String>,
+    ) -> Result<bool, InventoryError> {
+        let branch_has_more = match &mut self.branches {
+            Some(branches) => branches.has_more(boundary)?,
+            None => false,
+        };
+        if branch_has_more {
+            if let Some(error) = self
+                .branches
+                .as_mut()
+                .and_then(BufferedBrowseIterator::take_non_progress)
+            {
+                self.skip_non_progressing_branch(
+                    &error,
+                    skipped_non_progressing_branches,
+                    first_skipped_non_progressing_branch,
+                );
+            } else {
+                return Ok(true);
+            }
         }
+
         if let Some(items) = &mut self.items
             && items.has_more(boundary)?
         {
             return Ok(true);
         }
         Ok(false)
+    }
+
+    fn skip_non_progressing_branch(
+        &mut self,
+        error: &OpcError,
+        skipped_non_progressing_branches: &mut u64,
+        first_skipped_non_progressing_branch: &mut Option<String>,
+    ) {
+        *skipped_non_progressing_branches = skipped_non_progressing_branches.saturating_add(1);
+        if first_skipped_non_progressing_branch.is_none() {
+            *first_skipped_non_progressing_branch = Some(format!(
+                "DA2 branch iterator at {}",
+                describe_browse_path(&self.parent_path)
+            ));
+        }
+        tracing::warn!(
+            browse_path = ?self.parent_path,
+            error = ?error,
+            "skipping non-progressing DA2 branch iterator and continuing with item iterator"
+        );
+        self.branches = None;
     }
 }
 
@@ -968,9 +1159,13 @@ struct BufferedBrowseIterator {
 }
 
 impl BufferedBrowseIterator {
-    fn new(inner: Box<dyn BrowseStringIterator>) -> Self {
+    fn new(
+        inner: Box<dyn BrowseStringIterator>,
+        iterator_type: &str,
+        browse_path: &[String],
+    ) -> Self {
         Self {
-            inner,
+            inner: guard_browse_iterator(inner, iterator_type, browse_path),
             pending: None,
         }
     }
@@ -982,23 +1177,56 @@ impl BufferedBrowseIterator {
         if let Some(value) = self.pending.take() {
             return Some(value.map_err(InventoryError::from));
         }
-        match boundary.before_operation() {
-            BoundaryResult::Proceed => self
-                .inner
-                .next_string()
-                .map(|value| value.map_err(InventoryError::from)),
-            BoundaryResult::Cancelled => Some(Err(InventoryError::Cancelled)),
+        match self.next_native(boundary) {
+            Ok(value) => value.map(|value| value.map_err(InventoryError::from)),
+            Err(error) => Some(Err(error)),
         }
     }
 
     fn has_more(&mut self, boundary: &mut InventoryBoundary<'_>) -> Result<bool, InventoryError> {
         if self.pending.is_none() {
-            self.pending = match boundary.before_operation() {
-                BoundaryResult::Proceed => self.inner.next_string(),
-                BoundaryResult::Cancelled => return Err(InventoryError::Cancelled),
-            };
+            self.pending = self.next_native(boundary)?;
         }
         Ok(self.pending.is_some())
+    }
+
+    fn next_native(
+        &mut self,
+        boundary: &mut InventoryBoundary<'_>,
+    ) -> Result<Option<OpcResult<String>>, InventoryError> {
+        let control = boundary.control;
+        let mut cancelled = false;
+        let mut before_native_operation =
+            |item_cost| match boundary.before_operation_with_cost(item_cost) {
+                BoundaryResult::Proceed => true,
+                BoundaryResult::Cancelled => {
+                    cancelled = true;
+                    false
+                }
+            };
+        let mut should_cancel = || control.is_cancelled();
+        let value = self
+            .inner
+            .next_string_with_gate(&mut before_native_operation, &mut should_cancel);
+        if cancelled || control.is_cancelled() {
+            Err(InventoryError::Cancelled)
+        } else {
+            Ok(value)
+        }
+    }
+
+    fn take_non_progress(&mut self) -> Option<OpcError> {
+        let recoverable = self
+            .pending
+            .as_ref()
+            .is_some_and(|result| result.as_ref().is_err_and(is_non_progress_browse_error));
+        if !recoverable {
+            return None;
+        }
+        match self.pending.take() {
+            Some(Err(error)) => Some(error),
+            _ => None,
+        }
     }
 }
 
@@ -1094,11 +1322,58 @@ mod tests {
         E_INVALIDARG_HRESULT, E_NOTIMPL_HRESULT, RPC_X_NULL_REF_POINTER_HRESULT,
     };
     use crate::opc_da::typedefs::{GroupHandle, ItemHandle};
+    use std::collections::VecDeque;
     use std::sync::Arc;
     use std::sync::Mutex;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use windows::Win32::System::Variant::VARIANT;
     use windows::core::HRESULT;
+
+    struct GateAwareIterator {
+        items: VecDeque<String>,
+        refill_size: u32,
+        remaining_in_refill: usize,
+        costs: Arc<Mutex<Vec<u32>>>,
+        done: bool,
+    }
+
+    impl BrowseStringIterator for GateAwareIterator {
+        fn next_string(&mut self) -> Option<OpcResult<String>> {
+            self.items.pop_front().map(Ok)
+        }
+
+        fn next_string_with_gate(
+            &mut self,
+            before_native_operation: &mut dyn FnMut(u32) -> bool,
+            should_cancel: &mut dyn FnMut() -> bool,
+        ) -> Option<OpcResult<String>> {
+            if self.done || should_cancel() {
+                return None;
+            }
+            if self.remaining_in_refill == 0 {
+                if !before_native_operation(self.refill_size) {
+                    return None;
+                }
+                self.costs.lock().unwrap().push(self.refill_size);
+                if should_cancel() {
+                    return None;
+                }
+                self.remaining_in_refill = self.items.len().min(self.refill_size as usize);
+                if self.remaining_in_refill == 0 {
+                    self.done = true;
+                    return None;
+                }
+            }
+
+            if should_cancel() {
+                return None;
+            }
+            self.remaining_in_refill -= 1;
+            Some(Ok(self.items.pop_front().expect(
+                "remaining_in_refill must match the number of queued items",
+            )))
+        }
+    }
 
     struct TestGroup;
 
@@ -1283,6 +1558,235 @@ mod tests {
                 .take()
                 .ok_or_else(|| OpcError::Internal("server already connected".to_string()))
         }
+    }
+
+    struct ScriptedDa3Server {
+        pages: Mutex<VecDeque<crate::backend::connector::NativeBrowsePage>>,
+    }
+
+    impl ConnectedServer for ScriptedDa3Server {
+        type Group = TestGroup;
+
+        fn query_organization(&self) -> OpcResult<u32> {
+            Ok(OPC_NS_FLAT.0.cast_unsigned())
+        }
+
+        fn browse_opc_item_ids(
+            &self,
+            _browse_type: u32,
+            _filter: Option<&str>,
+            _data_type: u16,
+            _access_rights: u32,
+        ) -> OpcResult<crate::backend::connector::StringIterator> {
+            Err(OpcError::NotImplemented("test".to_string()))
+        }
+
+        fn change_browse_position(&self, _direction: u32, _name: &str) -> OpcResult<()> {
+            Ok(())
+        }
+
+        fn get_item_id(&self, _item_name: &str) -> OpcResult<String> {
+            Err(OpcError::NotImplemented("test".to_string()))
+        }
+
+        fn supports_da2_browse(&self) -> bool {
+            false
+        }
+
+        fn supports_da3_browse(&self) -> bool {
+            true
+        }
+
+        fn browse_da3(
+            &self,
+            _item_id: Option<&str>,
+            _continuation: Option<&str>,
+            _max_elements: u32,
+            _filter: BrowseNodeFilter,
+        ) -> OpcResult<crate::backend::connector::NativeBrowsePage> {
+            self.pages
+                .lock()
+                .unwrap()
+                .pop_front()
+                .ok_or_else(|| OpcError::Internal("scripted page queue exhausted".to_string()))
+        }
+
+        fn begin_da2_browse(
+            &self,
+            _browse_type: u32,
+            _filter: Option<&str>,
+            _data_type: u16,
+            _access_rights: u32,
+        ) -> OpcResult<Box<dyn BrowseStringIterator>> {
+            Err(OpcError::NotImplemented("test".to_string()))
+        }
+
+        fn add_group(
+            &self,
+            _name: &str,
+            _active: bool,
+            _update_rate: u32,
+            _client_handle: GroupHandle,
+            _time_bias: i32,
+            _percent_deadband: f32,
+            _locale_id: u32,
+            _revised_update_rate: &mut u32,
+            _server_handle: &mut GroupHandle,
+        ) -> OpcResult<Self::Group> {
+            Err(OpcError::NotImplemented("test".to_string()))
+        }
+
+        fn remove_group(&self, _server_group: GroupHandle, _force: bool) -> OpcResult<()> {
+            Ok(())
+        }
+    }
+
+    fn scripted_da3_page(
+        names: &[&str],
+        more_elements: bool,
+        continuation: Option<&str>,
+    ) -> crate::backend::connector::NativeBrowsePage {
+        crate::backend::connector::NativeBrowsePage {
+            elements: names
+                .iter()
+                .map(|name| NativeBrowseElement {
+                    name: (*name).to_string(),
+                    item_id: Some(format!("exact::{name}")),
+                    has_children: false,
+                    is_item: true,
+                })
+                .collect(),
+            more_elements,
+            continuation: continuation.map(str::to_string),
+        }
+    }
+
+    fn run_scripted_da3_inventory(
+        pages: Vec<crate::backend::connector::NativeBrowsePage>,
+    ) -> (
+        OpcResult<()>,
+        Vec<InventoryEntry>,
+        Option<InventoryCompleted>,
+        Option<OpcError>,
+    ) {
+        let connector = SharedConnector {
+            server: Arc::new(Mutex::new(Some(ScriptedDa3Server {
+                pages: Mutex::new(pages.into()),
+            }))),
+        };
+        let (sender, mut receiver) = mpsc::channel(512);
+        let result = run_inventory(
+            &connector,
+            "test",
+            InventoryOptions::default(),
+            &InventoryControl::new(),
+            &sender,
+        );
+        let (entries, completed, error) = collect(&mut receiver);
+        (result, entries, completed, error)
+    }
+
+    #[test]
+    fn da3_inventory_accepts_a_temporary_empty_continuation_page() {
+        let (result, entries, completed, error) = run_scripted_da3_inventory(vec![
+            scripted_da3_page(&["First"], true, Some("first")),
+            scripted_da3_page(&[], true, Some("empty")),
+            scripted_da3_page(&["Last"], false, None),
+        ]);
+
+        assert!(result.is_ok());
+        assert_eq!(
+            entries
+                .into_iter()
+                .map(|entry| entry.item_id)
+                .collect::<Vec<_>>(),
+            vec!["exact::First", "exact::Last"]
+        );
+        assert!(completed.is_some_and(|value| value.complete));
+        assert!(error.is_none());
+    }
+
+    #[test]
+    fn da3_inventory_rejects_missing_continuation_tokens() {
+        let (result, _, completed, error) =
+            run_scripted_da3_inventory(vec![scripted_da3_page(&["First"], true, None)]);
+
+        assert!(matches!(
+            result,
+            Err(OpcError::BrowseContinuationNonProgress { detail, .. })
+                if detail.contains("without a continuation point")
+        ));
+        assert!(completed.is_none());
+        assert!(error.is_none());
+    }
+
+    #[test]
+    fn da3_inventory_rejects_empty_continuation_tokens() {
+        let (result, _, completed, error) =
+            run_scripted_da3_inventory(vec![scripted_da3_page(&["First"], true, Some(""))]);
+
+        assert!(matches!(
+            result,
+            Err(OpcError::BrowseContinuationNonProgress { detail, .. })
+                if detail.contains("empty continuation token")
+        ));
+        assert!(completed.is_none());
+        assert!(error.is_none());
+    }
+
+    #[test]
+    fn da3_inventory_rejects_repeated_continuation_tokens() {
+        let (result, _, completed, error) = run_scripted_da3_inventory(vec![
+            scripted_da3_page(&["First"], true, Some("repeat")),
+            scripted_da3_page(&["Second"], true, Some("repeat")),
+        ]);
+
+        assert!(matches!(
+            result,
+            Err(OpcError::BrowseContinuationNonProgress { detail, .. })
+                if detail.contains("repeated continuation token")
+        ));
+        assert!(completed.is_none());
+        assert!(error.is_none());
+    }
+
+    #[test]
+    fn da3_inventory_rejects_cyclic_continuation_tokens() {
+        let (result, _, completed, error) = run_scripted_da3_inventory(vec![
+            scripted_da3_page(&["First"], true, Some("a")),
+            scripted_da3_page(&["Second"], true, Some("b")),
+            scripted_da3_page(&["Third"], true, Some("a")),
+        ]);
+
+        assert!(matches!(
+            result,
+            Err(OpcError::BrowseContinuationNonProgress { detail, .. })
+                if detail.contains("repeated continuation token")
+        ));
+        assert!(completed.is_none());
+        assert!(error.is_none());
+    }
+
+    #[test]
+    fn da3_inventory_rejects_too_many_consecutive_empty_pages() {
+        let mut pages = vec![scripted_da3_page(&["First"], true, Some("token-0"))];
+        for index in 1..=MAX_CONSECUTIVE_EMPTY_DA3_PAGES {
+            pages.push(scripted_da3_page(
+                &[],
+                true,
+                Some(&format!("token-{index}")),
+            ));
+        }
+
+        let (result, _, completed, error) = run_scripted_da3_inventory(pages);
+
+        assert!(matches!(
+            result,
+            Err(OpcError::BrowseContinuationNonProgress { detail, .. })
+                if detail.contains("consecutive empty pages")
+        ));
+        assert!(completed.is_none());
+        assert!(error.is_none());
     }
 
     #[test]
@@ -1542,6 +2046,43 @@ mod tests {
     }
 
     #[test]
+    fn da2_iterator_pacing_charges_each_native_refill_not_each_cached_item() {
+        let costs = Arc::new(Mutex::new(Vec::new()));
+        let mut iterator = BufferedBrowseIterator::new(
+            Box::new(GateAwareIterator {
+                items: ["Item1", "Item2", "Item3"]
+                    .into_iter()
+                    .map(str::to_string)
+                    .collect(),
+                refill_size: 256,
+                remaining_in_refill: 0,
+                costs: Arc::clone(&costs),
+                done: false,
+            }),
+            "test iterator",
+            &[],
+        );
+        let control = InventoryControl::new();
+        let mut boundary = InventoryBoundary::new(&control);
+        let mut values = Vec::new();
+
+        while let Some(value) = iterator.next(&mut boundary) {
+            values.push(value.expect("the test item must be valid"));
+        }
+
+        assert_eq!(
+            values,
+            vec![
+                "Item1".to_string(),
+                "Item2".to_string(),
+                "Item3".to_string()
+            ]
+        );
+        assert_eq!(*costs.lock().unwrap(), vec![256, 256]);
+        assert_eq!(boundary.operations(), 2);
+    }
+
+    #[test]
     fn batch_size_updates_are_seen_at_the_next_slice_boundary() {
         let calls = Arc::new(AtomicUsize::new(0));
         let batch_sizes = Arc::new(Mutex::new(Vec::new()));
@@ -1730,6 +2271,157 @@ mod tests {
                 })
         }));
         assert!(error.is_none());
+    }
+
+    #[test]
+    fn da2_non_progressing_branch_iterator_is_skipped_without_losing_items() {
+        let connector = Arc::new(SharedConnector {
+            server: Arc::new(Mutex::new(Some(InvalidDa2BranchServer {
+                non_progressing_branch: true,
+                ..Default::default()
+            }))),
+        });
+        let (sender, mut receiver) = mpsc::channel(128);
+        run_inventory(
+            connector.as_ref(),
+            "test",
+            InventoryOptions::default(),
+            &InventoryControl::new(),
+            &sender,
+        )
+        .unwrap();
+
+        let (entries, completed, error) = collect(&mut receiver);
+        assert_eq!(
+            entries
+                .iter()
+                .map(|entry| entry.item_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["FCS0528.PV", "FCS0528.LeafOnly"]
+        );
+        assert!(completed.is_some_and(|value| {
+            value.complete
+                && value.warning.is_some_and(|warning| {
+                    warning.contains("skipped 1 non-progressing DA2 branch iterator(s)")
+                        && warning.contains("\"FCS0528\"")
+                })
+        }));
+        assert!(error.is_none());
+    }
+
+    #[test]
+    fn da2_item_non_progress_is_terminal() {
+        let connector = Arc::new(SharedConnector {
+            server: Arc::new(Mutex::new(Some(InvalidDa2BranchServer {
+                non_progressing_items: true,
+                ..Default::default()
+            }))),
+        });
+        let (sender, mut receiver) = mpsc::channel(128);
+        let result = run_inventory(
+            connector.as_ref(),
+            "test",
+            InventoryOptions {
+                batch_size: 10,
+                max_entries: None,
+            },
+            &InventoryControl::new(),
+            &sender,
+        );
+
+        assert!(matches!(
+            result,
+            Err(OpcError::BrowseNonProgress { iterator_type, .. })
+                if iterator_type == "inventory DA2 item iterator"
+        ));
+        let (entries, completed, error) = collect(&mut receiver);
+        assert_eq!(
+            entries
+                .iter()
+                .map(|entry| entry.item_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["FCS0528.LeafOnly", "FCS0528.PV"]
+        );
+        assert!(completed.is_none());
+        assert!(error.is_none());
+    }
+
+    #[test]
+    fn da2_unrelated_branch_error_is_terminal() {
+        let connector = Arc::new(SharedConnector {
+            server: Arc::new(Mutex::new(Some(InvalidDa2BranchServer {
+                fatal_branch: true,
+                ..Default::default()
+            }))),
+        });
+        let (sender, mut receiver) = mpsc::channel(32);
+        let result = run_inventory(
+            connector.as_ref(),
+            "test",
+            InventoryOptions::default(),
+            &InventoryControl::new(),
+            &sender,
+        );
+
+        assert!(matches!(
+            result,
+            Err(OpcError::Internal(message))
+                if message.contains("classify_da2_branch(down)")
+                    && message.contains("\"FCS0528\"")
+                    && message.contains("item \"Denied\"")
+        ));
+        let (_, completed, error) = collect(&mut receiver);
+        assert!(completed.is_none());
+        assert!(error.is_none());
+    }
+
+    #[test]
+    fn da2_has_more_discards_prefetched_branch_non_progress_and_uses_items() {
+        let control = InventoryControl::new();
+        let mut boundary = InventoryBoundary::new(&control);
+        let mut state = Da2PageState {
+            parent_path: vec!["FCS0528".to_string()],
+            branches: Some(BufferedBrowseIterator::new(
+                Box::new(std::iter::repeat_with(|| {
+                    Ok::<String, OpcError>("\u{1}".to_string())
+                })),
+                "enumerate_da2_names.branches",
+                &["FCS0528".to_string()],
+            )),
+            items: Some(BufferedBrowseIterator::new(
+                Box::new(std::iter::once(Ok::<String, OpcError>("PV".to_string()))),
+                "enumerate_da2_names.items",
+                &["FCS0528".to_string()],
+            )),
+            flat: false,
+            merged_items: HashSet::new(),
+        };
+        for _ in 0..63 {
+            assert!(matches!(
+                state.branches.as_mut().unwrap().next(&mut boundary),
+                Some(Ok(value)) if value == "\u{1}"
+            ));
+        }
+        let mut skipped = 0;
+        let mut first_skipped = None;
+
+        assert!(
+            state
+                .has_more(&mut boundary, &mut skipped, &mut first_skipped)
+                .unwrap()
+        );
+        assert!(state.branches.is_none());
+        assert_eq!(skipped, 1);
+        assert_eq!(
+            first_skipped.as_deref(),
+            Some("DA2 branch iterator at \"FCS0528\"")
+        );
+        assert_eq!(
+            state
+                .next(&mut boundary, &mut skipped, &mut first_skipped)
+                .unwrap(),
+            Some((BrowseNodeKind::Item, "PV".to_string()))
+        );
     }
 
     #[test]
@@ -1941,6 +2633,9 @@ mod tests {
     #[derive(Default)]
     struct InvalidDa2BranchServer {
         position: Mutex<Vec<String>>,
+        non_progressing_branch: bool,
+        non_progressing_items: bool,
+        fatal_branch: bool,
     }
 
     impl ConnectedServer for InvalidDa2BranchServer {
@@ -2034,6 +2729,14 @@ mod tests {
             let values = if browse_type == OPC_BRANCH.0.cast_unsigned() {
                 match position.as_slice() {
                     [] => vec!["FCS0528".to_string()],
+                    [area] if area == "FCS0528" && self.fatal_branch => {
+                        vec!["Denied".to_string()]
+                    }
+                    [area] if area == "FCS0528" && self.non_progressing_branch => {
+                        return Ok(Box::new(std::iter::repeat_with(|| {
+                            Ok::<String, OpcError>("\u{1}".to_string())
+                        })));
+                    }
                     [area] if area == "FCS0528" => {
                         vec![
                             "\u{1}".to_string(),
@@ -2045,6 +2748,11 @@ mod tests {
                 }
             } else if browse_type == OPC_LEAF.0.cast_unsigned() {
                 match position.as_slice() {
+                    [area] if area == "FCS0528" && self.non_progressing_items => {
+                        return Ok(Box::new(std::iter::repeat_with(|| {
+                            Ok::<String, OpcError>("PV".to_string())
+                        })));
+                    }
                     [area] if area == "FCS0528" => {
                         vec!["PV".to_string(), "LeafOnly".to_string()]
                     }

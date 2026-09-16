@@ -349,16 +349,18 @@ struct InventoryControlState {
     batch_size: AtomicUsize,
 }
 
-/// Dynamic pacing enforced before each bounded native inventory operation.
+/// Dynamic pacing enforced before bounded native inventory operations.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct InventoryPacing {
-    /// Minimum interval between the starts of bounded native operations.
+    /// Minimum interval between the starts of native operations.
     pub min_interval: Duration,
     /// Maximum number of inventory items requested per second.
     ///
-    /// The inventory worker applies this cost to the requested size of each
-    /// native operation, so a page requesting 100 items consumes 100 items
-    /// of the pacing budget even when the server returns fewer entries.
+    /// DA3 page operations are charged by their requested page size. Native
+    /// DA2 string enumeration is charged by each actual `IEnumString::Next`
+    /// refill, using the iterator cache capacity; values already held in that
+    /// cache do not consume another pacing budget. Pure test iterators retain
+    /// the one-item default cost.
     pub item_rate_per_second: Option<u32>,
 }
 
@@ -402,7 +404,20 @@ impl InventoryControl {
 
     /// Request cancellation at the next bounded COM boundary.
     pub fn cancel(&self) {
-        self.state.cancelled.store(true, Ordering::Release);
+        self.cancel_with_reason("unspecified");
+    }
+
+    /// Request cancellation with a diagnostic source label.
+    ///
+    /// The label is intentionally diagnostic-only and does not change the
+    /// cancellation semantics or the public stream result.
+    pub fn cancel_with_reason(&self, reason: &str) {
+        let already_cancelled = self.state.cancelled.swap(true, Ordering::Release);
+        tracing::warn!(
+            cancellation_source = %reason,
+            already_cancelled,
+            "OPC namespace inventory cancellation requested"
+        );
     }
 
     /// Pause before the next bounded COM operation.
@@ -513,7 +528,7 @@ impl InventoryStream {
 
     /// Request cancellation of this inventory.
     pub fn cancel(&self) {
-        self.control.cancel();
+        self.control.cancel_with_reason("stream_cancel");
     }
 
     /// Pause this inventory before its next bounded operation.
@@ -542,7 +557,7 @@ impl Drop for InventoryStream {
         // Close the receiver before joining so a worker blocked on a full
         // event channel can observe the disconnect and finish.
         self.receiver.close();
-        self.control.cancel();
+        self.control.cancel_with_reason("stream_drop");
         if let Some(worker) = self.worker.take() {
             let _ = worker.join();
         }

@@ -60,10 +60,21 @@ All methods use `#[async_trait]`.
 *   Native browse sessions own their server connection, expire after five minutes of inactivity, and keep DA 2.x mutable browse positions isolated.
 *   DA 3.0 root and unused-filter strings are always represented by non-null NUL-terminated UTF-16 values. The initial continuation pointer itself is non-null and contains a null value. A zero property count uses a true null property-ID pointer.
 *   A first-root-page `RPC_X_NULL_REF_POINTER` or `E_NOTIMPL` response falls back to DA 2.x only when DA 2.x is available. Other COM failures do not change browse strategy, and a successful root page locks the session to DA 3.0.
+*   During hierarchical DA 2.x inventory, a `BrowseNonProgress` error from the branch iterator is recoverable: the branch iterator is dropped, the independent item iterator continues, and the completion warning records the skipped iterator. The same error from the item iterator, or any unrelated error, remains terminal.
+*   Native `IEnumGUID` and `IEnumString` fetched counts are validated against their fixed cache capacities before indexing. `StringIterator` releases all COM-owned strings that remain after a failed or malformed fetch, and bounds consecutive null-only batches with the same non-progress threshold used for repeated values.
+*   A compatibility browse wrapper replaces a root-scoped `BrowseNonProgress` path with the active DA 2.x browse path before returning it to inventory callers.
 *   `start_inventory` requests no more than `batch_size` native entries per operation and never exposes
     browse-session or continuation tokens.
+*   Internal DA3 inventory traversal requires a non-empty continuation token whenever a page reports
+    more elements, rejects a token already returned for the same branch (including cycles), and
+    treats 64 consecutive empty continuation pages as non-progress and reports a typed
+    continuation error. Fewer empty pages are allowed when a later page makes progress. This
+    guard does not apply to public `browse_page`, which returns one bounded page and leaves
+    continuation control to the caller.
+*   Inventory pacing charges DA3 operations by their requested page size, while native DA2 string enumeration charges only actual `IEnumString::Next` refills using the iterator cache capacity; cached DA2 items do not consume additional item-rate budget.
 *   Inventory cancellation is observed before the next bounded native operation; a cancelled or
-    truncated inventory never claims `complete = true`.
+    truncated inventory never claims `complete = true`, and native DA2 cancellation is also checked
+    between cached items.
 *   Closing, expiry, worker shutdown, or cancellation of an open/page request drops the affected session state on the COM worker.
 *   `read_tag_values` returns a `TagValue` entry for all requested tags, preserving the original array length and order. Items that fail to be added to the group or read will have their `value` set to `"Error"` and `quality` set to `"Bad — <hint>"`.
 *   Successful `VT_BSTR` reads through `read_tag_values` preserve the exact BSTR contents. Empty strings remain empty, embedded quotes remain embedded, and leading/trailing quote characters remain data.
@@ -249,6 +260,13 @@ fn browse_recursive(
 4.  Enumerates `OPC_LEAF` items (soft-fail: errors logged and skipped).
 5.  Converts browse names to fully-qualified item IDs via `get_item_id()`; falls back to browse name on failure.
 6.  Each discovered tag is pushed to both `tags` and `tags_sink`, and `progress` is incremented.
+7.  A native or compatibility browse iterator that returns the same successful value 64
+    consecutive times terminates with `OpcError::BrowseNonProgress`; the error includes the
+    iterator type, browse path, repeated value, consecutive count, and total yielded count.
+    Short duplicate sequences remain valid.
+8.  A native enumerator that reports more entries than its fixed cache can hold returns a
+    terminal validation error without indexing beyond the cache, and any COM-owned strings
+    already populated in that cache remain releasable.
 
 #### Native paged browsing
 
@@ -264,6 +282,12 @@ cannot invalidate existing DA 3.0 node or continuation tokens.
 Only selectable `Item` and `BranchAndItem` nodes expose exact ItemIDs.
 Branch-only DA 3.0 nodes retain their native ItemID solely as private session
 navigation state and return no public ItemID.
+The internal `start_inventory` worker handles DA3 continuations differently
+from `browse_page`: it requires a non-empty token for every `more_elements`
+response, rejects repeated tokens for a branch, and stops after 64 consecutive
+empty continuation pages. Temporary empty pages are valid below that threshold.
+The public `browse_page` operation remains strictly one page per call and does
+not recursively drain or apply the inventory worker's progress guard.
 When DA 3.0 browsing is unavailable or this compatibility fallback is selected, hierarchical DA 2.x
 sessions enumerate immediate `OPC_BRANCH` and `OPC_LEAF` children and resolve
 leaf names through `GetItemID`; flat sessions page `OPC_FLAT` results. The DA
@@ -378,13 +402,17 @@ Defined in § 1.1. See table above.
 **Error Handling at Boundary:**
 *   All `opc_da` errors are wrapped with `anyhow::Context` to add operation context.
 *   `create_server` failures additionally log a `friendly_com_hint` before propagating.
-*   `E_POINTER` errors from `StringIterator` are now handled internally by the iterator (null-PWSTR skip + `debug!` log).
+*   `E_POINTER` errors from `StringIterator` are now handled internally by the iterator (null-PWSTR skip + `trace!` log).
+*   Native and compatibility browse iterators terminate after 64 consecutive identical successful
+    values with contextual `BrowseNonProgress` errors rather than waiting indefinitely for an
+    unprogressing OPC enumerator to finish.
 
 **Known Upstream Bugs:**
 
 | ID | Bug | Workaround |
 | :--- | :--- | :--- |
 | OPC-BUG-001 | `StringIterator` produces 16 phantom `E_POINTER` errors per iterator | **FIXED**: cache zeroing + null-PWSTR skip in `StringIterator::next()` |
+| OPC-BUG-002 | A browse enumerator can return the same value indefinitely | **FIXED**: native and compatibility iterators stop after 64 consecutive identical values and preserve browse context |
 
 ### 3.2 Downstream: `opc-cli` (Consumer)
 
@@ -408,6 +436,7 @@ Defined in § 1.1. See table above.
 - [x] `filetime_to_string` produces valid date string for non-zero FILETIME.
 - [x] `StringIterator` skips null PWSTR entries without producing `E_POINTER`.
 - [x] `StringIterator` handles empty enumeration (0 items).
+- [x] Repeated browse values terminate with contextual progress counters.
 - [x] `opc_value_to_variant` correctly converts `Int` variant.
 - [x] `variant_to_string` roundtrips through `VT_I4` and `VT_R4`.
 - [x] `variant_to_string` handles `VT_EMPTY` and `VT_NULL`.

@@ -10,6 +10,7 @@ use async_trait::async_trait;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::time::Instant;
 use tokio::sync::mpsc;
 
 /// Concrete [`OpcProvider`] implementation for Windows OPC DA.
@@ -180,10 +181,22 @@ impl<C: ServerConnector + 'static> OpcProvider for OpcDaClient<C> {
         let active = Arc::clone(&self.inventory_active);
         let connector = Arc::clone(&self.connector);
         let server = server.to_string();
+        let startup_started = Instant::now();
+        tracing::info!(
+            server = %server,
+            batch_size = options.batch_size,
+            "native inventory worker spawn requested"
+        );
         let spawn_result = std::thread::Builder::new()
             .name("opc-da-inventory".to_string())
             .spawn(move || {
                 let _active_guard = InventoryActiveGuard(active);
+                tracing::info!(
+                    server = %server,
+                    thread_id = ?std::thread::current().id(),
+                    elapsed_ms = startup_started.elapsed().as_millis(),
+                    "native inventory worker thread started"
+                );
                 let result = catch_unwind(AssertUnwindSafe(|| {
                     let _guard = crate::ComGuard::new().map_err(|error| {
                         crate::opc_da::errors::OpcError::Internal(error.to_string())

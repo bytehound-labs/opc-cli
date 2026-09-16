@@ -8,10 +8,14 @@ pub use crate::bindings::da::tagOPCITEMDEF;
 pub use crate::bindings::da::{tagOPCITEMRESULT, tagOPCITEMSTATE};
 pub use crate::opc_da::client::*;
 pub use crate::opc_da::com_utils::RemoteArray;
-use crate::opc_da::errors::{E_INVALIDARG_HRESULT, is_com_hresult};
+use crate::opc_da::errors::{
+    E_INVALIDARG_HRESULT, MAX_CONSECUTIVE_IDENTICAL_BROWSE_VALUES, browse_non_progress_error,
+    is_com_hresult, is_non_progress_browse_error,
+};
 pub use crate::opc_da::errors::{OpcError, OpcResult};
 use crate::provider::BrowseNodeFilter;
 use anyhow::Context;
+use std::time::Instant;
 pub use windows::Win32::System::Variant::VARIANT;
 use windows::core::Interface;
 
@@ -75,6 +79,31 @@ pub fn classify_da2_branch<S: ConnectedServer>(
 /// the worker while allowing tests to supply pure Rust iterators.
 pub trait BrowseStringIterator {
     fn next_string(&mut self) -> Option<OpcResult<String>>;
+
+    /// Fetch the next item, invoking `before_native_operation` only when the
+    /// iterator needs to perform native work.
+    ///
+    /// Pure Rust iterators use one item as their operation cost. Native DA2
+    /// iterators override this so cached items do not consume the pacing
+    /// budget and only an `IEnumString::Next` refill is charged.
+    fn next_string_with_gate(
+        &mut self,
+        before_native_operation: &mut dyn FnMut(u32) -> bool,
+        should_cancel: &mut dyn FnMut() -> bool,
+    ) -> Option<OpcResult<String>> {
+        if should_cancel() {
+            return None;
+        }
+        if before_native_operation(1) {
+            if should_cancel() {
+                None
+            } else {
+                self.next_string()
+            }
+        } else {
+            None
+        }
+    }
 }
 
 impl<T> BrowseStringIterator for T
@@ -83,6 +112,122 @@ where
 {
     fn next_string(&mut self) -> Option<OpcResult<String>> {
         self.next()
+    }
+}
+
+struct GuardedBrowseIterator {
+    inner: Box<dyn BrowseStringIterator>,
+    iterator_type: String,
+    browse_path: Vec<String>,
+    last_value: Option<String>,
+    consecutive: usize,
+    yielded: usize,
+    done: bool,
+}
+
+pub fn guard_browse_iterator(
+    inner: Box<dyn BrowseStringIterator>,
+    iterator_type: &str,
+    browse_path: &[String],
+) -> Box<dyn BrowseStringIterator> {
+    Box::new(GuardedBrowseIterator {
+        inner,
+        iterator_type: iterator_type.to_string(),
+        browse_path: browse_path.to_vec(),
+        last_value: None,
+        consecutive: 0,
+        yielded: 0,
+        done: false,
+    })
+}
+
+impl BrowseStringIterator for GuardedBrowseIterator {
+    fn next_string(&mut self) -> Option<OpcResult<String>> {
+        self.next_string_with_gate(&mut |_| true, &mut || false)
+    }
+
+    fn next_string_with_gate(
+        &mut self,
+        before_native_operation: &mut dyn FnMut(u32) -> bool,
+        should_cancel: &mut dyn FnMut() -> bool,
+    ) -> Option<OpcResult<String>> {
+        if self.done {
+            return None;
+        }
+
+        let result = self
+            .inner
+            .next_string_with_gate(before_native_operation, should_cancel)?;
+        let value = match result {
+            Ok(value) => value,
+            Err(OpcError::BrowseNonProgress {
+                repeated_value,
+                consecutive,
+                yielded,
+                browse_path,
+                ..
+            }) if browse_path == "<root>" && !self.browse_path.is_empty() => {
+                self.done = true;
+                return Some(Err(browse_non_progress_error(
+                    &self.iterator_type,
+                    &self.browse_path,
+                    &repeated_value,
+                    consecutive,
+                    yielded,
+                )));
+            }
+            Err(error) if is_non_progress_browse_error(&error) => {
+                self.done = true;
+                return Some(Err(error));
+            }
+            Err(error) => return Some(Err(error)),
+        };
+
+        self.yielded += 1;
+        if self.last_value.as_deref() == Some(value.as_str()) {
+            self.consecutive += 1;
+        } else {
+            self.last_value = Some(value.clone());
+            self.consecutive = 1;
+        }
+
+        if self.consecutive >= MAX_CONSECUTIVE_IDENTICAL_BROWSE_VALUES {
+            self.done = true;
+            return Some(Err(browse_non_progress_error(
+                &self.iterator_type,
+                &self.browse_path,
+                &value,
+                self.consecutive,
+                self.yielded,
+            )));
+        }
+
+        Some(Ok(value))
+    }
+}
+
+struct NativeStringIterator {
+    inner: StringIterator,
+}
+
+impl NativeStringIterator {
+    fn new(inner: StringIterator) -> Self {
+        Self { inner }
+    }
+}
+
+impl BrowseStringIterator for NativeStringIterator {
+    fn next_string(&mut self) -> Option<OpcResult<String>> {
+        self.inner.next()
+    }
+
+    fn next_string_with_gate(
+        &mut self,
+        before_native_operation: &mut dyn FnMut(u32) -> bool,
+        should_cancel: &mut dyn FnMut() -> bool,
+    ) -> Option<OpcResult<String>> {
+        self.inner
+            .next_with_gate(before_native_operation, should_cancel)
     }
 }
 
@@ -206,12 +351,9 @@ pub trait ConnectedServer {
         data_type: u16,
         access_rights: u32,
     ) -> OpcResult<Box<dyn BrowseStringIterator>> {
-        Ok(Box::new(self.browse_opc_item_ids(
-            browse_type,
-            filter,
-            data_type,
-            access_rights,
-        )?))
+        Ok(Box::new(NativeStringIterator::new(
+            self.browse_opc_item_ids(browse_type, filter, data_type, access_rights)?,
+        )))
     }
 
     /// Return one native OPC DA 3.0 browse page.
@@ -339,18 +481,38 @@ impl ServerConnector for ComConnector {
     }
 
     fn connect(&self, server_name: &str) -> OpcResult<Self::Server> {
+        let started = Instant::now();
+        tracing::info!(server = %server_name, "native COM connector startup started");
         let opc_server = crate::helpers::connect_server(server_name)?;
+        tracing::debug!(
+            server = %server_name,
+            elapsed_ms = started.elapsed().as_millis(),
+            "native COM connector received OPC DA server object"
+        );
         let unknown: windows::core::IUnknown = opc_server.cast()?;
-
-        Ok(ComServer {
+        let common = unknown.cast()?;
+        let connection_point_container = unknown.cast()?;
+        let item_properties = unknown.cast()?;
+        let server_public_groups = unknown.cast().ok();
+        let browse_server_address_space = unknown.cast().ok();
+        let browse = unknown.cast().ok();
+        let connected = ComServer {
             server: opc_server,
-            common: unknown.cast()?,
-            connection_point_container: unknown.cast()?,
-            item_properties: unknown.cast()?,
-            server_public_groups: unknown.cast().ok(),
-            browse_server_address_space: unknown.cast().ok(),
-            browse: unknown.cast().ok(),
-        })
+            common,
+            connection_point_container,
+            item_properties,
+            server_public_groups,
+            browse_server_address_space,
+            browse,
+        };
+        tracing::info!(
+            server = %server_name,
+            supports_da2 = connected.browse_server_address_space.is_some(),
+            supports_da3 = connected.browse.is_some(),
+            elapsed_ms = started.elapsed().as_millis(),
+            "native COM connector startup completed"
+        );
+        Ok(connected)
     }
 }
 
@@ -679,5 +841,148 @@ impl TryFrom<windows::core::IUnknown> for ComGroup {
             connection_point_container: unknown.cast()?,
             data_object: unknown.cast().ok(),
         })
+    }
+}
+
+#[cfg(test)]
+mod guarded_iterator_tests {
+    use super::*;
+
+    #[test]
+    fn terminates_after_repeated_values_without_progress() {
+        let mut iterator = guard_browse_iterator(
+            Box::new(std::iter::repeat_with(|| {
+                Ok::<String, OpcError>("\u{1}".to_string())
+            })),
+            "test iterator",
+            &["SCS0130".to_string()],
+        );
+
+        for _ in 0..(MAX_CONSECUTIVE_IDENTICAL_BROWSE_VALUES - 1) {
+            assert_eq!(
+                iterator
+                    .next_string()
+                    .expect("the iterator must yield a value")
+                    .expect("the value must be valid"),
+                "\u{1}"
+            );
+        }
+
+        let error = iterator
+            .next_string()
+            .expect("the guard must report non-progress")
+            .expect_err("the repeated value must terminate the iterator");
+        assert!(matches!(
+            error,
+            OpcError::BrowseNonProgress {
+                iterator_type,
+                browse_path,
+                repeated_value,
+                consecutive,
+                yielded,
+            } if iterator_type == "test iterator"
+                && browse_path == "\"SCS0130\""
+                && repeated_value == "\u{1}"
+                && consecutive == MAX_CONSECUTIVE_IDENTICAL_BROWSE_VALUES
+                && yielded == MAX_CONSECUTIVE_IDENTICAL_BROWSE_VALUES
+        ));
+        assert!(iterator.next_string().is_none());
+    }
+
+    #[test]
+    fn finite_duplicate_sequence_remains_valid_and_resets_progress() {
+        let values = vec![
+            Ok("same".to_string()),
+            Ok("same".to_string()),
+            Ok("different".to_string()),
+            Ok("different".to_string()),
+        ];
+        let mut iterator =
+            guard_browse_iterator(Box::new(values.into_iter()), "test iterator", &[]);
+
+        assert_eq!(
+            iterator
+                .next_string()
+                .expect("the iterator must yield a value")
+                .expect("the value must be valid"),
+            "same"
+        );
+        assert_eq!(
+            iterator
+                .next_string()
+                .expect("the iterator must yield a value")
+                .expect("the value must be valid"),
+            "same"
+        );
+        assert_eq!(
+            iterator
+                .next_string()
+                .expect("the iterator must yield a value")
+                .expect("the value must be valid"),
+            "different"
+        );
+        assert_eq!(
+            iterator
+                .next_string()
+                .expect("the iterator must yield a value")
+                .expect("the value must be valid"),
+            "different"
+        );
+        assert!(iterator.next_string().is_none());
+    }
+
+    #[test]
+    fn existing_non_progress_error_is_terminal_and_preserved() {
+        let original = OpcError::BrowseNonProgress {
+            iterator_type: "native".to_string(),
+            browse_path: "\"root\"".to_string(),
+            repeated_value: "\u{1}".to_string(),
+            consecutive: 64,
+            yielded: 64,
+        };
+        let mut iterator =
+            guard_browse_iterator(Box::new(std::iter::once(Err(original))), "wrapper", &[]);
+
+        let error = iterator
+            .next_string()
+            .expect("the underlying terminal error must be returned")
+            .expect_err("the underlying error must remain an error");
+        assert!(matches!(error, OpcError::BrowseNonProgress { .. }));
+        assert!(iterator.next_string().is_none());
+    }
+
+    #[test]
+    fn unscoped_non_progress_error_gets_the_wrapper_browse_path() {
+        let mut iterator = guard_browse_iterator(
+            Box::new(std::iter::once(Err(OpcError::BrowseNonProgress {
+                iterator_type: "native".to_string(),
+                browse_path: "<root>".to_string(),
+                repeated_value: "same".to_string(),
+                consecutive: 64,
+                yielded: 64,
+            }))),
+            "branch iterator",
+            &["Area".to_string(), "Loop".to_string()],
+        );
+
+        let error = iterator
+            .next_string()
+            .expect("the underlying terminal error must be returned")
+            .expect_err("the underlying error must remain an error");
+        assert!(matches!(
+            error,
+            OpcError::BrowseNonProgress {
+                iterator_type,
+                browse_path,
+                repeated_value,
+                consecutive,
+                yielded,
+            } if iterator_type == "branch iterator"
+                && browse_path == "\"Area\" > \"Loop\""
+                && repeated_value == "same"
+                && consecutive == 64
+                && yielded == 64
+        ));
+        assert!(iterator.next_string().is_none());
     }
 }

@@ -35,3 +35,6 @@ test_*.txt
 
 # Database
 data.db
+
+# Personal Copilot instructions (symlinked from ~/git/Work)
+copilot-instructions.md

@@ -59,6 +59,18 @@ cargo run --bin opc-cli -- -vv
 pwsh -File scripts/verify.ps1
 ```
 
+The workspace and TUI target Windows. To verify the publishable library package on Linux without
+compiling the Windows COM backend, scope Cargo commands to the library crate:
+
+```bash
+cargo test -p bytehound-opc-da-client --all-features
+cargo clippy -p bytehound-opc-da-client --all-targets --all-features -- -D warnings
+cargo publish -p bytehound-opc-da-client --dry-run
+```
+
+These Linux commands validate package metadata and non-Windows target exclusion only; Windows
+verification remains required for the OPC DA backend.
+
 
 ## ⌨️ Controls
 

@@ -22,7 +22,7 @@ The library provides an async, trait-based API that abstracts away the complexit
 | Language | Rust (2024 Edition) |
 | MSRV | Rust 1.88 |
 | Async Runtime | `tokio` (features: `rt`, `sync`) |
-| Platform | **Windows-only** — COM/DCOM is a Windows technology |
+| Platform | **Windows-only backend** — COM/DCOM operations require Windows; non-Windows package checks exclude the backend |
 | Trait Async | `async-trait` crate |
 
 ---
@@ -65,8 +65,10 @@ All commands are run from the **workspace root** (`opc-cli/`).
 | Tool | Command |
 | :--- | :--- |
 | Formatter | `cargo fmt --all -- --check` |
-| Linter | `cargo clippy --workspace -- -D warnings` |
-| Tests | `cargo test --workspace` |
+| Library package checks (non-Windows) | `cargo test -p bytehound-opc-da-client --all-features` |
+| Library package linter (non-Windows) | `cargo clippy -p bytehound-opc-da-client --all-targets --all-features -- -D warnings` |
+| Library package verification (non-Windows) | `cargo publish -p bytehound-opc-da-client --dry-run` |
+| Full workspace linter/tests (Windows) | `cargo clippy --workspace -- -D warnings` / `cargo test --workspace` |
 | Verification Script | `pwsh -File scripts/verify.ps1` |
 | Release Merge Script | `powershell -File scripts/Merge-ToMain.ps1` |
 | Documentation | `cargo doc --no-deps --package bytehound-opc-da-client` |
@@ -293,7 +295,11 @@ The library exposes two browse surfaces:
 
 ### Platform Constraint
 
-This library is **Windows-only** as it depends on Windows COM/DCOM for OPC DA interaction. It cannot be compiled or executed on Linux or macOS.
+The concrete library API and OPC DA backend are **Windows-only** because they depend on Windows
+COM/DCOM. The crate excludes its Windows dependencies and implementation from non-Windows targets,
+which permits package-scoped metadata, packaging, and compilation checks on Linux and macOS. Those
+checks do not validate COM behavior and may run zero library tests. Windows builds remain required
+for the backend, integration tests, examples, and publication confidence.
 
 ### OPC-BUG-001
 

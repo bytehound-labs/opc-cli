@@ -50,6 +50,31 @@ opc-da-client = { package = "bytehound-opc-da-client", version = "0.2.8" }
 - **OPC DA Core Components**: Ensure the OPC DA Core Components are installed and registered on your system.
 - **DCOM Configuration**: If connecting to remote servers, appropriate DCOM permissions must be configured.
 
+## Platform and Package Verification
+
+The concrete `opc_da_client` API and the `opc-da-backend` implementation are Windows-only. The
+Windows dependencies and native library code are excluded from non-Windows targets so package
+metadata, packaging, and target-specific compilation can be checked on Linux without compiling
+`windows-future`.
+
+From the workspace root, use package-scoped commands for non-Windows verification:
+
+```bash
+cargo test -p bytehound-opc-da-client --all-features
+cargo clippy -p bytehound-opc-da-client --all-targets --all-features -- -D warnings
+cargo package -p bytehound-opc-da-client
+cargo publish -p bytehound-opc-da-client --dry-run
+```
+
+Non-Windows package checks do not validate COM behavior and may run zero library tests. Run the
+Windows verification gate before publishing or relying on the OPC DA backend:
+
+```powershell
+cargo test -p bytehound-opc-da-client --all-features
+cargo clippy -p bytehound-opc-da-client --all-targets --all-features -- -D warnings
+cargo publish -p bytehound-opc-da-client --dry-run
+```
+
 ## Usage Examples
 
 ### Connecting & Listing Servers

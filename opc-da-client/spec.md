@@ -395,6 +395,18 @@ Defined in § 1.1. See table above.
 | `test-support` | ❌ No | Enables `mockall` and exports `MockOpcProvider`. |
 | `dev-diagnostics` | ❌ No | Compiles verbose TRACE-level operation argument dumps into backend methods. |
 
+### Platform and Verification Contract
+
+The concrete library API and the `opc-da-backend` implementation require Windows COM/DCOM. The
+`windows` and `windows-core` dependencies are target-specific and the library crate is excluded
+from non-Windows targets. This allows package-scoped Linux checks to validate metadata and target
+selection without compiling `windows-future`.
+
+Non-Windows package checks are not backend tests. They may execute zero library tests and must not
+be used as evidence that COM, DCOM, OPC server discovery, reads, writes, browsing, or inventory
+work outside Windows. Windows builds are required for backend tests, examples, and release
+verification.
+
 ---
 
 ## 3. Integration Points

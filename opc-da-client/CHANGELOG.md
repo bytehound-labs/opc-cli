@@ -33,6 +33,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   control was already cancelled, including explicit stream cancellation and
   stream-drop cleanup.
 
+### Build
+
+- Exclude the Windows COM dependencies and native library implementation from
+  non-Windows targets so package-scoped Linux test, clippy, package, and
+  publish dry-run commands do not compile the incompatible `windows-future`
+  target.
+- Keep the `inventory-root` example buildable on non-Windows targets with an
+  explicit Windows-only message; the real example remains available on Windows.
+
 ## [0.2.7] - 2026-08-25
 
 ### Fixed

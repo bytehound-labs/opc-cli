@@ -1,12 +1,19 @@
+#[cfg(windows)]
 use anyhow::{Context, Result, bail};
+#[cfg(windows)]
 use opc_da_client::{
     InventoryEvent, InventoryOptions, InventoryProgress, OpcDaClient, OpcProvider,
 };
+#[cfg(windows)]
 use std::env;
+#[cfg(windows)]
 use std::fs::File;
+#[cfg(windows)]
 use std::io::{BufWriter, Write};
+#[cfg(windows)]
 use std::time::Instant;
 
+#[cfg(windows)]
 fn usage() -> ! {
     eprintln!(
         "usage: inventory-root <server> <root-item-id> <output-jsonl> [batch-size] [max-entries]"
@@ -14,6 +21,7 @@ fn usage() -> ! {
     std::process::exit(2);
 }
 
+#[cfg(windows)]
 fn parse_u32(value: Option<&String>, name: &str, default: u32) -> Result<u32> {
     value
         .map(|value| {
@@ -25,6 +33,7 @@ fn parse_u32(value: Option<&String>, name: &str, default: u32) -> Result<u32> {
         .map(|value| value.unwrap_or(default))
 }
 
+#[cfg(windows)]
 fn parse_u64(value: Option<&String>, name: &str, default: u64) -> Result<u64> {
     value
         .map(|value| {
@@ -36,6 +45,7 @@ fn parse_u64(value: Option<&String>, name: &str, default: u64) -> Result<u64> {
         .map(|value| value.unwrap_or(default))
 }
 
+#[cfg(windows)]
 fn write_progress(output: &mut BufWriter<File>, progress: &InventoryProgress) -> Result<()> {
     writeln!(
         output,
@@ -49,6 +59,7 @@ fn write_progress(output: &mut BufWriter<File>, progress: &InventoryProgress) ->
     Ok(())
 }
 
+#[cfg(windows)]
 #[tokio::main]
 async fn main() -> Result<()> {
     let args: Vec<String> = env::args().collect();
@@ -120,4 +131,9 @@ async fn main() -> Result<()> {
     }
 
     bail!("inventory stream ended without a completion event")
+}
+
+#[cfg(not(windows))]
+fn main() {
+    eprintln!("inventory-root is only supported on Windows");
 }

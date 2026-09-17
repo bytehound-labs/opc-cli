@@ -1,3 +1,4 @@
+#![cfg(windows)]
 #![allow(unsafe_code, unreachable_pub)]
 #![doc = include_str!("../README.md")]
 //! # opc-da-client

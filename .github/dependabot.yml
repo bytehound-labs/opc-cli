@@ -1,0 +1,31 @@
+version: 2
+updates:
+  # The root manifest covers both workspace crates and the shared Cargo.lock.
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: weekly
+    # Wait before proposing a freshly published release (supply-chain hardening).
+    cooldown:
+      default-days: 7
+    groups:
+      cargo-dependencies:
+        patterns:
+          - '*'
+    labels:
+      - dependencies
+      - rust
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    groups:
+      github-actions:
+        patterns:
+          - '*'
+    labels:
+      - dependencies
+      - ci

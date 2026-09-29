@@ -11,6 +11,9 @@ homepage.workspace = true
 readme = "../README.md"
 keywords = ["opc", "cli", "tui", "windows"]
 categories = ["command-line-utilities", "network-programming"]
+# The crates.io name `opc-cli` is owned by the upstream project (wends155/opc-cli);
+# this fork publishes only the `bytehound-opc-da-client` library.
+publish = false
 
 [package.metadata.docs.rs]
 default-target = "x86_64-pc-windows-msvc"

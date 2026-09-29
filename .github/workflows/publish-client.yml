@@ -1,0 +1,112 @@
+# Manual crates.io publish for bytehound-opc-da-client.
+#
+# workflow_dispatch only. This workflow does not run on pull_request and must
+# not be added to required status checks.
+#
+# dry_run defaults to true. The verify job always runs and never enters a
+# GitHub Environment or reads a secret. The publish job runs only when
+# dry_run is false, and only then enters the crates-publish environment.
+# This file does not create that environment and does not provision
+# CARGO_REGISTRY_TOKEN. Create and protect the environment before the first
+# non-dry-run dispatch: GitHub creates a missing environment on first use,
+# and that automatic environment has no required reviewers.
+#
+# The publish job checks out the exact commit the verify job tested. A branch
+# named by ref can move between jobs; the recorded SHA cannot.
+#
+# crates.io trusted publishing is not configured. The publish step uses the
+# environment token. Do not grant id-token: write unless trusted publishing
+# replaces that token.
+#
+# Operator notes: docs/publishing.md.
+# The cross-repo copy at
+# bytehound-labs/opcda-bridge/.github/workflows/publish-opcda-client.yml
+# stays until a dry run of this workflow has passed. Do not delete it here.
+name: Publish ByteHound OPC DA client
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Git ref to test and, when dry_run is false, publish
+        required: true
+        default: main
+        type: string
+      dry_run:
+        description: Validate packaging without publishing to crates.io
+        required: true
+        default: true
+        type: boolean
+
+permissions: {}
+
+# Queue rather than cancel. A later dispatch must not abort an in-flight
+# publish, and a dry run must not race a real publish.
+concurrency:
+  group: publish-bytehound-opc-da-client
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    name: Verify bytehound-opc-da-client
+    # Windows is the publish gate. Non-Windows package checks do not exercise
+    # the OPC DA backend and may run zero library tests.
+    runs-on: windows-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    outputs:
+      commit: ${{ steps.checkout.outputs.commit }}
+    steps:
+      - name: Check out selected ref
+        id: checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.ref }}
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
+
+      - name: Run package tests
+        run: cargo test -p bytehound-opc-da-client --locked
+
+      - name: Verify publish package
+        # crates.io trusted publishing is not configured for this repository.
+        # zizmor: ignore[use-trusted-publishing]
+        run: cargo publish -p bytehound-opc-da-client --locked --dry-run
+
+  publish:
+    name: Publish bytehound-opc-da-client
+    needs: verify
+    # Boolean workflow_dispatch inputs compare as booleans. A skipped job does
+    # not enter crates-publish and does not read secrets.
+    if: inputs.dry_run == false && needs.verify.outputs.commit != ''
+    runs-on: windows-latest
+    timeout-minutes: 30
+    environment: crates-publish
+    permissions:
+      contents: read
+    steps:
+      - name: Check out verified commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.verify.outputs.commit }}
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
+
+      - name: Verify publish package
+        # Repeat the dry run on the exact commit about to be published.
+        # This step does not use CARGO_REGISTRY_TOKEN.
+        # crates.io trusted publishing is not configured for this repository.
+        # zizmor: ignore[use-trusted-publishing]
+        run: cargo publish -p bytehound-opc-da-client --locked --dry-run
+
+      - name: Publish package
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        # crates.io trusted publishing is not configured. The token is read
+        # from the crates-publish environment, which this workflow does not
+        # create or provision.
+        # zizmor: ignore[use-trusted-publishing]
+        run: cargo publish -p bytehound-opc-da-client --locked

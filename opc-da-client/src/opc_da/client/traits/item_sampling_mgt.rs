@@ -41,8 +41,8 @@ pub trait ItemSamplingMgtTrait {
         let mut errors = RemoteArray::new(len);
 
         // SAFETY: The equal-length handle and rate slices each contain `len` entries and
-        // remain borrowed for the call; both `RemoteArray` output slots are live and writable.
-        // `?` checks the HRESULT before returning the arrays.
+        // SAFETY: remain borrowed for the call; both `RemoteArray` output slots are live and writable.
+        // SAFETY: `?` checks the HRESULT before returning the arrays.
         unsafe {
             self.interface()?.SetItemSamplingRate(
                 len,
@@ -75,7 +75,7 @@ pub trait ItemSamplingMgtTrait {
         let mut errors = RemoteArray::new(len);
 
         // SAFETY: The handle slice contains `len` entries and remains borrowed for the call;
-        // both `RemoteArray` output slots are live and writable. `?` checks the HRESULT.
+        // SAFETY: both `RemoteArray` output slots are live and writable. `?` checks the HRESULT.
         unsafe {
             self.interface()?.GetItemSamplingRate(
                 len,
@@ -104,7 +104,7 @@ pub trait ItemSamplingMgtTrait {
         let mut errors = RemoteArray::new(len);
 
         // SAFETY: The handle slice contains `len` entries and remains borrowed for the call;
-        // the `RemoteArray` output slot is live and writable. `?` checks the HRESULT.
+        // SAFETY: the `RemoteArray` output slot is live and writable. `?` checks the HRESULT.
         unsafe {
             self.interface()?.ClearItemSamplingRate(
                 len,
@@ -144,7 +144,7 @@ pub trait ItemSamplingMgtTrait {
         let enable_bool: Vec<BOOL> = enable.iter().map(|&v| BOOL::from(v)).collect();
 
         // SAFETY: The equal-length handle and BOOL vectors each contain `len` entries and
-        // remain live for the call; the `RemoteArray` output slot is writable. `?` checks the HRESULT.
+        // SAFETY: remain live for the call; the `RemoteArray` output slot is writable. `?` checks the HRESULT.
         unsafe {
             self.interface()?.SetItemBufferEnable(
                 len,
@@ -179,7 +179,7 @@ pub trait ItemSamplingMgtTrait {
         let mut errors = RemoteArray::new(len);
 
         // SAFETY: The handle slice contains `len` entries and remains borrowed for the call;
-        // both `RemoteArray` output slots are live and writable. `?` checks the HRESULT.
+        // SAFETY: both `RemoteArray` output slots are live and writable. `?` checks the HRESULT.
         unsafe {
             self.interface()?.GetItemBufferEnable(
                 len,

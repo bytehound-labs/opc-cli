@@ -85,7 +85,7 @@ impl<T: Sized> RemoteArray<T> {
         let len = usize::try_from(self.len).unwrap_or(0);
 
         // SAFETY: The wrapped COM array must contain `len` aligned, initialized `T` values.
-        // The null and zero-length cases are returned above before forming the slice.
+        // SAFETY: The null and zero-length cases are returned above before forming the slice.
         unsafe { core::slice::from_raw_parts(self.pointer.inner, len) }
     }
 
@@ -102,7 +102,7 @@ impl<T: Sized> RemoteArray<T> {
         let len = usize::try_from(self.len).unwrap_or(0);
 
         // SAFETY: The wrapped COM allocation must contain `len` aligned, initialized `T`
-        // values and have no other live aliases; null and zero-length cases return above.
+        // SAFETY: values and have no other live aliases; null and zero-length cases return above.
         unsafe { core::slice::from_raw_parts_mut(self.pointer.inner, len) }
     }
 
@@ -184,11 +184,11 @@ impl<T: Sized> RemotePointer<T> {
 
     pub(crate) fn copy_slice(value: &[T]) -> Self {
         // SAFETY: This FFI call receives only the computed byte count; the returned pointer
-        // is not dereferenced until the following block.
+        // SAFETY: is not dereferenced until the following block.
         let pointer = unsafe { CoTaskMemAlloc(core::mem::size_of_val(value)) };
         // SAFETY: `value` is a valid source slice. This copy requires the allocation above
-        // to be non-null, aligned, large enough, and disjoint from that slice; this path
-        // assumes allocation succeeds.
+        // SAFETY: to be non-null, aligned, large enough, and disjoint from that slice; this path
+        // SAFETY: assumes allocation succeeds.
         unsafe {
             core::ptr::copy_nonoverlapping(value.as_ptr(), pointer as _, value.len());
         }
@@ -209,14 +209,14 @@ impl<T: Sized> RemotePointer<T> {
     #[inline(always)]
     pub fn as_ref(&self) -> Option<&T> {
         // SAFETY: `as_ref` handles null; a non-null `inner` must be aligned and point to an
-        // initialized `T` that remains valid for the returned borrow.
+        // SAFETY: initialized `T` that remains valid for the returned borrow.
         unsafe { self.inner.as_ref() }
     }
 
     #[inline(always)]
     pub fn ok(&self) -> windows::core::Result<&T> {
         // SAFETY: `as_ref` handles null; a non-null `inner` must be aligned and point to an
-        // initialized `T` that remains valid for the returned borrow.
+        // SAFETY: initialized `T` that remains valid for the returned borrow.
         unsafe { self.inner.as_ref() }.ok_or_else(|| {
             windows::core::Error::new(windows::Win32::Foundation::E_POINTER, "Pointer is null")
         })
@@ -271,7 +271,7 @@ impl TryFrom<RemotePointer<u16>> for String {
         }
 
         // SAFETY: The non-null pointer above is a COM-owned, readable NUL-terminated UTF-16
-        // string and remains allocated until this wrapper is dropped.
+        // SAFETY: string and remains allocated until this wrapper is dropped.
         Ok(unsafe { PWSTR(value.inner).to_string() }?)
     }
 }
@@ -290,7 +290,7 @@ impl TryFrom<RemotePointer<u16>> for Option<String> {
         }
 
         // SAFETY: The non-null pointer above is a COM-owned, readable NUL-terminated UTF-16
-        // string and remains allocated until this wrapper is dropped.
+        // SAFETY: string and remains allocated until this wrapper is dropped.
         Ok(Some(unsafe { PWSTR(value.inner).to_string() }?))
     }
 }
@@ -309,7 +309,7 @@ impl<T: Sized> Drop for RemotePointer<T> {
     fn drop(&mut self) {
         if !self.inner.is_null() {
             // SAFETY: This must be the sole live owner of a non-null COM task-memory
-            // allocation, as required by `RemotePointer`'s constructors.
+            // SAFETY: allocation, as required by `RemotePointer`'s constructors.
             unsafe {
                 CoTaskMemFree(Some(self.inner as _));
             }

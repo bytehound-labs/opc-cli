@@ -45,7 +45,7 @@ pub trait ItemPropertiesTrait {
         let mut datatypes = RemoteArray::new(0);
 
         // SAFETY: `item_id` owns a NUL-terminated UTF-16 buffer through the call; COM fills
-        // the count and three live output slots. `?` checks the HRESULT before `count` is used.
+        // SAFETY: the count and three live output slots. `?` checks the HRESULT before `count` is used.
         unsafe {
             self.interface()?.QueryAvailableProperties(
                 item_id.as_pcwstr(),
@@ -58,7 +58,7 @@ pub trait ItemPropertiesTrait {
 
         if count > 0 {
             // SAFETY: The successful `QueryAvailableProperties` call returned these three
-            // COM arrays with `count` initialized elements, matching the OPC DA contract.
+            // SAFETY: COM arrays with `count` initialized elements, matching the OPC DA contract.
             unsafe {
                 property_ids.set_len(count);
                 descriptions.set_len(count);
@@ -100,7 +100,7 @@ pub trait ItemPropertiesTrait {
         let mut errors = RemoteArray::new(property_ids.len().try_into()?);
 
         // SAFETY: `item_id` and the `property_ids` slice stay valid for the call; `len` is
-        // the property slice length, and both output slots are live. `?` checks the HRESULT.
+        // SAFETY: the property slice length, and both output slots are live. `?` checks the HRESULT.
         unsafe {
             self.interface()?.GetItemProperties(
                 item_id.as_pcwstr(),
@@ -145,7 +145,7 @@ pub trait ItemPropertiesTrait {
         let mut errors = RemoteArray::new(property_ids.len().try_into()?);
 
         // SAFETY: `item_id` and the `property_ids` slice stay valid for the call; `len` is
-        // the property slice length, and both output slots are live. `?` checks the HRESULT.
+        // SAFETY: the property slice length, and both output slots are live. `?` checks the HRESULT.
         unsafe {
             self.interface()?.LookupItemIDs(
                 item_id.as_pcwstr(),

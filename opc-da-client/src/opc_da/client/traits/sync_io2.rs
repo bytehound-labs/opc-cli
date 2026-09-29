@@ -58,8 +58,8 @@ pub trait SyncIo2Trait {
         let mut errors = RemoteArray::new(len);
 
         // SAFETY: The equal-length handle and age slices each contain `len` entries and stay
-        // borrowed through the call; all four `RemoteArray` output slots are live and writable.
-        // `?` checks the HRESULT before returning the arrays.
+        // SAFETY: borrowed through the call; all four `RemoteArray` output slots are live and writable.
+        // SAFETY: `?` checks the HRESULT before returning the arrays.
         unsafe {
             self.interface()?.ReadMaxAge(
                 len,
@@ -108,8 +108,8 @@ pub trait SyncIo2Trait {
         let mut errors = RemoteArray::new(len);
 
         // SAFETY: The equal-length handle and VQT slices each contain `len` entries and stay
-        // borrowed through the call; the `RemoteArray` output slot is live and writable.
-        // `?` checks the HRESULT before returning the array.
+        // SAFETY: borrowed through the call; the `RemoteArray` output slot is live and writable.
+        // SAFETY: `?` checks the HRESULT before returning the array.
         unsafe {
             self.interface()?.WriteVQT(
                 len,

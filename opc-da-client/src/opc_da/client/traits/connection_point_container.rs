@@ -31,7 +31,7 @@ pub trait ConnectionPointContainerTrait {
         id: &GUID,
     ) -> OpcResult<windows::Win32::System::Com::IConnectionPoint> {
         // SAFETY: `id` is a live GUID reference and `self.interface()` borrows the COM
-        // container through the call; `?` checks the HRESULT before returning the interface.
+        // SAFETY: container through the call; `?` checks the HRESULT before returning the interface.
         unsafe { Ok(self.interface()?.FindConnectionPoint(id)?) }
     }
 
@@ -59,7 +59,7 @@ pub trait ConnectionPointContainerTrait {
         &self,
     ) -> OpcResult<windows::Win32::System::Com::IEnumConnectionPoints> {
         // SAFETY: `self.interface()` keeps the COM container alive for the call, and `?`
-        // checks the HRESULT before returning the enumerator.
+        // SAFETY: checks the HRESULT before returning the enumerator.
         unsafe { Ok(self.interface()?.EnumConnectionPoints()?) }
     }
 }

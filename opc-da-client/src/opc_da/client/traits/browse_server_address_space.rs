@@ -20,7 +20,7 @@ pub trait BrowseServerAddressSpaceTrait {
     /// The namespace type (hierarchical or flat)
     fn query_organization(&self) -> OpcResult<tagOPCNAMESPACETYPE> {
         // SAFETY: `self.interface()` keeps the COM object borrowed for this call, and `?`
-        // propagates the HRESULT before returning the namespace type.
+        // SAFETY: propagates the HRESULT before returning the namespace type.
         unsafe { Ok(self.interface()?.QueryOrganization()?) }
     }
 
@@ -40,7 +40,7 @@ pub trait BrowseServerAddressSpaceTrait {
         let position = LocalPointer::from(position);
 
         // SAFETY: `position` owns a NUL-terminated UTF-16 buffer through the call; the
-        // borrowed interface stays live, and `?` checks the HRESULT.
+        // SAFETY: borrowed interface stays live, and `?` checks the HRESULT.
         unsafe {
             Ok(self
                 .interface()?
@@ -71,7 +71,7 @@ pub trait BrowseServerAddressSpaceTrait {
         let filter_criteria = LocalPointer::from_option(filter_criteria);
 
         // SAFETY: The optional filter is a NUL-terminated buffer owned by `LocalPointer`
-        // through the call; the interface borrow remains live and `?` checks the HRESULT.
+        // SAFETY: through the call; the interface borrow remains live and `?` checks the HRESULT.
         unsafe {
             let iter = self.interface()?.BrowseOPCItemIDs(
                 browse_type,
@@ -94,7 +94,7 @@ pub trait BrowseServerAddressSpaceTrait {
         let item_data_id = LocalPointer::from(item_data_id);
 
         // SAFETY: `item_data_id` owns a NUL-terminated UTF-16 buffer through the call; the
-        // interface borrow remains live, and `?` checks the HRESULT before wrapping output.
+        // SAFETY: interface borrow remains live, and `?` checks the HRESULT before wrapping output.
         let output = unsafe { self.interface()?.GetItemID(item_data_id.as_pwstr())? };
 
         let ptr = RemotePointer::from(output);
@@ -111,7 +111,7 @@ pub trait BrowseServerAddressSpaceTrait {
     fn browse_access_paths(&self, item_id: &str) -> OpcResult<StringIterator> {
         let item_id = LocalPointer::from(item_id);
         // SAFETY: `item_id` owns a NUL-terminated UTF-16 buffer through the call; the
-        // interface borrow remains live, and `?` checks the HRESULT.
+        // SAFETY: interface borrow remains live, and `?` checks the HRESULT.
         unsafe {
             let iter = self.interface()?.BrowseAccessPaths(item_id.as_pwstr())?;
             Ok(StringIterator::new(iter))

@@ -46,8 +46,8 @@ pub trait ItemMgtTrait {
         let mut errors = RemoteArray::new(len);
 
         // SAFETY: `items` supplies `len` live definitions; any pointer fields inside each
-        // definition must remain valid for the call. The output slots are live, and `?`
-        // checks the HRESULT before exposing the arrays.
+        // SAFETY: definition must remain valid for the call. The output slots are live, and `?`
+        // SAFETY: checks the HRESULT before exposing the arrays.
         unsafe {
             self.interface()?.AddItems(
                 len,
@@ -87,8 +87,8 @@ pub trait ItemMgtTrait {
         let mut errors = RemoteArray::new(len);
 
         // SAFETY: `items` supplies `len` live definitions; any pointer fields inside each
-        // definition must remain valid for the call. The output slots are live, and `?`
-        // checks the HRESULT before exposing the arrays.
+        // SAFETY: definition must remain valid for the call. The output slots are live, and `?`
+        // SAFETY: checks the HRESULT before exposing the arrays.
         unsafe {
             self.interface()?.ValidateItems(
                 len,
@@ -130,7 +130,7 @@ pub trait ItemMgtTrait {
         let mut errors = RemoteArray::new(len);
 
         // SAFETY: The handle slice contains `len` entries and remains borrowed for the call;
-        // the `RemoteArray` output slot is live and writable. `?` checks the HRESULT.
+        // SAFETY: the `RemoteArray` output slot is live and writable. `?` checks the HRESULT.
         unsafe {
             self.interface()?.RemoveItems(
                 len,
@@ -168,7 +168,7 @@ pub trait ItemMgtTrait {
         let mut errors = RemoteArray::new(len);
 
         // SAFETY: The handle slice contains `len` entries and remains borrowed for the call;
-        // the `RemoteArray` output slot is live and writable. `?` checks the HRESULT.
+        // SAFETY: the `RemoteArray` output slot is live and writable. `?` checks the HRESULT.
         unsafe {
             self.interface()?.SetActiveState(
                 len,
@@ -213,8 +213,8 @@ pub trait ItemMgtTrait {
         let mut errors = RemoteArray::new(len);
 
         // SAFETY: The equal-length handle slices each contain `len` entries and remain
-        // borrowed for the call; the `RemoteArray` output slot is live and writable.
-        // `?` checks the HRESULT.
+        // SAFETY: borrowed for the call; the `RemoteArray` output slot is live and writable.
+        // SAFETY: `?` checks the HRESULT.
         unsafe {
             self.interface()?.SetClientHandles(
                 len,
@@ -259,8 +259,8 @@ pub trait ItemMgtTrait {
         let mut errors = RemoteArray::new(len);
 
         // SAFETY: The equal-length handle and datatype slices each contain `len` entries and
-        // remain borrowed for the call; the `RemoteArray` output slot is live and writable.
-        // `?` checks the HRESULT.
+        // SAFETY: remain borrowed for the call; the `RemoteArray` output slot is live and writable.
+        // SAFETY: `?` checks the HRESULT.
         unsafe {
             self.interface()?.SetDatatypes(
                 len,
@@ -282,7 +282,7 @@ pub trait ItemMgtTrait {
     /// Enumerator interface for iterating through items
     fn create_enumerator(&self) -> OpcResult<ItemAttributeIterator> {
         // SAFETY: The COM interface is borrowed for the call and the enumerator IID is a
-        // static, valid GUID reference; `?` checks the HRESULT before wrapping the result.
+        // SAFETY: static, valid GUID reference; `?` checks the HRESULT before wrapping the result.
         let enumerator = unsafe {
             self.interface()?.CreateEnumerator(
                 &<crate::bindings::da::IEnumOPCItemAttributes as windows_core::Interface>::IID,

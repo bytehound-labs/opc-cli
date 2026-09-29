@@ -20,14 +20,14 @@ pub trait ClientTrait<Server: TryFrom<windows::core::IUnknown, Error = windows::
     fn get_servers(&self) -> OpcResult<GuidIterator> {
         tracing::debug!("Enumerating OPC DA Server classes via COM Component Categories Manager");
         // SAFETY: `w!` supplies a static, NUL-terminated UTF-16 ProgID; the API writes its
-        // result into a local GUID, and `?` checks the HRESULT.
+        // SAFETY: result into a local GUID, and `?` checks the HRESULT.
         let id = unsafe {
             windows::Win32::System::Com::CLSIDFromProgID(windows::core::w!("OPC.ServerList.1"))?
         };
 
         // SAFETY: `id` is a live local CLSID and `None` requests no aggregation. COM must be
-        // initialized on this thread (the normal client path holds `ComGuard` on its worker);
-        // `?` checks the HRESULT before receiving the interface.
+        // SAFETY: initialized on this thread (the normal client path holds `ComGuard` on its worker);
+        // SAFETY: `?` checks the HRESULT before receiving the interface.
         let servers: crate::bindings::comn::IOPCServerList = unsafe {
             // TODO: Use CoCreateInstanceEx
             windows::Win32::System::Com::CoCreateInstance(
@@ -41,7 +41,7 @@ pub trait ClientTrait<Server: TryFrom<windows::core::IUnknown, Error = windows::
         let versions = [Self::CATALOG_ID];
 
         // SAFETY: Both category slices reference the live `versions` array for this call;
-        // `servers` owns the COM interface, and `?` checks the HRESULT before wrapping the enumerator.
+        // SAFETY: `servers` owns the COM interface, and `?` checks the HRESULT before wrapping the enumerator.
         let iter = unsafe {
             servers
                 .EnumClassesOfCategories(&versions, &versions)
@@ -73,8 +73,8 @@ pub trait ClientTrait<Server: TryFrom<windows::core::IUnknown, Error = windows::
             "Creating OPC server instance via COM CoCreateInstance"
         );
         // SAFETY: `class_id` is a live local GUID and the class context is passed by value.
-        // COM must be initialized on this thread (the normal client path holds `ComGuard` on
-        // its worker), and `?` checks the HRESULT.
+        // SAFETY: COM must be initialized on this thread (the normal client path holds `ComGuard` on
+        // SAFETY: its worker), and `?` checks the HRESULT.
         let server: crate::bindings::da::IOPCServer = unsafe {
             windows::Win32::System::Com::CoCreateInstance(
                 &class_id,
@@ -102,8 +102,8 @@ pub trait ClientTrait<Server: TryFrom<windows::core::IUnknown, Error = windows::
         }];
 
         // SAFETY: `class_id`, the `MULTI_QI` output array, its static IID, and optional server
-        // info remain valid through the call; `?` checks the HRESULT before the per-interface
-        // HRESULT and returned pointer are inspected.
+        // SAFETY: info remain valid through the call; `?` checks the HRESULT before the per-interface
+        // SAFETY: HRESULT and returned pointer are inspected.
         unsafe {
             windows::Win32::System::Com::CoCreateInstanceEx(
                 &class_id,

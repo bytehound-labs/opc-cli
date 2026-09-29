@@ -45,7 +45,7 @@ pub trait SyncIoTrait {
         let mut errors = RemoteArray::new(len);
 
         // SAFETY: `server_handles` contains `len` entries and remains borrowed for the call;
-        // both `RemoteArray` output slots are live and writable. `?` checks the HRESULT.
+        // SAFETY: both `RemoteArray` output slots are live and writable. `?` checks the HRESULT.
         unsafe {
             self.interface()?.Read(
                 source,
@@ -92,8 +92,8 @@ pub trait SyncIoTrait {
         let mut errors = RemoteArray::new(len);
 
         // SAFETY: The equal-length handle and VARIANT slices each contain `len` entries and
-        // remain borrowed for the call; the `RemoteArray` output slot is live and writable.
-        // `?` checks the HRESULT.
+        // SAFETY: remain borrowed for the call; the `RemoteArray` output slot is live and writable.
+        // SAFETY: `?` checks the HRESULT.
         unsafe {
             self.interface()?.Write(
                 len,

@@ -23,7 +23,7 @@ pub trait ServerPublicGroupsTrait {
         let name = LocalPointer::from(name);
 
         // SAFETY: `name` owns a NUL-terminated UTF-16 buffer and `id` remains borrowed for
-        // the call; the containing COM interface is also borrowed, and `?` checks the HRESULT.
+        // SAFETY: the call; the containing COM interface is also borrowed, and `?` checks the HRESULT.
         unsafe {
             Ok(self
                 .interface()?
@@ -41,7 +41,7 @@ pub trait ServerPublicGroupsTrait {
     /// Ok(()) if the group was successfully removed
     fn remove_public_group(&self, server_group: u32, force: bool) -> OpcResult<()> {
         // SAFETY: The borrowed interface stays live for the call; the group handle and
-        // `force` flag are passed by value, and `?` checks the HRESULT.
+        // SAFETY: `force` flag are passed by value, and `?` checks the HRESULT.
         unsafe { Ok(self.interface()?.RemovePublicGroup(server_group, force)?) }
     }
 }

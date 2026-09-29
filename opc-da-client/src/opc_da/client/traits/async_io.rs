@@ -43,8 +43,8 @@ pub trait AsyncIoTrait {
         let mut errors = RemoteArray::new(len);
 
         // SAFETY: The handle slice has `len` entries; its storage, `transaction_id`, and
-        // the `RemoteArray` output slot stay live through this call on the borrowed interface.
-        // `?` checks the HRESULT before the outputs are returned.
+        // SAFETY: the `RemoteArray` output slot stay live through this call on the borrowed interface.
+        // SAFETY: `?` checks the HRESULT before the outputs are returned.
         unsafe {
             self.interface()?.Read(
                 connection,
@@ -96,8 +96,8 @@ pub trait AsyncIoTrait {
         let mut errors = RemoteArray::new(len);
 
         // SAFETY: The equal-length handle and value slices both contain `len` entries and
-        // remain borrowed through the call; the transaction ID and output slot are live.
-        // `?` checks the HRESULT before the outputs are returned.
+        // SAFETY: remain borrowed through the call; the transaction ID and output slot are live.
+        // SAFETY: `?` checks the HRESULT before the outputs are returned.
         unsafe {
             self.interface()?.Write(
                 connection,
@@ -126,7 +126,7 @@ pub trait AsyncIoTrait {
         source: crate::bindings::da::tagOPCDATASOURCE,
     ) -> OpcResult<u32> {
         // SAFETY: `self.interface()` keeps the COM object borrowed for this call, and `?`
-        // propagates a failed HRESULT before returning the cancel ID.
+        // SAFETY: propagates a failed HRESULT before returning the cancel ID.
         unsafe { Ok(self.interface()?.Refresh(connection, source)?) }
     }
 
@@ -139,7 +139,7 @@ pub trait AsyncIoTrait {
     /// Result indicating success or failure of cancel request
     fn cancel(&self, transaction_id: u32) -> OpcResult<()> {
         // SAFETY: `self.interface()` keeps the COM object borrowed for this call, and `?`
-        // propagates a failed HRESULT.
+        // SAFETY: propagates a failed HRESULT.
         unsafe { Ok(self.interface()?.Cancel(transaction_id)?) }
     }
 }

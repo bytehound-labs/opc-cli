@@ -27,8 +27,8 @@ pub trait GroupStateMgtTrait {
         let name = {
             let mut name = RemotePointer::null();
             // SAFETY: The borrowed interface stays live for the call; each scalar output
-            // points to a live local, and `name` provides a writable COM string-pointer slot.
-            // `?` checks the HRESULT before those outputs are read.
+            // SAFETY: points to a live local, and `name` provides a writable COM string-pointer slot.
+            // SAFETY: `?` checks the HRESULT before those outputs are read.
             unsafe {
                 self.interface()?.GetState(
                     &mut state.update_rate,
@@ -83,8 +83,8 @@ pub trait GroupStateMgtTrait {
         let client_handle = LocalPointer::new(client_handle.map(|h| h.0));
 
         // SAFETY: Each optional input pointer comes from a live `LocalPointer`, while the
-        // revised-rate pointer targets a live local output. The interface borrow lasts for
-        // the call, and `?` checks the HRESULT.
+        // SAFETY: revised-rate pointer targets a live local output. The interface borrow lasts for
+        // SAFETY: the call, and `?` checks the HRESULT.
         unsafe {
             self.interface()?.SetState(
                 requested_update_rate.as_ptr(),
@@ -105,7 +105,7 @@ pub trait GroupStateMgtTrait {
         let name = LocalPointer::from(name);
 
         // SAFETY: `name` owns a NUL-terminated UTF-16 buffer through the call; the borrowed
-        // COM interface remains live, and `?` checks the HRESULT.
+        // SAFETY: COM interface remains live, and `?` checks the HRESULT.
         unsafe { Ok(self.interface()?.SetName(name.as_pwstr())?) }
     }
 
@@ -122,7 +122,7 @@ pub trait GroupStateMgtTrait {
         let name = LocalPointer::from(name);
 
         // SAFETY: The UTF-16 name buffer and borrowed GUID remain live through the call;
-        // the COM interface is borrowed from `self`, and `?` checks the HRESULT.
+        // SAFETY: the COM interface is borrowed from `self`, and `?` checks the HRESULT.
         unsafe { Ok(self.interface()?.CloneGroup(name.as_pwstr(), id)?) }
     }
 }

@@ -22,7 +22,7 @@ pub trait GroupStateMgt2Trait {
     /// the closest supported value. A value of 0 typically disables keep-alive.
     fn set_keep_alive(&self, keep_alive_time: u32) -> OpcResult<u32> {
         // SAFETY: `self.interface()` keeps the COM object borrowed for this call, and `?`
-        // propagates the HRESULT before returning the revised time.
+        // SAFETY: propagates the HRESULT before returning the revised time.
         unsafe { Ok(self.interface()?.SetKeepAlive(keep_alive_time)?) }
     }
 
@@ -33,7 +33,7 @@ pub trait GroupStateMgt2Trait {
     /// that keep-alive is disabled.
     fn get_keep_alive(&self) -> OpcResult<u32> {
         // SAFETY: `self.interface()` keeps the COM object borrowed for this call, and `?`
-        // propagates the HRESULT before returning the time.
+        // SAFETY: propagates the HRESULT before returning the time.
         unsafe { Ok(self.interface()?.GetKeepAlive()?) }
     }
 }

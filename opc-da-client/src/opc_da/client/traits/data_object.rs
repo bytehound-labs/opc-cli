@@ -16,7 +16,8 @@ pub trait DataObjectTrait {
     /// # Returns
     /// Storage medium containing the requested data
     fn get_data(&self, format: &FORMATETC) -> OpcResult<STGMEDIUM> {
-        // SAFETY: Calling COM method GetData with valid formatetc reference.
+        // SAFETY: `format` and any non-null target-device pointer it contains remain valid
+        // for the call; the interface is borrowed from `self`, and `?` checks the HRESULT.
         unsafe { Ok(self.interface()?.GetData(format)?) }
     }
 
@@ -29,7 +30,9 @@ pub trait DataObjectTrait {
     /// Storage medium updated with the requested data
     fn get_data_here(&self, format: &FORMATETC) -> OpcResult<STGMEDIUM> {
         let mut output = STGMEDIUM::default();
-        // SAFETY: Calling COM method GetDataHere with output stgmedium reference.
+        // SAFETY: `format` and its optional target-device pointer remain valid, and `output`
+        // is a live writable `STGMEDIUM`; the interface borrow lasts for the call and `?`
+        // checks the HRESULT.
         unsafe { self.interface()?.GetDataHere(format, &mut output)? };
         Ok(output)
     }
@@ -42,7 +45,8 @@ pub trait DataObjectTrait {
     /// # Returns
     /// Ok(()) if the format is supported, error otherwise
     fn query_get_data(&self, format: &FORMATETC) -> OpcResult<()> {
-        // SAFETY: Calling COM method QueryGetData.
+        // SAFETY: `format` and any non-null target-device pointer it contains remain valid
+        // for the call; the interface is borrowed from `self`, and `.ok()` checks the HRESULT.
         unsafe {
             self.interface()?
                 .QueryGetData(format)
@@ -60,7 +64,8 @@ pub trait DataObjectTrait {
     /// Canonical format specification
     fn get_canonical_format(&self, format_in: &FORMATETC) -> OpcResult<FORMATETC> {
         let mut output = FORMATETC::default();
-        // SAFETY: Calling COM method GetCanonicalFormatEtc.
+        // SAFETY: `format_in` and its optional target-device pointer remain valid, and
+        // `output` is a live writable `FORMATETC`; the interface borrow lasts through the call.
         unsafe {
             self.interface()?
                 .GetCanonicalFormatEtc(format_in, &mut output)
@@ -80,7 +85,10 @@ pub trait DataObjectTrait {
     /// # Returns
     /// Ok(()) if data was set successfully
     fn set_data(&self, format: &FORMATETC, medium: &STGMEDIUM, release: bool) -> OpcResult<()> {
-        // SAFETY: Calling COM method SetData.
+        // SAFETY: `format` and `medium` (including their referenced storage) remain valid
+        // through the call; if `release` is true, COM takes ownership of the medium and the
+        // caller must not use or free it afterward. The interface borrow stays live and `?`
+        // checks the HRESULT.
         unsafe { Ok(self.interface()?.SetData(format, medium, release)?) }
     }
 
@@ -95,7 +103,8 @@ pub trait DataObjectTrait {
         &self,
         direction: u32,
     ) -> OpcResult<windows::Win32::System::Com::IEnumFORMATETC> {
-        // SAFETY: Calling COM method EnumFormatEtc.
+        // SAFETY: The borrowed interface stays live for the call; `?` checks the HRESULT
+        // before returning the COM-owned enumerator.
         unsafe { Ok(self.interface()?.EnumFormatEtc(direction)?) }
     }
 
@@ -114,7 +123,9 @@ pub trait DataObjectTrait {
         advf: u32,
         sink: &windows::Win32::System::Com::IAdviseSink,
     ) -> OpcResult<u32> {
-        // SAFETY: Calling COM method DAdvise.
+        // SAFETY: `format` and any non-null target-device pointer it contains, plus `sink`,
+        // stay borrowed for the call; the containing interface remains live, and `?` checks
+        // the HRESULT.
         unsafe { Ok(self.interface()?.DAdvise(format, advf, sink)?) }
     }
 
@@ -126,7 +137,7 @@ pub trait DataObjectTrait {
     /// # Returns
     /// Ok(()) if connection was terminated successfully
     fn dunadvise(&self, connection: u32) -> OpcResult<()> {
-        // SAFETY: Calling COM method DUnadvise.
+        // SAFETY: The borrowed interface stays live for the call, and `?` checks the HRESULT.
         unsafe { Ok(self.interface()?.DUnadvise(connection)?) }
     }
 
@@ -135,7 +146,8 @@ pub trait DataObjectTrait {
     /// # Returns
     /// Enumerator for active advisory connections
     fn enum_dadvise(&self) -> OpcResult<windows::Win32::System::Com::IEnumSTATDATA> {
-        // SAFETY: Calling COM method EnumDAdvise.
+        // SAFETY: The borrowed interface stays live for the call; `?` checks the HRESULT
+        // before returning the COM-owned enumerator.
         unsafe { Ok(self.interface()?.EnumDAdvise()?) }
     }
 }

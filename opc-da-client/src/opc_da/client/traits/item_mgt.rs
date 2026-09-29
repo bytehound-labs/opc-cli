@@ -45,7 +45,9 @@ pub trait ItemMgtTrait {
         let mut results = RemoteArray::new(len);
         let mut errors = RemoteArray::new(len);
 
-        // SAFETY: Calling COM interface method AddItems with valid item definition pointers and output arrays.
+        // SAFETY: `items` supplies `len` live definitions; any pointer fields inside each
+        // definition must remain valid for the call. The output slots are live, and `?`
+        // checks the HRESULT before exposing the arrays.
         unsafe {
             self.interface()?.AddItems(
                 len,
@@ -84,7 +86,9 @@ pub trait ItemMgtTrait {
         let mut results = RemoteArray::new(len);
         let mut errors = RemoteArray::new(len);
 
-        // SAFETY: Calling COM interface method ValidateItems with valid item definition pointers and output arrays.
+        // SAFETY: `items` supplies `len` live definitions; any pointer fields inside each
+        // definition must remain valid for the call. The output slots are live, and `?`
+        // checks the HRESULT before exposing the arrays.
         unsafe {
             self.interface()?.ValidateItems(
                 len,
@@ -125,7 +129,8 @@ pub trait ItemMgtTrait {
         );
         let mut errors = RemoteArray::new(len);
 
-        // SAFETY: Calling COM interface method RemoveItems with valid server handles pointer.
+        // SAFETY: The handle slice contains `len` entries and remains borrowed for the call;
+        // the `RemoteArray` output slot is live and writable. `?` checks the HRESULT.
         unsafe {
             self.interface()?.RemoveItems(
                 len,
@@ -162,7 +167,8 @@ pub trait ItemMgtTrait {
         let len = server_handles.len().try_into()?;
         let mut errors = RemoteArray::new(len);
 
-        // SAFETY: Calling COM interface method SetActiveState with valid server handles pointer.
+        // SAFETY: The handle slice contains `len` entries and remains borrowed for the call;
+        // the `RemoteArray` output slot is live and writable. `?` checks the HRESULT.
         unsafe {
             self.interface()?.SetActiveState(
                 len,
@@ -206,7 +212,9 @@ pub trait ItemMgtTrait {
         let len = server_handles.len().try_into()?;
         let mut errors = RemoteArray::new(len);
 
-        // SAFETY: Calling COM interface method SetClientHandles with valid handle pointers.
+        // SAFETY: The equal-length handle slices each contain `len` entries and remain
+        // borrowed for the call; the `RemoteArray` output slot is live and writable.
+        // `?` checks the HRESULT.
         unsafe {
             self.interface()?.SetClientHandles(
                 len,
@@ -250,7 +258,9 @@ pub trait ItemMgtTrait {
         let len = server_handles.len().try_into()?;
         let mut errors = RemoteArray::new(len);
 
-        // SAFETY: Calling COM interface method SetDatatypes with valid datatype array pointer.
+        // SAFETY: The equal-length handle and datatype slices each contain `len` entries and
+        // remain borrowed for the call; the `RemoteArray` output slot is live and writable.
+        // `?` checks the HRESULT.
         unsafe {
             self.interface()?.SetDatatypes(
                 len,
@@ -271,7 +281,8 @@ pub trait ItemMgtTrait {
     /// # Returns
     /// Enumerator interface for iterating through items
     fn create_enumerator(&self) -> OpcResult<ItemAttributeIterator> {
-        // SAFETY: Calling COM interface method CreateEnumerator.
+        // SAFETY: The COM interface is borrowed for the call and the enumerator IID is a
+        // static, valid GUID reference; `?` checks the HRESULT before wrapping the result.
         let enumerator = unsafe {
             self.interface()?.CreateEnumerator(
                 &<crate::bindings::da::IEnumOPCItemAttributes as windows_core::Interface>::IID,

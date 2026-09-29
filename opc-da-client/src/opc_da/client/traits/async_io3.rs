@@ -37,7 +37,9 @@ pub trait AsyncIo3Trait {
         let mut cancel_id = 0;
         let mut errors = RemoteArray::new(len);
 
-        // SAFETY: Calling COM interface method ReadMaxAge with valid handles and array pointers.
+        // SAFETY: The equal-length handle and age slices each contain `len` entries and stay
+        // borrowed through the call; the cancel ID and `RemoteArray` output slot are writable.
+        // `?` checks the HRESULT before returning the outputs.
         unsafe {
             self.interface()?.ReadMaxAge(
                 len,
@@ -78,7 +80,9 @@ pub trait AsyncIo3Trait {
         let mut cancel_id = 0;
         let mut errors = RemoteArray::new(len);
 
-        // SAFETY: Calling COM interface method WriteVQT with valid handles and array pointers.
+        // SAFETY: The equal-length handle and VQT slices each contain `len` entries and stay
+        // borrowed through the call; the cancel ID and `RemoteArray` output slot are writable.
+        // `?` checks the HRESULT before returning the outputs.
         unsafe {
             self.interface()?.WriteVQT(
                 len,
@@ -102,7 +106,8 @@ pub trait AsyncIo3Trait {
     /// # Returns
     /// Cancel ID for the refresh operation
     fn refresh_max_age(&self, max_age: u32, transaction_id: u32) -> OpcResult<u32> {
-        // SAFETY: Calling COM interface method RefreshMaxAge.
+        // SAFETY: `self.interface()` keeps the COM object borrowed for this call, and `?`
+        // propagates a failed HRESULT before returning the cancel ID.
         unsafe { Ok(self.interface()?.RefreshMaxAge(max_age, transaction_id)?) }
     }
 }

@@ -19,7 +19,8 @@ pub trait CommonTrait {
     /// # Returns
     /// Result indicating if the locale was successfully set
     fn set_locale_id(&self, locale_id: u32) -> OpcResult<()> {
-        // SAFETY: Calling COM interface method SetLocaleID.
+        // SAFETY: `self.interface()` keeps the COM object borrowed for this call, and `?`
+        // propagates the HRESULT.
         unsafe { Ok(self.interface()?.SetLocaleID(locale_id)?) }
     }
 
@@ -28,7 +29,8 @@ pub trait CommonTrait {
     /// # Returns
     /// Windows LCID value representing the current locale
     fn get_locale_id(&self) -> OpcResult<u32> {
-        // SAFETY: Calling COM interface method GetLocaleID.
+        // SAFETY: `self.interface()` keeps the COM object borrowed for this call, and `?`
+        // propagates the HRESULT before returning the locale ID.
         unsafe { Ok(self.interface()?.GetLocaleID()?) }
     }
 
@@ -39,7 +41,8 @@ pub trait CommonTrait {
     fn query_available_locale_ids(&self) -> OpcResult<RemoteArray<u32>> {
         let mut locale_ids = RemoteArray::empty();
 
-        // SAFETY: Calling COM interface method QueryAvailableLocaleIDs.
+        // SAFETY: The borrowed interface stays live; both output pointers target fields in
+        // the live `RemoteArray`. `?` checks the HRESULT before returning the array.
         unsafe {
             self.interface()?
                 .QueryAvailableLocaleIDs(locale_ids.as_mut_len_ptr(), locale_ids.as_mut_ptr())?;
@@ -56,7 +59,8 @@ pub trait CommonTrait {
     /// # Returns
     /// Localized error message string in current locale
     fn get_error_string(&self, error: windows::core::HRESULT) -> OpcResult<String> {
-        // SAFETY: Calling COM interface method GetErrorString.
+        // SAFETY: The borrowed interface stays live for the call, and `?` checks the HRESULT
+        // before the returned COM-owned string is wrapped.
         let output = unsafe { self.interface()?.GetErrorString(error)? };
 
         RemotePointer::from(output)
@@ -73,7 +77,8 @@ pub trait CommonTrait {
     /// Result indicating if the client name was successfully set
     fn set_client_name(&self, name: &str) -> OpcResult<()> {
         let name = LocalPointer::from(name);
-        // SAFETY: Calling COM interface method SetClientName with valid string pointer.
+        // SAFETY: `name` owns a NUL-terminated UTF-16 buffer through the call; the borrowed
+        // interface stays live, and `?` checks the HRESULT.
         unsafe { Ok(self.interface()?.SetClientName(name.as_pcwstr())?) }
     }
 }

@@ -25,9 +25,9 @@ fn browse_with_null_property_ids(
     count: *mut u32,
     elements: *mut *mut tagOPCBROWSEELEMENT,
 ) -> windows::core::Result<()> {
-    // SAFETY: All pointers have the same valid lifetimes and ABI as the generated
-    // `Browse` call. This narrow path differs only by passing a null property-ID
-    // pointer while its corresponding count is zero.
+    // SAFETY: `browse` is borrowed for the call, and every argument pointer has the same
+    // valid storage and ABI as the generated `Browse` call. The property-ID pointer is null
+    // only with its matching zero count; `.ok()` checks the HRESULT.
     unsafe {
         (Interface::vtable(browse).Browse)(
             Interface::as_raw(browse),
@@ -83,7 +83,9 @@ pub trait BrowseTrait {
 
         let mut results = RemoteArray::new(item_ids.len().try_into()?);
 
-        // SAFETY: Calling COM interface method GetProperties with valid array pointers and handles.
+        // SAFETY: The item-ID and property-ID slices and all `RemoteArray` output slots stay
+        // valid through the call; `self.interface()` keeps the COM object borrowed, and `?`
+        // checks the HRESULT.
         unsafe {
             self.interface()?.GetProperties(
                 item_ids.len() as u32,
@@ -162,8 +164,9 @@ pub trait BrowseTrait {
                 elements.as_mut_ptr(),
             )?;
         } else {
-            // SAFETY: Calling the generated COM interface method with valid strings,
-            // property IDs, and output pointers.
+            // SAFETY: The `LocalPointer` strings and property-ID slice remain valid for the
+            // call, as do the live output variables and `RemoteArray` pointer slot. The
+            // interface is borrowed from `self`, and `?` checks the HRESULT.
             unsafe {
                 self.interface()?.Browse(
                     item_id.as_pcwstr(),
@@ -183,7 +186,8 @@ pub trait BrowseTrait {
         }
 
         if count > 0 {
-            // SAFETY: Updating array length based on count returned by Browse.
+            // SAFETY: The successful `Browse` call returned a COM array with `count`
+            // initialized elements, as required by the OPC DA contract.
             unsafe { elements.set_len(count) };
         }
 
@@ -256,19 +260,22 @@ mod tests {
             let continuation = if pszcontinuationpoint.is_null() {
                 None
             } else {
-                // SAFETY: The caller supplies a valid outer continuation pointer.
+                // SAFETY: The COM caller supplies this non-null, writable continuation
+                // pointer for the duration of the method call.
                 let value = unsafe { *pszcontinuationpoint };
                 if value.is_null() {
                     None
                 } else {
-                    // SAFETY: The continuation points to a NUL-terminated UTF-16 string.
+                    // SAFETY: The non-null continuation returned by COM is readable and
+                    // NUL-terminated until this conversion completes.
                     Some(unsafe { value.to_string()? })
                 }
             };
             let property_ids = if dwpropertycount == 0 {
                 Vec::new()
             } else {
-                // SAFETY: A non-zero count requires a valid array with that many IDs.
+                // SAFETY: The COM contract requires a non-null, aligned readable array of
+                // `dwpropertycount` IDs whenever the count is nonzero.
                 unsafe {
                     std::slice::from_raw_parts(pdwpropertyids, dwpropertycount as usize).to_vec()
                 }
@@ -288,15 +295,18 @@ mod tests {
             });
 
             if !pbmoreelements.is_null() {
-                // SAFETY: The caller supplied this optional output pointer.
+                // SAFETY: A non-null output pointer from the COM caller is writable and
+                // remains valid for this method call.
                 unsafe { *pbmoreelements = false.into() };
             }
             if !pdwcount.is_null() {
-                // SAFETY: The caller supplied this optional output pointer.
+                // SAFETY: A non-null output pointer from the COM caller is writable and
+                // remains valid for this method call.
                 unsafe { *pdwcount = 0 };
             }
             if !ppbrowseelements.is_null() {
-                // SAFETY: The caller supplied this optional output pointer.
+                // SAFETY: A non-null output pointer from the COM caller is writable and
+                // remains valid for this method call.
                 unsafe { *ppbrowseelements = core::ptr::null_mut() };
             }
             Ok(())
@@ -307,7 +317,8 @@ mod tests {
         if value.is_null() {
             return Ok(None);
         }
-        // SAFETY: The COM caller supplies a NUL-terminated UTF-16 string.
+        // SAFETY: The non-null COM input pointer references readable NUL-terminated UTF-16
+        // storage for the duration of this conversion.
         Ok(Some(unsafe { value.to_string()? }))
     }
 

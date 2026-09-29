@@ -48,7 +48,9 @@ pub trait ServerTrait<Group: TryFrom<windows::core::IUnknown, Error = windows::c
         let group_name = group_name.as_pcwstr();
 
         let mut raw_server_handle = 0u32;
-        // SAFETY: Calling COM interface method AddGroup with group params and pointers.
+        // SAFETY: The group-name buffer and all scalar/output references remain live for
+        // the call; the requested group IID is static. `?` checks the HRESULT before the
+        // returned handles and interface are used.
         unsafe {
             self.interface()?.AddGroup(
                 group_name,
@@ -86,7 +88,8 @@ pub trait ServerTrait<Group: TryFrom<windows::core::IUnknown, Error = windows::c
     /// Server status structure containing vendor info, time, state,
     /// and group counts
     fn get_status(&self) -> OpcResult<RemotePointer<crate::bindings::da::tagOPCSERVERSTATUS>> {
-        // SAFETY: Calling COM interface method GetStatus.
+        // SAFETY: The borrowed interface stays live for the call, and `?` checks the
+        // HRESULT before the returned COM-allocated status pointer is wrapped.
         let status = unsafe { self.interface()?.GetStatus()? };
         Ok(RemotePointer::from_raw(status))
     }
@@ -97,7 +100,8 @@ pub trait ServerTrait<Group: TryFrom<windows::core::IUnknown, Error = windows::c
     /// * `server_handle` - Server's handle for the group
     /// * `force` - If true, remove even if clients are connected
     fn remove_group(&self, server_handle: GroupHandle, force: bool) -> OpcResult<()> {
-        // SAFETY: Calling COM interface method RemoveGroup with server_handle.
+        // SAFETY: The borrowed interface stays live for the call; the group handle and
+        // `force` flag are passed by value, and `?` checks the HRESULT.
         unsafe {
             self.interface()?.RemoveGroup(server_handle.0, force)?;
         }
@@ -115,7 +119,8 @@ pub trait ServerTrait<Group: TryFrom<windows::core::IUnknown, Error = windows::c
         &self,
         scope: crate::bindings::da::tagOPCENUMSCOPE,
     ) -> OpcResult<GroupIterator<Group>> {
-        // SAFETY: Calling COM interface method CreateGroupEnumerator with IEnumUnknown IID.
+        // SAFETY: The borrowed interface stays live for the call and the enumerator IID is
+        // a static GUID reference; `?` checks the HRESULT before wrapping the result.
         let enumerator = unsafe {
             self.interface()?
                 .CreateGroupEnumerator(scope, &windows::Win32::System::Com::IEnumUnknown::IID)?
@@ -135,7 +140,8 @@ pub trait ServerTrait<Group: TryFrom<windows::core::IUnknown, Error = windows::c
         &self,
         scope: crate::bindings::da::tagOPCENUMSCOPE,
     ) -> OpcResult<StringIterator> {
-        // SAFETY: Calling COM interface method CreateGroupEnumerator with IEnumString IID.
+        // SAFETY: The borrowed interface stays live for the call and the enumerator IID is
+        // a static GUID reference; `?` checks the HRESULT before wrapping the result.
         let enumerator = unsafe {
             self.interface()?
                 .CreateGroupEnumerator(scope, &windows::Win32::System::Com::IEnumString::IID)?

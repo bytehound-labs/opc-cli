@@ -30,7 +30,8 @@ pub trait ConnectionPointContainerTrait {
         &self,
         id: &GUID,
     ) -> OpcResult<windows::Win32::System::Com::IConnectionPoint> {
-        // SAFETY: Calling COM method FindConnectionPoint with valid IID reference.
+        // SAFETY: `id` is a live GUID reference and `self.interface()` borrows the COM
+        // container through the call; `?` checks the HRESULT before returning the interface.
         unsafe { Ok(self.interface()?.FindConnectionPoint(id)?) }
     }
 
@@ -57,7 +58,8 @@ pub trait ConnectionPointContainerTrait {
     fn enum_connection_points(
         &self,
     ) -> OpcResult<windows::Win32::System::Com::IEnumConnectionPoints> {
-        // SAFETY: Calling COM method EnumConnectionPoints.
+        // SAFETY: `self.interface()` keeps the COM container alive for the call, and `?`
+        // checks the HRESULT before returning the enumerator.
         unsafe { Ok(self.interface()?.EnumConnectionPoints()?) }
     }
 }

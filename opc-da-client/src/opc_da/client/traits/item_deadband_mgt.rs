@@ -44,7 +44,9 @@ pub trait ItemDeadbandMgtTrait {
 
         let mut errors = RemoteArray::new(len);
 
-        // SAFETY: Calling COM interface method SetItemDeadband with valid pointers and array lengths.
+        // SAFETY: The equal-length handle and validated deadband slices each contain `len`
+        // entries and remain borrowed for the call; the output slot is live and writable.
+        // `?` checks the HRESULT.
         unsafe {
             self.interface()?.SetItemDeadband(
                 len,
@@ -75,7 +77,8 @@ pub trait ItemDeadbandMgtTrait {
         let mut errors = RemoteArray::new(len);
         let mut deadbands = RemoteArray::new(len);
 
-        // SAFETY: Calling COM interface method GetItemDeadband with valid pointers and array lengths.
+        // SAFETY: The handle slice contains `len` entries and remains borrowed for the call;
+        // both `RemoteArray` output slots are live and writable. `?` checks the HRESULT.
         unsafe {
             self.interface()?.GetItemDeadband(
                 len,
@@ -103,7 +106,8 @@ pub trait ItemDeadbandMgtTrait {
 
         let mut errors = RemoteArray::new(len);
 
-        // SAFETY: Calling COM interface method ClearItemDeadband with valid pointers and array lengths.
+        // SAFETY: The handle slice contains `len` entries and remains borrowed for the call;
+        // the `RemoteArray` output slot is live and writable. `?` checks the HRESULT.
         unsafe {
             self.interface()?.ClearItemDeadband(
                 len,

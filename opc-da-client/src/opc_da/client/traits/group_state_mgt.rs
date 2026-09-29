@@ -26,7 +26,9 @@ pub trait GroupStateMgtTrait {
         let mut server_handle = 0u32;
         let name = {
             let mut name = RemotePointer::null();
-            // SAFETY: Calling COM interface method GetState with pointers to output buffers.
+            // SAFETY: The borrowed interface stays live for the call; each scalar output
+            // points to a live local, and `name` provides a writable COM string-pointer slot.
+            // `?` checks the HRESULT before those outputs are read.
             unsafe {
                 self.interface()?.GetState(
                     &mut state.update_rate,
@@ -80,7 +82,9 @@ pub trait GroupStateMgtTrait {
         let locale_id = LocalPointer::new(locale_id);
         let client_handle = LocalPointer::new(client_handle.map(|h| h.0));
 
-        // SAFETY: Calling COM interface method SetState with optional pointer arguments.
+        // SAFETY: Each optional input pointer comes from a live `LocalPointer`, while the
+        // revised-rate pointer targets a live local output. The interface borrow lasts for
+        // the call, and `?` checks the HRESULT.
         unsafe {
             self.interface()?.SetState(
                 requested_update_rate.as_ptr(),
@@ -100,7 +104,8 @@ pub trait GroupStateMgtTrait {
     fn set_name(&self, name: &str) -> OpcResult<()> {
         let name = LocalPointer::from(name);
 
-        // SAFETY: Calling COM interface method SetName with valid name string pointer.
+        // SAFETY: `name` owns a NUL-terminated UTF-16 buffer through the call; the borrowed
+        // COM interface remains live, and `?` checks the HRESULT.
         unsafe { Ok(self.interface()?.SetName(name.as_pwstr())?) }
     }
 
@@ -116,7 +121,8 @@ pub trait GroupStateMgtTrait {
     ) -> OpcResult<windows::core::IUnknown> {
         let name = LocalPointer::from(name);
 
-        // SAFETY: Calling COM interface method CloneGroup with valid name and GUID reference.
+        // SAFETY: The UTF-16 name buffer and borrowed GUID remain live through the call;
+        // the COM interface is borrowed from `self`, and `?` checks the HRESULT.
         unsafe { Ok(self.interface()?.CloneGroup(name.as_pwstr(), id)?) }
     }
 }

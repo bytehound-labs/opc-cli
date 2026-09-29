@@ -40,7 +40,9 @@ pub trait ItemSamplingMgtTrait {
         let mut revised_rates = RemoteArray::new(len);
         let mut errors = RemoteArray::new(len);
 
-        // SAFETY: Calling COM interface method SetItemSamplingRate with valid pointers and array lengths.
+        // SAFETY: The equal-length handle and rate slices each contain `len` entries and
+        // remain borrowed for the call; both `RemoteArray` output slots are live and writable.
+        // `?` checks the HRESULT before returning the arrays.
         unsafe {
             self.interface()?.SetItemSamplingRate(
                 len,
@@ -72,7 +74,8 @@ pub trait ItemSamplingMgtTrait {
         let mut sampling_rates = RemoteArray::new(len);
         let mut errors = RemoteArray::new(len);
 
-        // SAFETY: Calling COM interface method GetItemSamplingRate with valid pointers and array lengths.
+        // SAFETY: The handle slice contains `len` entries and remains borrowed for the call;
+        // both `RemoteArray` output slots are live and writable. `?` checks the HRESULT.
         unsafe {
             self.interface()?.GetItemSamplingRate(
                 len,
@@ -100,7 +103,8 @@ pub trait ItemSamplingMgtTrait {
 
         let mut errors = RemoteArray::new(len);
 
-        // SAFETY: Calling COM interface method ClearItemSamplingRate with valid pointers and array lengths.
+        // SAFETY: The handle slice contains `len` entries and remains borrowed for the call;
+        // the `RemoteArray` output slot is live and writable. `?` checks the HRESULT.
         unsafe {
             self.interface()?.ClearItemSamplingRate(
                 len,
@@ -139,7 +143,8 @@ pub trait ItemSamplingMgtTrait {
         let mut errors = RemoteArray::new(len);
         let enable_bool: Vec<BOOL> = enable.iter().map(|&v| BOOL::from(v)).collect();
 
-        // SAFETY: Calling COM interface method SetItemBufferEnable with valid pointers and array lengths.
+        // SAFETY: The equal-length handle and BOOL vectors each contain `len` entries and
+        // remain live for the call; the `RemoteArray` output slot is writable. `?` checks the HRESULT.
         unsafe {
             self.interface()?.SetItemBufferEnable(
                 len,
@@ -173,7 +178,8 @@ pub trait ItemSamplingMgtTrait {
         let mut enable = RemoteArray::new(len);
         let mut errors = RemoteArray::new(len);
 
-        // SAFETY: Calling COM interface method GetItemBufferEnable with valid pointers and array lengths.
+        // SAFETY: The handle slice contains `len` entries and remains borrowed for the call;
+        // both `RemoteArray` output slots are live and writable. `?` checks the HRESULT.
         unsafe {
             self.interface()?.GetItemBufferEnable(
                 len,

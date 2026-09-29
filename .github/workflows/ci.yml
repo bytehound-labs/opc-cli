@@ -1,0 +1,179 @@
+# Continuous integration for the opc-cli workspace.
+#
+# Mirrors scripts/verify.ps1. Gate 5 (compat/* builds) is omitted because the
+# repository has no compat/ directory. The "Required validation status" job
+# aggregates every job so it can become the single required check.
+name: CI
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  windows:
+    name: Windows validation
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # i686-pc-windows-msvc: the 32-bit opcda-bridge gateway consumes the library.
+      - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
+        with:
+          components: rustfmt, clippy
+          targets: i686-pc-windows-msvc
+
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Lint with clippy
+        run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+
+      - name: Run doctests
+        run: cargo test --doc --workspace --locked
+
+      - name: Run tests
+        run: cargo test --workspace --locked
+
+      # Check-only (no linking), so no 32-bit linker setup is needed.
+      - name: Lint 32-bit target
+        run: cargo clippy --workspace --all-targets --all-features --locked --target i686-pc-windows-msvc -- -D warnings
+
+      - name: Check PowerShell script syntax
+        shell: pwsh
+        run: |
+          $failed = $false
+          foreach ($file in Get-ChildItem -Path scripts -Filter *.ps1 -File) {
+            $tokens = $null
+            $parseErrors = $null
+            [System.Management.Automation.Language.Parser]::ParseFile($file.FullName, [ref]$tokens, [ref]$parseErrors) | Out-Null
+            foreach ($parseError in $parseErrors) {
+              Write-Output "::error file=scripts/$($file.Name),line=$($parseError.Extent.StartLineNumber)::$($parseError.Message)"
+              $failed = $true
+            }
+          }
+          if ($failed) { exit 1 }
+
+  msrv:
+    name: MSRV (1.88.0)
+    # Only Windows compiles the whole workspace (opc-cli depends on the
+    # windows crate unconditionally), so the MSRV check runs there.
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@2eae45db285e407f22119950686d47e1101e071b # 1.88.0
+
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+
+      - name: Check the declared MSRV
+        run: cargo check --workspace --all-targets --all-features --locked
+
+  linux:
+    name: Linux checks
+    # The full workspace does not compile off Windows (see msrv); this job runs
+    # the platform-independent gates plus library-only clippy/tests.
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - uses: taiki-e/install-action@ba47c86ac325773530516bb756137ac718732518 # v2.86.5
+        with:
+          tool: cargo-deny
+
+      - name: Check dependencies with cargo-deny
+        run: cargo deny --locked check
+
+      - name: Install ripgrep
+        run: command -v rg >/dev/null || { sudo apt-get update -qq && sudo apt-get install -y -qq ripgrep; }
+
+      # TEMPORARY: backend/connector.rs is excluded until the owner's in-flight
+      # branches land (it has println! in its test module).
+      - name: Check for debug macros
+        run: |
+          set +e
+          rg --color=never -n -g '*.rs' -g '!opc-da-client/src/backend/connector.rs' \
+            '\b(println!|dbg!|todo!|unimplemented!)' opc-da-client/src opc-cli/src
+          status=$?
+          set -e
+          case "$status" in
+            0) echo "::error::Debug macros found (see matches above)"; exit 1 ;;
+            1) echo "No debug macros found" ;;
+            *) echo "::error::ripgrep failed with exit code $status"; exit "$status" ;;
+          esac
+
+      - name: Test ast-grep rules
+        run: npx --yes -p @ast-grep/cli@0.45.3 ast-grep test
+
+      # TEMPORARY ignore list, removed once the owner's in-flight branches land:
+      # - inventory.rs: active file (no-panic-or-unwrap on .lock().unwrap()).
+      # - traits/browse.rs: require-safety-comment false positive on unsafe
+      #   blocks used as tail expressions (follow-up: oc-unsafe-docs).
+      - name: Scan with ast-grep
+        run: |
+          npx --yes -p @ast-grep/cli@0.45.3 ast-grep scan \
+            --globs '!opc-da-client/src/inventory.rs' \
+            --globs '!opc-da-client/src/opc_da/client/traits/browse.rs'
+
+      - name: Lint the library off Windows
+        run: cargo clippy --locked -p bytehound-opc-da-client --all-targets --all-features -- -D warnings
+
+      - name: Test the library off Windows
+        run: cargo test --locked -p bytehound-opc-da-client --all-features
+
+  required:
+    name: Required validation status
+    if: always()
+    needs: [windows, msrv, linux]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      # No needed job is conditional, so skipped or cancelled counts as failure.
+      - name: Check job results
+        env:
+          WINDOWS_RESULT: ${{ needs.windows.result }}
+          MSRV_RESULT: ${{ needs.msrv.result }}
+          LINUX_RESULT: ${{ needs.linux.result }}
+        run: |
+          failed=0
+          for entry in "windows:$WINDOWS_RESULT" "msrv:$MSRV_RESULT" "linux:$LINUX_RESULT"; do
+            job="${entry%%:*}"
+            result="${entry#*:}"
+            if [ "$result" != "success" ]; then
+              echo "::error::Job '$job' finished with result '$result'"
+              failed=1
+            fi
+          done
+          exit "$failed"

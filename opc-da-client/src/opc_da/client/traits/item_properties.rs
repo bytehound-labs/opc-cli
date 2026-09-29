@@ -44,7 +44,8 @@ pub trait ItemPropertiesTrait {
         let mut descriptions = RemoteArray::new(0);
         let mut datatypes = RemoteArray::new(0);
 
-        // SAFETY: Calling COM interface method QueryAvailableProperties with valid item_id pointer.
+        // SAFETY: `item_id` owns a NUL-terminated UTF-16 buffer through the call; COM fills
+        // SAFETY: the count and three live output slots. `?` checks the HRESULT before `count` is used.
         unsafe {
             self.interface()?.QueryAvailableProperties(
                 item_id.as_pcwstr(),
@@ -56,7 +57,8 @@ pub trait ItemPropertiesTrait {
         }
 
         if count > 0 {
-            // SAFETY: Updating array lengths based on count returned by QueryAvailableProperties.
+            // SAFETY: The successful `QueryAvailableProperties` call returned these three
+            // SAFETY: COM arrays with `count` initialized elements, matching the OPC DA contract.
             unsafe {
                 property_ids.set_len(count);
                 descriptions.set_len(count);
@@ -97,7 +99,8 @@ pub trait ItemPropertiesTrait {
         let mut values = RemoteArray::new(property_ids.len().try_into()?);
         let mut errors = RemoteArray::new(property_ids.len().try_into()?);
 
-        // SAFETY: Calling COM interface method GetItemProperties with valid item_id pointer and property IDs.
+        // SAFETY: `item_id` and the `property_ids` slice stay valid for the call; `len` is
+        // SAFETY: the property slice length, and both output slots are live. `?` checks the HRESULT.
         unsafe {
             self.interface()?.GetItemProperties(
                 item_id.as_pcwstr(),
@@ -141,7 +144,8 @@ pub trait ItemPropertiesTrait {
         let mut new_item_ids = RemoteArray::new(property_ids.len().try_into()?);
         let mut errors = RemoteArray::new(property_ids.len().try_into()?);
 
-        // SAFETY: Calling COM interface method LookupItemIDs with valid item_id pointer and property IDs.
+        // SAFETY: `item_id` and the `property_ids` slice stay valid for the call; `len` is
+        // SAFETY: the property slice length, and both output slots are live. `?` checks the HRESULT.
         unsafe {
             self.interface()?.LookupItemIDs(
                 item_id.as_pcwstr(),

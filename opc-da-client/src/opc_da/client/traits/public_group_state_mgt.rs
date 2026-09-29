@@ -13,7 +13,8 @@ pub trait PublicGroupStateMgtTrait {
     /// # Returns
     /// `true` if the group is public, `false` if it is private
     fn get_state(&self) -> OpcResult<bool> {
-        // SAFETY: Calling COM interface method GetState.
+        // SAFETY: `self.interface()` keeps the COM object borrowed for this call, and `?`
+        // SAFETY: checks the HRESULT before converting the returned BOOL.
         unsafe { Ok(self.interface()?.GetState()?.as_bool()) }
     }
 
@@ -26,7 +27,8 @@ pub trait PublicGroupStateMgtTrait {
     /// Once a group becomes public, it remains public until the server
     /// is shut down or the group is deleted.
     fn move_to_public(&self) -> OpcResult<()> {
-        // SAFETY: Calling COM interface method MoveToPublic.
+        // SAFETY: `self.interface()` keeps the COM object borrowed for this call, and `?`
+        // SAFETY: propagates the HRESULT.
         unsafe { Ok(self.interface()?.MoveToPublic()?) }
     }
 }

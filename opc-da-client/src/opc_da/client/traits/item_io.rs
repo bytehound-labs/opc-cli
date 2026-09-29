@@ -53,7 +53,9 @@ pub trait ItemIoTrait {
         let mut timestamps = RemoteArray::new(len);
         let mut errors = RemoteArray::new(len);
 
-        // SAFETY: Calling COM interface method Read with valid item string pointers and output arrays.
+        // SAFETY: `item_ptrs` owns NUL-terminated UTF-16 strings for all `len` item IDs, and
+        // SAFETY: `max_age` has the same length; both remain live through the call. The output slots
+        // SAFETY: are live and writable, and `?` checks the HRESULT.
         unsafe {
             self.interface()?.Read(
                 item_ids.len() as u32,
@@ -98,7 +100,9 @@ pub trait ItemIoTrait {
 
         let mut errors = RemoteArray::new(len);
 
-        // SAFETY: Calling COM interface method WriteVQT with valid item string pointers and VQT structs.
+        // SAFETY: `item_ptrs` owns NUL-terminated UTF-16 strings for all `len` item IDs, and
+        // SAFETY: `item_vqts` has the same length; both remain live through the call. The output slot
+        // SAFETY: is writable, and `?` checks the HRESULT.
         unsafe {
             self.interface()?.WriteVQT(
                 len,

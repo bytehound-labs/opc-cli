@@ -35,7 +35,9 @@ pub trait AsyncIo2Trait {
         let mut cancel_id = 0;
         let mut errors = RemoteArray::new(len);
 
-        // SAFETY: Calling COM interface method Read with valid handles and array pointers.
+        // SAFETY: `len` comes from the live handle slice; that slice, the local cancel ID,
+        // SAFETY: and the `RemoteArray` output slot remain valid through the borrowed-interface call.
+        // SAFETY: `?` checks the HRESULT before returning the outputs.
         unsafe {
             self.interface()?.Read(
                 len,
@@ -74,7 +76,9 @@ pub trait AsyncIo2Trait {
         let mut cancel_id = 0;
         let mut errors = RemoteArray::new(len);
 
-        // SAFETY: Calling COM interface method Write with valid handles, values, and array pointers.
+        // SAFETY: COM reads `len` entries from both slices, but `len` is taken only from
+        // SAFETY: `server_handles`; `values` must also have at least `len` entries (not checked here).
+        // SAFETY: The slices and output slots remain live through the borrowed-interface call.
         unsafe {
             self.interface()?.Write(
                 len,
@@ -102,7 +106,8 @@ pub trait AsyncIo2Trait {
         source: crate::bindings::da::tagOPCDATASOURCE,
         transaction_id: u32,
     ) -> OpcResult<u32> {
-        // SAFETY: Calling COM interface method Refresh2.
+        // SAFETY: `self.interface()` keeps the COM object borrowed for this call; the
+        // SAFETY: returned HRESULT is converted to `OpcError` before it is returned.
         unsafe {
             self.interface()?
                 .Refresh2(source, transaction_id)
@@ -118,7 +123,8 @@ pub trait AsyncIo2Trait {
     /// # Returns
     /// `Ok(())` if the operation was successfully canceled
     fn cancel2(&self, cancel_id: u32) -> OpcResult<()> {
-        // SAFETY: Calling COM interface method Cancel2.
+        // SAFETY: `self.interface()` keeps the COM object borrowed for this call; the
+        // SAFETY: returned HRESULT is converted to `OpcError` before it is returned.
         unsafe { self.interface()?.Cancel2(cancel_id).map_err(OpcError::from) }
     }
 
@@ -130,7 +136,8 @@ pub trait AsyncIo2Trait {
     /// # Returns
     /// `Ok(())` if the enable state was successfully changed
     fn set_enable(&self, enable: bool) -> OpcResult<()> {
-        // SAFETY: Calling COM interface method SetEnable.
+        // SAFETY: `self.interface()` keeps the COM object borrowed for this call; the
+        // SAFETY: returned HRESULT is converted to `OpcError` before it is returned.
         unsafe { self.interface()?.SetEnable(enable).map_err(OpcError::from) }
     }
 
@@ -139,7 +146,8 @@ pub trait AsyncIo2Trait {
     /// # Returns
     /// `true` if async operations are enabled, `false` otherwise
     fn get_enable(&self) -> OpcResult<bool> {
-        // SAFETY: Calling COM interface method GetEnable.
+        // SAFETY: `self.interface()` keeps the COM object borrowed for this call, and the
+        // SAFETY: returned HRESULT is converted before the BOOL is read.
         unsafe {
             self.interface()?
                 .GetEnable()

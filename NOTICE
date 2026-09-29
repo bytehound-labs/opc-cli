@@ -1,0 +1,17 @@
+# Notice
+
+This repository is distributed under the MIT License in `LICENSE`. The upstream
+copyright notice and the ByteHound copyright notice are both retained there.
+
+The OPC DA and OPC Common bindings in `opc-da-client/src/bindings/` originate
+from the `Ronbb/rust_opc` project and were generated with `windows-bindgen`
+0.62.1 from OPC Foundation interface definitions. The bindings retain
+attribution to Wang Ruobiao and are MIT-licensed. `THIRD_PARTY_LICENSES.md`
+contains the license text and source details.
+
+`vendor/redist/` contains instructions, not the OPC Core Components
+redistributable MSI. The legacy packaging script can include an MSI placed
+there, but any such installer is a separate third-party component. Obtain it
+from the OPC Foundation or an OPC server vendor and comply with its own
+license and redistribution terms; this repository's MIT license does not grant
+rights to redistribute that installer.

@@ -10,6 +10,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - Added runtime inventory batch-size control for bounded native browse slices.
+- Added `NOTICE` and `PROVENANCE.md` documenting fork lineage and third-party attribution.
+
+### Changed
+
+- Marked the `opc-cli` TUI package `publish = false` because the crates.io package name belongs to the upstream project (wends155/opc-cli); the client library remains separately named `bytehound-opc-da-client`.
+- Added a ByteHound Corp. copyright line to `LICENSE` alongside the retained upstream notice.
 
 ## [0.2.1] - 2026-08-12
 

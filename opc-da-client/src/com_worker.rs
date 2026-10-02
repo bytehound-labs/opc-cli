@@ -1790,4 +1790,25 @@ mod tests {
             .unwrap();
         assert_eq!(state.connect_count.load(Ordering::Relaxed), 1);
     }
+
+    #[test]
+    fn public_com_worker_paths_remain_available() {
+        let worker = crate::com_worker::ComWorker::<WorkerMockConnector>::closed();
+        assert!(worker.handle.is_none());
+
+        let (reply, _receiver) = oneshot::channel();
+        let request = crate::com_worker::ComRequest::ReadTagValues {
+            server: "Mock.Server".to_string(),
+            tag_ids: vec!["Tag".to_string()],
+            presentation: crate::com_worker::ReadPresentation::Display,
+            reply,
+        };
+        assert!(matches!(
+            request,
+            crate::com_worker::ComRequest::ReadTagValues {
+                presentation: crate::com_worker::ReadPresentation::Display,
+                ..
+            }
+        ));
+    }
 }

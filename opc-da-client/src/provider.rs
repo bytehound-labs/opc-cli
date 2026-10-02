@@ -1066,3 +1066,61 @@ pub trait OpcProvider: Send + Sync {
         value: OpcValue,
     ) -> OpcResult<WriteResult>;
 }
+
+#[cfg(test)]
+mod portable_model_tests {
+    use super::*;
+
+    #[test]
+    fn browse_tokens_round_trip_without_exposing_their_representation() {
+        let token = BrowseSessionToken::new();
+        let encoded = token.to_string();
+
+        assert_eq!(BrowseSessionToken::parse(&encoded).unwrap(), token);
+        assert!(BrowseSessionToken::parse("not-a-token").is_err());
+    }
+
+    #[test]
+    fn browse_node_kinds_preserve_item_and_child_identity() {
+        assert!(BrowseNodeKind::Branch.has_children());
+        assert!(!BrowseNodeKind::Branch.is_item());
+        assert!(!BrowseNodeKind::Item.has_children());
+        assert!(BrowseNodeKind::Item.is_item());
+        assert!(BrowseNodeKind::BranchAndItem.has_children());
+        assert!(BrowseNodeKind::BranchAndItem.is_item());
+    }
+
+    #[test]
+    fn inventory_control_updates_pacing_pause_and_batch_size() {
+        let control = InventoryControl::new_with_batch_size(100);
+        assert_eq!(control.batch_size(), Some(100));
+        assert_eq!(control.pacing(), InventoryPacing::default());
+
+        let pacing = InventoryPacing {
+            min_interval: Duration::from_millis(25),
+            item_rate_per_second: Some(50),
+        };
+        control.set_pacing(pacing);
+        assert_eq!(control.pacing(), pacing);
+
+        assert!(control.set_batch_size(0).is_err());
+        assert!(
+            control
+                .set_batch_size(MAX_INVENTORY_BATCH_SIZE + 1)
+                .is_err()
+        );
+        assert_eq!(control.batch_size(), Some(100));
+        control.set_batch_size(256).unwrap();
+        assert_eq!(control.batch_size(), Some(256));
+
+        assert!(!control.is_paused());
+        control.pause();
+        assert!(control.is_paused());
+        control.resume();
+        assert!(!control.is_paused());
+
+        assert!(!control.is_cancelled());
+        control.cancel();
+        assert!(control.is_cancelled());
+    }
+}

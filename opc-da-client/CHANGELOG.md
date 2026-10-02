@@ -18,7 +18,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and inventory stream cleanup under backpressure. Tracing assertions inspect
   captured metadata without holding the event collector lock.
 - Portable inventory-boundary, contextual-error, telemetry saturation, and
-  poisoned-collector tests.
+  poisoned-collector tests, including exact shared-control identity.
 
 ### Changed
 

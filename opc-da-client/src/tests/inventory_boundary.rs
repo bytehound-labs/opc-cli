@@ -22,7 +22,7 @@ fn boundary_events_keep_the_inventory_target() {
 fn cancellation_does_not_enter_or_count_the_operation() {
     let control = InventoryControl::new();
     let mut boundary = InventoryBoundary::new(&control);
-    assert!(std::ptr::eq(boundary.control(), &control));
+    assert!(std::ptr::eq(boundary.control(), &raw const control));
     boundary.control().cancel();
     let result: Result<(), _> = paced_call(
         &mut boundary,

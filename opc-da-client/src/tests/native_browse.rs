@@ -2,7 +2,6 @@
 
 use crate::backend::connector::{
     BrowseStringIterator, ConnectedServer, NativeBrowseElement, NativeBrowsePage,
-    classify_da2_branch,
 };
 use crate::bindings::da::{
     OPC_BRANCH, OPC_BROWSE_DOWN, OPC_BROWSE_UP, OPC_FLAT, OPC_LEAF, OPC_NS_FLAT, OPC_NS_HIERARCHIAL,

@@ -91,6 +91,8 @@ Internal helpers stay in private modules; only the documented crate-root items
 form the portable public API.
 Windows CI also checks the model-only feature set, the 32-bit native target, and
 the packaged source/documentation through a publish dry run.
+Portable boundary tests verify that cancellation reaches the same shared control,
+including when no native backend is selected.
 
 ## Usage Examples
 

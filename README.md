@@ -70,6 +70,8 @@ cargo publish -p bytehound-opc-da-client --dry-run
 
 These Linux commands validate package metadata and non-Windows target exclusion only; Windows
 verification remains required for the OPC DA backend.
+Windows CI uses stable Rust with warnings denied for application and test code, and checks both
+the native workspace target and 32-bit Windows consumers.
 
 
 ## ⌨️ Controls

@@ -2034,7 +2034,7 @@ mod tests {
         )
         .unwrap();
         let (entries, completed, error) = collect(&mut receiver);
-        assert!(entries.is_empty());
+        assert_eq!(entries, Vec::<InventoryEntry>::new());
         assert!(completed.is_some_and(|value| value.truncated));
         assert!(error.is_none());
         assert_eq!(calls.load(Ordering::Relaxed), 0);
@@ -2066,7 +2066,7 @@ mod tests {
         )
         .unwrap();
         let (entries, completed, error) = collect(&mut receiver);
-        assert!(entries.is_empty());
+        assert_eq!(entries, Vec::<InventoryEntry>::new());
         assert!(completed.is_some_and(|value| value.cancelled));
         assert!(error.is_none());
         assert_eq!(calls.load(Ordering::Acquire), 0);
@@ -2214,7 +2214,7 @@ mod tests {
                         && message.contains("FCS0207")
             ));
             let (entries, completed, error) = collect(&mut receiver);
-            assert!(entries.is_empty());
+            assert_eq!(entries, Vec::<InventoryEntry>::new());
             assert!(completed.is_none());
             assert!(error.is_none());
         }

@@ -1407,7 +1407,7 @@ mod tests {
                 request(None, BrowseNodeFilter::All, 3, Some(continuation)),
             )
             .unwrap();
-        assert!(second.nodes.is_empty());
+        assert_eq!(second.nodes, Vec::<BrowseNode>::new());
         assert!(second.continuation.is_none());
         assert_eq!(
             calls.lock().unwrap()[1],
@@ -1534,7 +1534,7 @@ mod tests {
                 request(None, BrowseNodeFilter::Branches, 10, None),
             )
             .unwrap();
-        assert!(page.nodes.is_empty());
+        assert_eq!(page.nodes, Vec::<BrowseNode>::new());
         assert!(page.continuation.is_none());
     }
 
@@ -1661,7 +1661,7 @@ mod tests {
                 request(None, BrowseNodeFilter::Branches, 10, None),
             )
             .unwrap();
-        assert!(branches_only.nodes.is_empty());
+        assert_eq!(branches_only.nodes, Vec::<BrowseNode>::new());
     }
 
     #[test]

@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Build
+
+- Use an explicit native Windows error conversion compatible with stable Clippy,
+  preserving `OpcError::Com { source }`, the source chain, HRESULT, and display hints.
+
 ## [0.3.0] - 2026-09-16
 
 ### Added

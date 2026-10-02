@@ -13,10 +13,7 @@ pub enum OpcError {
     /// This variant wraps a [`windows::core::Error`] and provides a friendly
     /// hint for common OPC-related HRESULT codes.
     #[error("COM error: {source} ({})", friendly_hresult_hint(.source.code()).unwrap_or("No hint available"))]
-    Com {
-        #[from]
-        source: windows::core::Error,
-    },
+    Com { source: windows::core::Error },
 
     /// Connection-related errors (e.g., host unreachable, resolution failure).
     #[error("Connection failed: {0}")]
@@ -59,6 +56,12 @@ pub enum OpcError {
     /// Catch-all for unexpected internal failures.
     #[error("Internal error: {0}")]
     Internal(String),
+}
+
+impl From<windows::core::Error> for OpcError {
+    fn from(source: windows::core::Error) -> Self {
+        Self::Com { source }
+    }
 }
 
 impl From<anyhow::Error> for OpcError {
@@ -265,6 +268,37 @@ pub fn log_opc_error(error: &OpcError, operation: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn com_conversion_preserves_hresult_source_and_display_hint() {
+        let native = windows::core::Error::from_hresult(HRESULT(E_INVALIDARG_HRESULT as i32));
+        let native_display = native.to_string();
+        let error = OpcError::from(native);
+
+        assert!(matches!(&error, OpcError::Com { .. }));
+        assert_eq!(com_hresult(&error), Some(E_INVALIDARG_HRESULT));
+        let source = std::error::Error::source(&error)
+            .expect("COM errors retain their native source")
+            .downcast_ref::<windows::core::Error>()
+            .expect("the source remains a Windows error");
+        assert_eq!(source.code().0 as u32, E_INVALIDARG_HRESULT);
+        assert_eq!(source.to_string(), native_display);
+        assert_eq!(
+            error.to_string(),
+            format!("COM error: {native_display} (No hint available)")
+        );
+
+        let error = OpcError::from(windows::core::Error::from_hresult(HRESULT(
+            0x8007_0005_u32 as i32,
+        )));
+        assert_eq!(
+            friendly_com_hint(&error),
+            Some("Access denied — DCOM launch/activation permissions not configured for this user")
+        );
+        assert!(error.to_string().ends_with(
+            "(Access denied — DCOM launch/activation permissions not configured for this user)"
+        ));
+    }
 
     #[test]
     fn extracts_com_hresult_and_matches_expected_code() {

@@ -31,7 +31,7 @@ Backend-agnostic OPC DA client library for Rust — async, trait-based, with tra
 - **Cancellation Diagnostics**: Inventory cancellation logs identify the requesting source and whether cancellation was already pending, distinguishing explicit cancellation from stream-drop cleanup.
 - **Defensive COM Iterators**: Rejects native enumerator counts that exceed the fixed cache capacity before indexing the returned buffer, bounds null-only batches, and releases every remaining COM-allocated string after failed or early-ended iteration.
 - **Windows COM/DCOM Support**: Native OPC DA backend via `windows-rs` — no external OPC crates needed.
-- **Robust Error Handling**: Leverages `thiserror` for the `OpcError` domain type and `friendly_com_hint()` for human-readable HRESULT explanations.
+- **Robust Error Handling**: Leverages `thiserror` for the `OpcError` domain type and `friendly_com_hint()` for human-readable HRESULT explanations. Converting a native Windows error preserves `OpcError::Com { source }`, its HRESULT, and the original error source.
 - **Test-Friendly**: Built-in `MockOpcProvider` via the `test-support` feature.
 
 ## Installation

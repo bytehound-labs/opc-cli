@@ -31,7 +31,7 @@ See **[bytehound-opc-da-client architecture.md](./opc-da-client/architecture.md)
 - **Real-time Monitoring**: Live tag value updates with 1-second auto-refresh.
 - **Tag Write Support**: Write typed values (int, float, bool, string) to individual tags.
 - **Search & Filter**: Substring search with `Tab`/`Shift+Tab` cycling through matches.
-- **Rich Error Hints**: Human-readable explanations for cryptic Windows COM/DCOM HRESULT codes.
+- **Rich Error Hints**: Human-readable explanations for cryptic Windows COM/DCOM HRESULT codes, with the native Windows error retained as the error source.
 - **Transparent COM Management**: COM initialization and apartment thread affinity are handled automatically by a dedicated worker; hosts performing additional COM work can initialize their own thread with `ComGuard`.
 - **Mockable Backend**: Unit-test the TUI on any OS without a live OPC server.
 

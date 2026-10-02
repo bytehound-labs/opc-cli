@@ -1,4 +1,4 @@
-use crate::opc_da::errors::{OpcError, OpcResult};
+use crate::{OpcError, OpcResult};
 use async_trait::async_trait;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
@@ -121,6 +121,7 @@ macro_rules! opaque_browse_token {
         pub struct $name(Uuid);
 
         impl $name {
+            #[cfg(any(all(windows, feature = "opc-da-backend"), test))]
             pub(crate) fn new() -> Self {
                 Self(Uuid::new_v4())
             }
@@ -545,6 +546,7 @@ pub struct InventoryControl {
 }
 
 impl InventoryControl {
+    #[cfg(any(all(windows, feature = "opc-da-backend"), test))]
     pub(crate) fn new() -> Self {
         Self {
             state: Arc::new(InventoryControlState {
@@ -557,6 +559,7 @@ impl InventoryControl {
         }
     }
 
+    #[cfg(any(all(windows, feature = "opc-da-backend"), test))]
     pub(crate) fn new_with_batch_size(batch_size: u32) -> Self {
         debug_assert!((1..=MAX_INVENTORY_BATCH_SIZE).contains(&batch_size));
         let control = Self::new();
@@ -642,6 +645,7 @@ impl InventoryControl {
         Ok(())
     }
 
+    #[cfg(any(all(windows, feature = "opc-da-backend"), test))]
     pub(crate) fn batch_size(&self) -> Option<u32> {
         let batch_size = self.state.batch_size.load(Ordering::Acquire);
         u32::try_from(batch_size).ok().filter(|value| *value != 0)
@@ -652,6 +656,7 @@ impl InventoryControl {
         self.state.cancelled.load(Ordering::Acquire)
     }
 
+    #[cfg(any(all(windows, feature = "opc-da-backend"), test))]
     pub(crate) fn is_paused(&self) -> bool {
         self.state.paused.load(Ordering::Acquire)
     }
@@ -666,6 +671,7 @@ pub struct InventoryStream {
 }
 
 impl InventoryStream {
+    #[cfg(any(all(windows, feature = "opc-da-backend"), test))]
     pub(crate) fn new(
         receiver: mpsc::Receiver<OpcResult<InventoryEvent>>,
         control: InventoryControl,

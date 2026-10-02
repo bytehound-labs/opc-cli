@@ -68,8 +68,10 @@ cargo clippy -p bytehound-opc-da-client --all-targets --all-features -- -D warni
 cargo publish -p bytehound-opc-da-client --dry-run
 ```
 
-These Linux commands validate package metadata and non-Windows target exclusion only; Windows
-verification remains required for the OPC DA backend.
+These Linux commands compile and test the actual provider trait, value and error models,
+opaque browse tokens, inventory controls, streams, and telemetry summaries. The optional
+`test-support` mock provider also works off Windows. Windows verification remains required
+for the native OPC DA backend and TUI.
 Windows CI uses stable Rust with warnings denied for application and test code, and checks both
 the native workspace target and 32-bit Windows consumers.
 Mock-backend tests cover worker-thread connection ownership, browse-session cancellation, and

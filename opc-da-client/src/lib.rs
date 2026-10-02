@@ -1,6 +1,5 @@
-#![cfg(windows)]
 #![allow(unsafe_code, unreachable_pub)]
-#![doc = include_str!("../README.md")]
+#![cfg_attr(all(windows, feature = "opc-da-backend"), doc = include_str!("../README.md"))]
 //! # opc-da-client
 //!
 //! Backend-agnostic OPC DA client library for Rust — async, trait-based,
@@ -10,12 +9,14 @@
 //!
 //! ```no_run
 //! # use anyhow::Result;
-//! use opc_da_client::{OpcDaClient, OpcProvider};
-//!
 //! # #[tokio::main]
 //! # async fn main() -> Result<()> {
+//! # #[cfg(all(windows, feature = "opc-da-backend"))] {
+//! use opc_da_client::{OpcDaClient, OpcProvider};
+//!
 //! let client = OpcDaClient::default();
 //! let servers = client.list_servers("localhost").await?;
+//! # }
 //! # Ok(())
 //! # }
 //! ```
@@ -29,34 +30,43 @@
 //!
 //! ## Platform
 //!
-//! **Windows only** — OPC DA is built on COM/DCOM.
+//! The provider trait, value models, opaque tokens, inventory controls, and
+//! telemetry models are portable. The native backend and COM worker require
+//! Windows because OPC DA is built on COM/DCOM.
 
+#[cfg(windows)]
 mod com_guard;
+#[cfg(windows)]
 pub use com_guard::ComGuard;
+mod errors;
+#[cfg(all(windows, feature = "opc-da-backend"))]
 mod helpers;
-#[cfg(feature = "opc-da-backend")]
+#[cfg(all(windows, feature = "opc-da-backend"))]
 mod inventory;
-#[cfg(feature = "opc-da-backend")]
+#[cfg(all(windows, feature = "opc-da-backend"))]
 mod native_browse;
 mod provider;
 
-#[cfg(test)]
+#[cfg(all(test, windows, feature = "opc-da-backend"))]
 mod tests;
 
-#[cfg(feature = "opc-da-backend")]
+#[cfg(all(windows, feature = "opc-da-backend"))]
 #[allow(warnings)]
 mod bindings;
+#[cfg(all(windows, feature = "opc-da-backend"))]
 pub mod com_worker;
 
-#[cfg(feature = "opc-da-backend")]
+#[cfg(all(windows, feature = "opc-da-backend"))]
 #[allow(warnings)]
 mod opc_da;
 
-#[cfg(feature = "opc-da-backend")]
+#[cfg(all(windows, feature = "opc-da-backend"))]
 mod backend;
 
 // Stable public API
-pub use helpers::{format_hresult, friendly_com_hint, log_opc_error};
+#[cfg(windows)]
+pub use errors::format_hresult;
+pub use errors::{OpcError, OpcResult, friendly_com_hint, log_opc_error};
 pub use provider::{
     BrowseCapabilities, BrowseNamespace, BrowseNode, BrowseNodeFilter, BrowseNodeKind,
     BrowseNodeToken, BrowsePage, BrowsePageRequest, BrowsePageToken, BrowseSessionToken,
@@ -68,14 +78,11 @@ pub use provider::{
     OpcProvider, OpcValue, TagValue, WriteResult,
 };
 
-#[cfg(feature = "opc-da-backend")]
-pub use opc_da::{
-    errors::{OpcError, OpcResult},
-    typedefs::{GroupHandle, ItemHandle},
-};
+#[cfg(all(windows, feature = "opc-da-backend"))]
+pub use opc_da::typedefs::{GroupHandle, ItemHandle};
 
 // Backend re-exports (conditional)
-#[cfg(feature = "opc-da-backend")]
+#[cfg(all(windows, feature = "opc-da-backend"))]
 pub use backend::{connector::ComConnector, opc_da::OpcDaClient};
 
 // Test support re-export

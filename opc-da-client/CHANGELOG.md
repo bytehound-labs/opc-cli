@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Portable provider, value/error, token, inventory-control, stream, and telemetry
+  models with Linux unit, doctest, and public-path integration coverage.
+- Model-layer checks without default features; the native backend and worker
+  remain Windows-only.
 - Characterization tests for tracing targets, nested thread-local telemetry,
   worker-thread connection destruction, opaque tokens, pacing normalization,
   and inventory stream cleanup under backpressure. Tracing assertions inspect

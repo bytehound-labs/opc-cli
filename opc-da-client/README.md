@@ -33,6 +33,9 @@ Backend-agnostic OPC DA client library for Rust — async, trait-based, with tra
 - **Windows COM/DCOM Support**: Native OPC DA backend via `windows-rs` — no external OPC crates needed.
 - **Robust Error Handling**: Leverages `thiserror` for the `OpcError` domain type and `friendly_com_hint()` for human-readable HRESULT explanations. Converting a native Windows error preserves `OpcError::Com { source }`, its HRESULT, and the original error source.
 - **Test-Friendly**: Built-in `MockOpcProvider` via the `test-support` feature.
+- **Portable Models**: The provider trait, values, errors, opaque browse tokens,
+  inventory controls, streams, and telemetry models compile and have substantive
+  tests on Linux; COM connections and the native worker remain Windows-only.
 
 ## Installation
 
@@ -52,21 +55,25 @@ opc-da-client = { package = "bytehound-opc-da-client", version = "0.2.8" }
 
 ## Platform and Package Verification
 
-The concrete `opc_da_client` API and the `opc-da-backend` implementation are Windows-only. The
-Windows dependencies and native library code are excluded from non-Windows targets so package
-metadata, packaging, and target-specific compilation can be checked on Linux without compiling
-`windows-future`.
+The `OpcProvider` trait, public data models, and `MockOpcProvider` are portable.
+`OpcDaClient`, `ComWorker`, and the `opc-da-backend` implementation require Windows.
+Native Windows dependencies and code are excluded from Linux targets; the library
+itself is compiled rather than replaced by an empty crate. Disabling default
+features selects the model/provider layer without the native backend.
 
 From the workspace root, use package-scoped commands for non-Windows verification:
 
 ```bash
 cargo test -p bytehound-opc-da-client --all-features
 cargo clippy -p bytehound-opc-da-client --all-targets --all-features -- -D warnings
+cargo test -p bytehound-opc-da-client --no-default-features
+cargo clippy -p bytehound-opc-da-client --all-targets --no-default-features -- -D warnings
 cargo package -p bytehound-opc-da-client
 cargo publish -p bytehound-opc-da-client --dry-run
 ```
 
-Non-Windows package checks do not validate COM behavior and may run zero library tests. Run the
+Non-Windows tests cover real model, control, stream cleanup, telemetry, and mock-provider
+behavior, including public API paths. They do not validate COM behavior. Run the
 Windows verification gate before publishing or relying on the OPC DA backend:
 
 ```powershell
@@ -74,6 +81,10 @@ cargo test -p bytehound-opc-da-client --all-features
 cargo clippy -p bytehound-opc-da-client --all-targets --all-features -- -D warnings
 cargo publish -p bytehound-opc-da-client --dry-run
 ```
+
+`OpcError` and `OpcResult` keep their crate-root paths on every platform.
+`OpcError::Com { source }`, HRESULT formatting, and COM-specific types are available
+on Windows. Native read, write, browse, and inventory signatures are unchanged.
 
 ## Usage Examples
 

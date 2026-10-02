@@ -6,6 +6,8 @@ The primary product is the `bytehound-opc-da-client` library in `opc-da-client/`
 The `opc-cli/` Windows TUI is a secondary consumer of that library. The TUI and
 full workspace require Windows; Linux checks can compile, lint, and test the
 library only.
+Those library checks execute the portable provider, model, control, stream, and
+telemetry tests. They are not a substitute for Windows COM/backend verification.
 
 ## Development checks
 
@@ -25,6 +27,8 @@ Linux supports the library checks, not the Windows-only TUI:
 cargo fmt --all -- --check
 cargo clippy --locked -p bytehound-opc-da-client --all-targets --all-features -- -D warnings
 cargo test --locked -p bytehound-opc-da-client --all-features
+cargo clippy --locked -p bytehound-opc-da-client --all-targets --no-default-features -- -D warnings
+cargo test --locked -p bytehound-opc-da-client --no-default-features
 ```
 
 CI is defined in [`.github/workflows/ci.yml`](.github/workflows/ci.yml). Its Windows

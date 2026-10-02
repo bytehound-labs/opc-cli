@@ -43,11 +43,20 @@ mod errors;
 mod helpers;
 #[cfg(all(windows, feature = "opc-da-backend"))]
 mod inventory;
+#[cfg(any(all(windows, feature = "opc-da-backend"), test))]
+#[path = "inventory/boundary.rs"]
+mod inventory_boundary;
+#[cfg(any(all(windows, feature = "opc-da-backend"), test))]
+#[path = "inventory/error.rs"]
+mod inventory_error;
+#[cfg(any(all(windows, feature = "opc-da-backend"), test))]
+#[path = "inventory/telemetry.rs"]
+mod inventory_telemetry;
 #[cfg(all(windows, feature = "opc-da-backend"))]
 mod native_browse;
 mod provider;
 
-#[cfg(all(test, windows, feature = "opc-da-backend"))]
+#[cfg(test)]
 mod tests;
 
 #[cfg(all(windows, feature = "opc-da-backend"))]

@@ -17,6 +17,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   worker-thread connection destruction, opaque tokens, pacing normalization,
   and inventory stream cleanup under backpressure. Tracing assertions inspect
   captured metadata without holding the event collector lock.
+- Portable inventory-boundary, contextual-error, telemetry saturation, and
+  poisoned-collector tests.
+
+### Changed
+
+- Organize inventory, native paging, and COM worker code into private domain
+  modules while preserving public paths, native connection/resource ownership,
+  MTA affinity, cancellation, pacing, error semantics, and tracing targets.
+- Include architecture and behavioral references under `docs/` in the library
+  package.
+
+### Fixed
+
+- Recover poisoned best-effort numeric telemetry collectors without making
+  inventory fail or discarding available observations.
+- Give mock COM allocations precise safety comments and null checks before
+  initialization; the live-server cursor probe remains ignored.
 
 ### Build
 
@@ -28,6 +45,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   preserving `OpcError::Com { source }`, the source chain, HRESULT, and display hints.
 - Compare empty collections directly in inventory, browse, and TUI tests so stable
   Clippy checks pass and assertion failures show the unexpected values.
+- Scan all active production sources without temporary inventory/browse/debug
+  exclusions, including safety-comment tail-expression rule cases.
+- Verify model-only features and packaged sources/documentation in CI.
 
 ## [0.3.0] - 2026-09-16
 

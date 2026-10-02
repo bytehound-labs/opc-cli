@@ -36,6 +36,8 @@ Backend-agnostic OPC DA client library for Rust — async, trait-based, with tra
 - **Portable Models**: The provider trait, values, errors, opaque browse tokens,
   inventory controls, streams, and telemetry models compile and have substantive
   tests on Linux; COM connections and the native worker remain Windows-only.
+- **Resilient Telemetry**: Best-effort numeric inventory collectors recover
+  poisoned locks without discarding available observations or failing traversal.
 
 ## Installation
 
@@ -46,7 +48,7 @@ Add this to your `Cargo.toml`:
 opc-da-client = { package = "bytehound-opc-da-client", version = "0.2.8" }
 ```
 
-## Prerequisites
+## Native Backend Prerequisites
 
 - **Operating System**: Windows (COM/DCOM is a Windows-only technology).
 - **Rust**: 1.88 or newer.
@@ -87,12 +89,14 @@ cargo publish -p bytehound-opc-da-client --dry-run
 on Windows. Native read, write, browse, and inventory signatures are unchanged.
 Internal helpers stay in private modules; only the documented crate-root items
 form the portable public API.
+Windows CI also checks the model-only feature set, the 32-bit native target, and
+the packaged source/documentation through a publish dry run.
 
 ## Usage Examples
 
 ### Connecting & Listing Servers
 
-Enumerate available OPC DA servers on a local or remote host.
+Enumerate OPC DA servers registered on the native Windows client machine.
 
 ```rust,no_run
 use opc_da_client::{OpcDaClient, OpcProvider};
@@ -407,7 +411,20 @@ The library is split into a core trait layer and concrete implementations:
 - **`OpcProvider`**: The primary async trait defining server discovery, recursive tag browsing, native paged browsing, reads, and writes.
 - **`OpcDaClient`**: The default implementation using native `windows-rs` COM calls. Generic over `ServerConnector` for testability; defaults to `ComConnector`.
 
-See [architecture.md](https://github.com/bytehound-labs/opc-cli/blob/main/opc-da-client/architecture.md) for in-depth design details and [spec.md](https://github.com/bytehound-labs/opc-cli/blob/main/opc-da-client/spec.md) for behavioral contracts.
+Worker lifecycle and request delivery stay in `com_worker.rs`; private modules
+own connection retry, reads, writes, and recursive browsing. `native_browse.rs`
+owns session lifecycle with separate state, capability, DA2, and DA3 modules.
+`inventory.rs` orchestrates independent-connection traversal while private modules
+own deferred DA2 expansion, exact navigation, DA3 continuation guards, pacing,
+errors, progress, and thread-local telemetry.
+
+The boundary, error, and telemetry modules have real off-Windows tests.
+Native COM ownership, opaque identity, cancellation and pacing behavior, public
+API paths, and tracing targets are consistent across module boundaries.
+
+See [architecture.md](docs/architecture.md) for in-depth design details and
+[spec.md](docs/spec.md) for behavioral contracts. Both references are included
+in the published crate package.
 
 ### COM Threading Model
 

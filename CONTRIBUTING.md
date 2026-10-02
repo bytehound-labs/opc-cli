@@ -33,10 +33,18 @@ cargo test --locked -p bytehound-opc-da-client --no-default-features
 
 CI is defined in [`.github/workflows/ci.yml`](.github/workflows/ci.yml). Its Windows
 job checks formatting, workspace Clippy with `-D warnings`, locked documentation and
-workspace tests, 32-bit Windows-target Clippy, and PowerShell syntax. The MSRV job
+workspace tests, model-only Clippy/tests, 32-bit Windows-target Clippy, packaged
+library sources/documentation, and PowerShell syntax. The MSRV job
 checks Rust 1.88.0. The Linux job runs `cargo-deny`, ast-grep rule tests and scans,
-and the library-only Clippy and test commands. The required aggregate status is
+and the library-only Clippy and test commands with all features and without default
+features. Scans do not temporarily exclude active source files. The required aggregate status is
 **Required validation status**.
+
+The library's [architecture](opc-da-client/docs/architecture.md) and
+[behavioral contract](opc-da-client/docs/spec.md) describe domain ownership and
+acceptance tests. Characterize native behavior before moving it across module
+boundaries. Preserve MTA/drop ordering, exact ItemIDs, opaque tokens, separate
+inventory/foreground connections, error semantics, and tracing targets.
 
 ## Pull requests
 

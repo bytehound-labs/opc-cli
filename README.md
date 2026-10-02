@@ -13,15 +13,18 @@ The project is structured as a Cargo workspace with two crates:
 - **`opc-cli`**: The interactive TUI application built with `ratatui` + `crossterm`.
 - **`bytehound-opc-da-client`**: A ByteHound-maintained distribution of the native Windows COM library (using `windows-rs`) that abstracts OPC DA communication through an async trait (`OpcProvider`). Its Rust library name remains `opc_da_client`; the package is aliased as `opc-da-client` by consumers. Generic over `ServerConnector` for easy mocking.
 
-See **[bytehound-opc-da-client architecture.md](./opc-da-client/architecture.md)** for the full library design, state machine, and data flow diagrams.
+See the library's [architecture](./opc-da-client/docs/architecture.md) and
+[behavioral contract](./opc-da-client/docs/spec.md) for domain ownership,
+COM lifetimes, browsing, inventory, and platform guarantees. Both documents
+are included in the library package.
 
 ## ✨ Features
 
-- **Server Discovery**: Enumerate OPC DA servers on local or remote hosts.
+- **Server Discovery**: Enumerate OPC DA servers registered on the native Windows client machine.
 - **Hierarchical Browsing**: Recursive tag discovery for the TUI plus bounded, one-level native browse pages with OPC DA 3.0 support and a one-time, narrowly classified DA 2.x compatibility fallback before the first successful root page.
 - **Direct DA2 Inventory Navigation**: Large hierarchical inventories use canonical `OPC_BROWSE_TO` navigation first, fall back only for known compatibility errors, defer branch expansion, and preserve same-named branch/item nodes without eager probe traffic.
 - **Root-Scoped Inventory**: Diagnostic callers can stream a bounded inventory from one exact canonical ItemID through `OpcProvider::start_inventory_at_root`, using a fresh independent OPC connection without parsing vendor-specific `.`, `!`, or `/` separators.
-- **Inventory Telemetry**: Library consumers can pace bounded inventory operations, adjust their batch size at runtime, and receive typed per-operation observations for each completed slice plus separate startup capability-detection observations. Summaries include counts, elapsed-time totals, maxima, fixed latency buckets, and approximate p50/p95/p99 values.
+- **Inventory Telemetry**: Library consumers can pace bounded inventory operations, adjust their batch size at runtime, and receive typed per-operation observations for each completed slice plus separate startup capability-detection observations. Summaries include counts, elapsed-time totals, maxima, fixed latency buckets, and approximate p50/p95/p99 values. Best-effort numeric collectors recover poisoned locks without failing traversal.
 - **Inventory Pacing Accounting**: DA3 pages are charged by their requested page size. DA2 enumeration is charged only when the native iterator refills, using its cache capacity; values already held in that cache are free and cancellation is still checked between them.
 - **Quiet Normal Operation**: Successful list, read, write, and browse operations are debug-level events; failures remain visible at warning or error level without producing one informational record per inventory operation.
 - **Bounded Browse Safety**: Native and compatibility browse iterators stop after 64 consecutive identical values and report the iterator, browse path, repeated value, and progress counters instead of stalling indefinitely.
@@ -33,7 +36,7 @@ See **[bytehound-opc-da-client architecture.md](./opc-da-client/architecture.md)
 - **Search & Filter**: Substring search with `Tab`/`Shift+Tab` cycling through matches.
 - **Rich Error Hints**: Human-readable explanations for cryptic Windows COM/DCOM HRESULT codes, with the native Windows error retained as the error source.
 - **Transparent COM Management**: COM initialization and apartment thread affinity are handled automatically by a dedicated worker; hosts performing additional COM work can initialize their own thread with `ComGuard`.
-- **Mockable Backend**: Unit-test the TUI on any OS without a live OPC server.
+- **Mockable Backend**: Test portable provider/models on Linux and native worker/TUI behavior on Windows without a live OPC server.
 
 ## 🚀 Getting Started
 
@@ -80,6 +83,10 @@ Mock-backend tests cover worker-thread connection ownership, browse-session canc
 inventory stream cleanup without contacting a live OPC server. Tracing assertions release
 event collector locks before validating captured metadata.
 
+The native implementation separates lifecycle/orchestration from connection,
+read/write, DA2/DA3 navigation, continuation, and pacing/telemetry modules.
+Public API paths, MTA ownership, foreground connection isolation, and established
+tracing targets stay consistent across those module boundaries.
 
 ## ⌨️ Controls
 

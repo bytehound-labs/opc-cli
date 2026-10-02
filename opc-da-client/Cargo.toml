@@ -14,8 +14,6 @@ categories = ["api-bindings", "network-programming"]
 
 exclude = [
     ".winmd/",
-    "architecture.md",
-    "spec.md",
     "rewrite.py",
 ]
 

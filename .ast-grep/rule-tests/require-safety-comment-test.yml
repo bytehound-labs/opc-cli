@@ -1,6 +1,18 @@
 id: require-safety-comment
 valid:
   - |
+    unsafe fn safe_tail_expression(pointer: *const u32) -> u32 {
+        // SAFETY: The caller supplies an aligned, initialized u32 valid for this read.
+        unsafe { *pointer }
+    }
+  - |
+    fn safe_tail_call(value: u32) -> u32 {
+        // SAFETY: The block only returns an owned integer and accesses no pointers.
+        unsafe {
+            value
+        }
+    }
+  - |
     fn safe_fn() {
         // SAFETY: null pointer is guaranteed valid here
         unsafe {

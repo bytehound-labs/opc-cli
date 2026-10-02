@@ -1018,11 +1018,13 @@ mod real_server_cursor_probe {
         let error = server
             .change_browse_position_to(invalid_item_id)
             .expect_err("the deliberately invalid canonical item ID must be rejected");
-        println!("invalid_browse_to_error={error}");
+        assert!(
+            crate::opc_da::errors::is_da2_browse_to_fallback_error(&error),
+            "invalid canonical ItemID returned an unexpected rejection: {error}"
+        );
 
         ConnectedServer::change_browse_position(&server, down, "205AI00030")?;
         let resolved = ConnectedServer::get_item_id(&server, "PV")?;
-        println!("resolved_item_id={resolved}");
         assert_eq!(resolved, "FCS0220!205AI00030.PV");
 
         ConnectedServer::change_browse_position(&server, up, "")?;

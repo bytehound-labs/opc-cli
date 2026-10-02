@@ -22,6 +22,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Keep portable error helpers inside a private module with visibility compatible
   with stable Clippy, without adding a crate-wide lint allowance.
+- Apply warnings-denied checks to portable error formatting and native HRESULT
+  hints without inheriting the internal COM module's lint allowances.
 - Use an explicit native Windows error conversion compatible with stable Clippy,
   preserving `OpcError::Com { source }`, the source chain, HRESULT, and display hints.
 - Compare empty collections directly in inventory, browse, and TUI tests so stable

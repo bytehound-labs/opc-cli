@@ -99,23 +99,25 @@ pub fn format_hresult(hr: HRESULT) -> String {
 #[cfg(windows)]
 pub fn friendly_hresult_hint(hr: HRESULT) -> Option<&'static str> {
     match hr.0.cast_unsigned() {
-        0x80040112 => Some("Server license does not permit OPC client connections"),
-        0x80080005 => Some("Server process failed to start — check if it is installed and running"),
-        0x80070005 => {
+        0x8004_0112 => Some("Server license does not permit OPC client connections"),
+        0x8008_0005 => {
+            Some("Server process failed to start — check if it is installed and running")
+        }
+        0x8007_0005 => {
             Some("Access denied — DCOM launch/activation permissions not configured for this user")
         }
-        0x800706BA => {
+        0x8007_06BA => {
             Some("RPC server unavailable — the target host may be offline or blocking RPC")
         }
-        0x800706F4 => Some("COM marshalling error — try restarting the OPC server"),
-        0x80040154 => Some("Server is not registered on this machine"),
-        0x80004003 => Some("Invalid pointer (E_POINTER)"),
-        0xC0040004 => Some("Server rejected write — the item may be read-only (OPC_E_BADRIGHTS)"),
-        0xC0040006 => {
+        0x8007_06F4 => Some("COM marshalling error — try restarting the OPC server"),
+        0x8004_0154 => Some("Server is not registered on this machine"),
+        0x8000_4003 => Some("Invalid pointer (E_POINTER)"),
+        0xC004_0004 => Some("Server rejected write — the item may be read-only (OPC_E_BADRIGHTS)"),
+        0xC004_0006 => {
             Some("Data type mismatch — server cannot convert the written value (OPC_E_BADTYPE)")
         }
-        0xC0040007 => Some("Item ID not found in server address space (OPC_E_UNKNOWNITEMID)"),
-        0xC0040008 => Some("Item ID syntax is invalid for this server (OPC_E_INVALIDITEMID)"),
+        0xC004_0007 => Some("Item ID not found in server address space (OPC_E_UNKNOWNITEMID)"),
+        0xC004_0008 => Some("Item ID syntax is invalid for this server (OPC_E_INVALIDITEMID)"),
         _ => None,
     }
 }
@@ -239,9 +241,8 @@ pub fn contextual_browse_error(
     let item = item_name
         .map(|name| format!(" item {name:?}"))
         .unwrap_or_default();
-    let hresult = com_hresult(&error)
-        .map(|value| format!("0x{value:08X}"))
-        .unwrap_or_else(|| "N/A".to_string());
+    let hresult =
+        com_hresult(&error).map_or_else(|| "N/A".to_string(), |value| format!("0x{value:08X}"));
     let hint = friendly_com_hint(&error).unwrap_or("none");
     let chain = format!("{error:#}");
 

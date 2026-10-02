@@ -26,12 +26,12 @@ impl Subscriber for TargetSubscriber {
     fn exit(&self, _span: &Id) {}
 }
 
-pub(crate) fn assert_event_targets(expected: &str, operation: impl FnOnce()) {
+pub fn assert_event_targets(expected: &str, operation: impl FnOnce()) {
     let targets = Arc::new(Mutex::new(Vec::new()));
     tracing::subscriber::with_default(TargetSubscriber(Arc::clone(&targets)), operation);
-    let targets = targets.lock().unwrap();
+    let targets = targets.lock().unwrap().clone();
     assert_ne!(
-        *targets,
+        targets,
         Vec::<&str>::new(),
         "the operation must emit an event"
     );

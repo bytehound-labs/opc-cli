@@ -11,7 +11,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Characterization tests for tracing targets, nested thread-local telemetry,
   worker-thread connection destruction, opaque tokens, pacing normalization,
-  and inventory stream cleanup under backpressure.
+  and inventory stream cleanup under backpressure. Tracing assertions inspect
+  captured metadata without holding the event collector lock.
 
 ### Build
 

@@ -73,7 +73,8 @@ verification remains required for the OPC DA backend.
 Windows CI uses stable Rust with warnings denied for application and test code, and checks both
 the native workspace target and 32-bit Windows consumers.
 Mock-backend tests cover worker-thread connection ownership, browse-session cancellation, and
-inventory stream cleanup without contacting a live OPC server.
+inventory stream cleanup without contacting a live OPC server. Tracing assertions release
+event collector locks before validating captured metadata.
 
 
 ## ⌨️ Controls

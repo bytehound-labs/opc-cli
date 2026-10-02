@@ -137,17 +137,17 @@ pub fn friendly_com_hint(error: &OpcError) -> Option<&'static str> {
 }
 
 #[cfg(any(all(windows, feature = "opc-da-backend"), test))]
-pub(super) const E_INVALIDARG_HRESULT: u32 = 0x8007_0057;
+pub const E_INVALIDARG_HRESULT: u32 = 0x8007_0057;
 #[cfg(all(windows, any(feature = "opc-da-backend", test)))]
-pub(super) const E_NOTIMPL_HRESULT: u32 = 0x8000_4001;
+pub const E_NOTIMPL_HRESULT: u32 = 0x8000_4001;
 #[cfg(all(windows, any(feature = "opc-da-backend", test)))]
-pub(super) const RPC_X_NULL_REF_POINTER_HRESULT: u32 = 0x8007_06F4;
+pub const RPC_X_NULL_REF_POINTER_HRESULT: u32 = 0x8007_06F4;
 #[cfg(all(windows, feature = "opc-da-backend"))]
-pub(super) const MAX_CONSECUTIVE_IDENTICAL_BROWSE_VALUES: usize = 64;
+pub const MAX_CONSECUTIVE_IDENTICAL_BROWSE_VALUES: usize = 64;
 #[cfg(all(windows, feature = "opc-da-backend"))]
-pub(super) const MAX_CONSECUTIVE_EMPTY_DA3_PAGES: usize = MAX_CONSECUTIVE_IDENTICAL_BROWSE_VALUES;
+pub const MAX_CONSECUTIVE_EMPTY_DA3_PAGES: usize = MAX_CONSECUTIVE_IDENTICAL_BROWSE_VALUES;
 
-pub(super) fn com_hresult(error: &OpcError) -> Option<u32> {
+pub fn com_hresult(error: &OpcError) -> Option<u32> {
     #[cfg(windows)]
     {
         match error {
@@ -163,18 +163,18 @@ pub(super) fn com_hresult(error: &OpcError) -> Option<u32> {
 }
 
 #[cfg(any(all(windows, feature = "opc-da-backend"), test))]
-pub(super) fn is_com_hresult(error: &OpcError, expected: u32) -> bool {
+pub fn is_com_hresult(error: &OpcError, expected: u32) -> bool {
     com_hresult(error) == Some(expected)
 }
 
 #[cfg(all(windows, any(feature = "opc-da-backend", test)))]
-pub(super) fn is_da3_browse_compatibility_error(error: &OpcError) -> bool {
+pub fn is_da3_browse_compatibility_error(error: &OpcError) -> bool {
     is_com_hresult(error, RPC_X_NULL_REF_POINTER_HRESULT)
         || is_com_hresult(error, E_NOTIMPL_HRESULT)
 }
 
 #[cfg(all(windows, any(feature = "opc-da-backend", test)))]
-pub(super) fn is_da2_browse_to_fallback_error(error: &OpcError) -> bool {
+pub fn is_da2_browse_to_fallback_error(error: &OpcError) -> bool {
     matches!(error, OpcError::NotImplemented(_))
         || is_com_hresult(error, E_INVALIDARG_HRESULT)
         || is_com_hresult(error, E_NOTIMPL_HRESULT)
@@ -183,12 +183,12 @@ pub(super) fn is_da2_browse_to_fallback_error(error: &OpcError) -> bool {
 }
 
 #[cfg(all(windows, feature = "opc-da-backend"))]
-pub(super) fn is_non_progress_browse_error(error: &OpcError) -> bool {
+pub fn is_non_progress_browse_error(error: &OpcError) -> bool {
     matches!(error, OpcError::BrowseNonProgress { .. })
 }
 
 #[cfg(any(all(windows, feature = "opc-da-backend"), test))]
-pub(super) fn browse_non_progress_error(
+pub fn browse_non_progress_error(
     iterator_type: &str,
     browse_path: &[String],
     repeated_value: &str,
@@ -205,7 +205,7 @@ pub(super) fn browse_non_progress_error(
 }
 
 #[cfg(any(all(windows, feature = "opc-da-backend"), test))]
-pub(super) fn browse_continuation_non_progress_error(
+pub fn browse_continuation_non_progress_error(
     browse_path: &[String],
     detail: impl Into<String>,
 ) -> OpcError {
@@ -229,7 +229,7 @@ fn format_browse_path(browse_path: &[String]) -> String {
 }
 
 #[cfg(any(all(windows, feature = "opc-da-backend"), test))]
-pub(super) fn contextual_browse_error(
+pub fn contextual_browse_error(
     error: OpcError,
     operation: &str,
     browse_path: &[String],

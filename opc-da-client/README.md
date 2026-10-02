@@ -85,6 +85,8 @@ cargo publish -p bytehound-opc-da-client --dry-run
 `OpcError` and `OpcResult` keep their crate-root paths on every platform.
 `OpcError::Com { source }`, HRESULT formatting, and COM-specific types are available
 on Windows. Native read, write, browse, and inventory signatures are unchanged.
+Internal helpers stay in private modules; only the documented crate-root items
+form the portable public API.
 
 ## Usage Examples
 

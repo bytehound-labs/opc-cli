@@ -72,6 +72,7 @@ These Linux commands compile and test the actual provider trait, value and error
 opaque browse tokens, inventory controls, streams, and telemetry summaries. The optional
 `test-support` mock provider also works off Windows. Windows verification remains required
 for the native OPC DA backend and TUI.
+Platform selection preserves Windows error sources, HRESULT hints, and structured log fields.
 Windows CI uses stable Rust with warnings denied for application and test code, and checks both
 the native workspace target and 32-bit Windows consumers.
 Mock-backend tests cover worker-thread connection ownership, browse-session cancellation, and

@@ -850,6 +850,8 @@ mod tests {
         should_fail_with_connection_error: AtomicBool,
         should_panic_on_request: AtomicBool,
         read_value: Mutex<String>,
+        operation_threads: Mutex<Vec<std::thread::ThreadId>>,
+        server_drop_threads: Mutex<Vec<std::thread::ThreadId>>,
     }
 
     struct ConfigurableMockConnector {
@@ -858,6 +860,16 @@ mod tests {
 
     struct ConfigurableMockServer {
         state: Arc<MockState>,
+    }
+
+    impl Drop for ConfigurableMockServer {
+        fn drop(&mut self) {
+            self.state
+                .server_drop_threads
+                .lock()
+                .unwrap()
+                .push(std::thread::current().id());
+        }
     }
 
     struct ConfigurableMockGroup {
@@ -1018,6 +1030,11 @@ mod tests {
             _revised_update_rate: &mut u32,
             _server_handle: &mut crate::opc_da::typedefs::GroupHandle,
         ) -> OpcResult<Self::Group> {
+            self.state
+                .operation_threads
+                .lock()
+                .unwrap()
+                .push(std::thread::current().id());
             if self.state.should_panic_on_request.load(Ordering::Relaxed) {
                 panic!("Simulated worker panic");
             }
@@ -1051,6 +1068,11 @@ mod tests {
                 Err(OpcError::Internal("Connection failed".into()))
             } else {
                 self.state.connect_count.fetch_add(1, Ordering::Relaxed);
+                self.state
+                    .operation_threads
+                    .lock()
+                    .unwrap()
+                    .push(std::thread::current().id());
                 Ok(ConfigurableMockServer {
                     state: self.state.clone(),
                 })
@@ -1142,6 +1164,55 @@ mod tests {
         fn connect(&self, _server_name: &str) -> OpcResult<Self::Server> {
             Ok(WorkerMockServer)
         }
+    }
+
+    #[test]
+    fn com_worker_events_keep_the_public_module_target() {
+        crate::tests::tracing::assert_event_targets("opc_da_client::com_worker", || {
+            drop(ComWorker::<WorkerMockConnector>::closed());
+        });
+    }
+
+    #[tokio::test]
+    async fn cached_server_operations_and_destruction_stay_on_the_worker_thread() {
+        let caller_thread = std::thread::current().id();
+        let state = Arc::new(MockState::default());
+        let connector = Arc::new(ConfigurableMockConnector {
+            state: Arc::clone(&state),
+        });
+        let mut worker = tokio::task::spawn_blocking(move || ComWorker::start(connector).unwrap())
+            .await
+            .unwrap();
+        let worker_thread = worker.handle.as_ref().unwrap().thread().id();
+        assert_ne!(caller_thread, worker_thread);
+
+        worker
+            .send_request(|reply| ComRequest::WriteTagValue {
+                server: "Mock.Server".to_string(),
+                tag_id: "Tag".to_string(),
+                value: OpcValue::Int(1),
+                reply,
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            *state.operation_threads.lock().unwrap(),
+            vec![worker_thread, worker_thread]
+        );
+        assert_eq!(
+            *state.server_drop_threads.lock().unwrap(),
+            Vec::<std::thread::ThreadId>::new()
+        );
+
+        let handle = worker.handle.take().unwrap();
+        drop(worker);
+        tokio::task::spawn_blocking(move || handle.join().unwrap())
+            .await
+            .unwrap();
+        assert_eq!(
+            *state.server_drop_threads.lock().unwrap(),
+            vec![worker_thread]
+        );
     }
 
     #[tokio::test]

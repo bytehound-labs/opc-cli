@@ -871,6 +871,20 @@ mod tests {
 
     type Da3Call = (Option<String>, Option<String>, BrowseNodeFilter);
 
+    #[test]
+    fn native_browse_events_keep_the_module_target() {
+        crate::tests::tracing::assert_event_targets("opc_da_client::native_browse", || {
+            let server = MockServer::da2(
+                BrowseNamespace::Flat,
+                HashMap::new(),
+                HashMap::new(),
+                Vec::new(),
+            );
+            let capabilities = capabilities_for_server(&server).unwrap();
+            assert_eq!(capabilities.namespace, BrowseNamespace::Flat);
+        });
+    }
+
     struct MockGroup;
 
     impl ConnectedGroup for MockGroup {

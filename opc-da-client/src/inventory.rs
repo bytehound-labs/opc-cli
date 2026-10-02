@@ -1512,6 +1512,74 @@ mod tests {
     use windows::Win32::System::Variant::VARIANT;
     use windows::core::HRESULT;
 
+    #[test]
+    fn inventory_events_keep_the_module_target() {
+        crate::tests::tracing::assert_event_targets("opc_da_client::inventory", || {
+            record_skipped_invalid_branch(
+                &mut 0,
+                &mut None,
+                &["Parent!With/Punctuation".to_string()],
+                "Branch.With/Punctuation",
+            );
+            let control = InventoryControl::new();
+            let mut boundary = InventoryBoundary::new(&control);
+            assert_eq!(
+                boundary.before_operation_with_cost(1),
+                BoundaryResult::Proceed
+            );
+        });
+    }
+
+    #[test]
+    fn native_operation_telemetry_scopes_are_nested_and_thread_local() {
+        let outer = Arc::new(Mutex::new(
+            InventoryNativeOperationTelemetryCollector::default(),
+        ));
+        let inner = Arc::new(Mutex::new(
+            InventoryNativeOperationTelemetryCollector::default(),
+        ));
+        let outer_scope = install_native_operation_telemetry(Arc::clone(&outer));
+        record_native_operation(
+            InventoryNativeOperationKind::Da3Page,
+            Duration::from_nanos(1),
+        );
+        {
+            let _inner_scope = install_native_operation_telemetry(Arc::clone(&inner));
+            record_native_operation(
+                InventoryNativeOperationKind::GetItemId,
+                Duration::from_nanos(2),
+            );
+            std::thread::spawn(|| {
+                record_native_operation(
+                    InventoryNativeOperationKind::Da3Page,
+                    Duration::from_nanos(100),
+                );
+            })
+            .join()
+            .unwrap();
+        }
+        record_native_operation(
+            InventoryNativeOperationKind::Da3Page,
+            Duration::from_nanos(3),
+        );
+        drop(outer_scope);
+        record_native_operation(
+            InventoryNativeOperationKind::Da3Page,
+            Duration::from_nanos(100),
+        );
+
+        let outer = outer.lock().unwrap().take();
+        let inner = inner.lock().unwrap().take();
+        assert_eq!(outer.len(), 1);
+        assert_eq!(outer[0].kind, InventoryNativeOperationKind::Da3Page);
+        assert_eq!(outer[0].count, 2);
+        assert_eq!(outer[0].total_elapsed, Duration::from_nanos(4));
+        assert_eq!(inner.len(), 1);
+        assert_eq!(inner[0].kind, InventoryNativeOperationKind::GetItemId);
+        assert_eq!(inner[0].count, 1);
+        assert_eq!(inner[0].total_elapsed, Duration::from_nanos(2));
+    }
+
     struct GateAwareIterator {
         items: VecDeque<String>,
         refill_size: u32,

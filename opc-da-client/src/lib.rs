@@ -40,6 +40,9 @@ mod inventory;
 mod native_browse;
 mod provider;
 
+#[cfg(test)]
+mod tests;
+
 #[cfg(feature = "opc-da-backend")]
 #[allow(warnings)]
 mod bindings;

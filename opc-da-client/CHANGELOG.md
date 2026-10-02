@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Characterization tests for tracing targets, nested thread-local telemetry,
+  worker-thread connection destruction, opaque tokens, pacing normalization,
+  and inventory stream cleanup under backpressure.
+
 ### Build
 
 - Use an explicit native Windows error conversion compatible with stable Clippy,

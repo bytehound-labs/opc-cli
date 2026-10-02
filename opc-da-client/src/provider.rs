@@ -914,6 +914,10 @@ mod read_display_fallback_tests {
 /// This is the stable public API. Backend implementations provide
 /// the actual COM/DCOM interaction.
 #[cfg_attr(feature = "test-support", automock)]
+#[allow(
+    clippy::double_must_use,
+    reason = "async_trait generates must_use boxed futures whose type is already must-use"
+)]
 #[async_trait]
 pub trait OpcProvider: Send + Sync {
     /// List available OPC DA servers on the given host.

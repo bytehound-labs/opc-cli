@@ -5,13 +5,14 @@ use crate::opc_da::com_utils::{LocalPointer, RemoteArray, RemotePointer};
 use crate::opc_da::errors::{OpcError, OpcResult};
 use windows::core::{Interface, PCWSTR, PWSTR};
 
-/// Calls `IOPCBrowse::Browse` with the ABI-required null property-ID pointer.
+/// Calls `IOPCBrowse::Browse` with a non-null pointer for its empty property-ID array.
 ///
-/// The generated binding accurately marshals all `Browse` parameters except an
-/// empty property-ID slice: its slice pointer is non-null even when
-/// `dwPropertyCount` is zero. OPC DA requires a true null pointer in that case.
+/// The IDL declares `pdwPropertyIDs` as a top-level `[size_is(dwPropertyCount)]`
+/// parameter, so it is a reference pointer even when the interface uses
+/// `pointer_default(unique)`. With a zero count, the marshaller sends no array
+/// elements; the placeholder only provides the required non-null address.
 #[allow(clippy::too_many_arguments)]
-fn browse_with_null_property_ids(
+fn browse_with_empty_property_ids(
     browse: &IOPCBrowse,
     item_id: PCWSTR,
     continuation_point: *mut PWSTR,
@@ -25,9 +26,11 @@ fn browse_with_null_property_ids(
     count: *mut u32,
     elements: *mut *mut tagOPCBROWSEELEMENT,
 ) -> windows::core::Result<()> {
-    // SAFETY: `browse` is borrowed for the call, and every argument pointer has the same
-    // SAFETY: valid storage and ABI as the generated `Browse` call. The property-ID pointer is null
-    // SAFETY: only with its matching zero count; `.ok()` checks the HRESULT.
+    let empty_property_id = 0_u32;
+
+    // SAFETY: `browse` is borrowed for the call, and every argument points to storage that remains
+    // SAFETY: valid through the call. The property-ID pointer addresses `empty_property_id`; its
+    // SAFETY: zero count means the NDR array contains no elements. `.ok()` checks the HRESULT.
     unsafe {
         (Interface::vtable(browse).Browse)(
             Interface::as_raw(browse),
@@ -40,7 +43,7 @@ fn browse_with_null_property_ids(
             return_all_properties.into(),
             return_property_values.into(),
             0,
-            core::ptr::null(),
+            core::ptr::from_ref(&empty_property_id),
             more_elements,
             count,
             elements,
@@ -149,7 +152,7 @@ pub trait BrowseTrait {
         let mut elements = RemoteArray::empty();
 
         if property_ids.is_empty() {
-            browse_with_null_property_ids(
+            browse_with_empty_property_ids(
                 self.interface()?,
                 item_id.as_pcwstr(),
                 continuation_point.as_mut_pwstr_ptr(),
@@ -331,7 +334,7 @@ mod tests {
     }
 
     #[test]
-    fn browse_marshals_root_initial_request_with_null_property_ids() {
+    fn browse_marshals_root_initial_request_with_non_null_empty_property_ids() {
         let calls = Arc::new(Mutex::new(Vec::new()));
         let interface: IOPCBrowse = BrowseRecorder {
             calls: Arc::clone(&calls),
@@ -366,7 +369,7 @@ mod tests {
                 vendor_filter_pointer_is_null: false,
                 vendor_filter: Some(String::new()),
                 property_count: 0,
-                property_pointer_is_null: true,
+                property_pointer_is_null: false,
                 property_ids: Vec::new(),
             }]
         );

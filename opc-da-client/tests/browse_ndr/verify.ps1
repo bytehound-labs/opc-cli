@@ -35,17 +35,18 @@ $idl = Join-Path $PSScriptRoot 'browse_property_array_probe.idl'
 $serverSource = Join-Path $PSScriptRoot 'browse_property_array_probe_server.c'
 $clientSource = Join-Path $PSScriptRoot 'browse_property_array_probe_client.c'
 $buildScript = Join-Path $buildDirectory 'build-fixture.cmd'
+# MIDL's win64 targets Itanium; this RPC fixture needs AMD64 stubs and no COM IID file.
 $buildCommands = @(
     '@echo off',
     'setlocal',
     ('call "' + $developerCommand + '" -no_logo -host_arch=x64 -arch=x64'),
     'if errorlevel 1 exit /b %errorlevel%',
     ('cd /d "' + $buildDirectory + '"'),
-    ('"' + $midl + '" /nologo /env win64 /robust /Oicf /h browse_property_array_probe.h /cstub browse_property_array_probe_c.c /sstub browse_property_array_probe_s.c /iid browse_property_array_probe_i.c "' + $idl + '"'),
+    ('"' + $midl + '" /nologo /env amd64 /robust /Oicf /prefix all BrowsePropertyArrayProbe_ /h browse_property_array_probe.h /cstub browse_property_array_probe_c.c /sstub browse_property_array_probe_s.c "' + $idl + '"'),
     'if errorlevel 1 exit /b %errorlevel%',
-    ('cl /nologo /W4 /TC /DWIN32_LEAN_AND_MEAN /I "' + $buildDirectory + '" /Fe:browse_property_array_probe_server.exe "' + $serverSource + '" browse_property_array_probe_s.c browse_property_array_probe_i.c /link Rpcrt4.lib'),
+    ('cl /nologo /W4 /TC /DWIN32_LEAN_AND_MEAN /I "' + $buildDirectory + '" /Fe:browse_property_array_probe_server.exe "' + $serverSource + '" browse_property_array_probe_s.c /link Rpcrt4.lib'),
     'if errorlevel 1 exit /b %errorlevel%',
-    ('cl /nologo /W4 /TC /DWIN32_LEAN_AND_MEAN /I "' + $buildDirectory + '" /Fe:browse_property_array_probe_client.exe "' + $clientSource + '" browse_property_array_probe_c.c browse_property_array_probe_i.c /link Rpcrt4.lib'),
+    ('cl /nologo /W4 /TC /DWIN32_LEAN_AND_MEAN /I "' + $buildDirectory + '" /Fe:browse_property_array_probe_client.exe "' + $clientSource + '" browse_property_array_probe_c.c /link Rpcrt4.lib'),
     'exit /b %errorlevel%'
 )
 [IO.File]::WriteAllLines($buildScript, $buildCommands, [Text.Encoding]::ASCII)

@@ -85,6 +85,10 @@ pwsh -File opc-da-client/tests/browse_ndr/verify.ps1
 cargo publish -p bytehound-opc-da-client --dry-run
 ```
 
+The RPC/NDR probe requires the Windows SDK MIDL compiler and Visual Studio C++
+build tools. It builds AMD64 client/server stubs and tests a local RPC endpoint
+in separate processes without activating an OPC server.
+
 `OpcError` and `OpcResult` keep their crate-root paths on every platform.
 `OpcError::Com { source }`, HRESULT formatting, and COM-specific types are available
 on Windows. Native read, write, browse, and inventory signatures are unchanged.

@@ -178,8 +178,11 @@ npx --yes -p @ast-grep/cli@0.45.3 ast-grep scan
 ```
 
 The Windows RPC/NDR fixture requires the Windows SDK MIDL compiler and Visual
-Studio C++ build tools; it uses a local RPC endpoint and does not require OPC
-Core Components or a live OPC server.
+Studio C++ build tools. It selects AMD64 with MIDL's
+[`/env amd64`](https://learn.microsoft.com/en-us/windows/win32/midl/-env),
+matches the client/server routine prefixes, and links the generated RPC stubs
+directly; a plain RPC interface has no COM IID source file. It uses a local RPC
+endpoint and does not require OPC Core Components or a live OPC server.
 
 Linux tests cover real public models, provider defaults and mocks, stream cleanup,
 thread-local telemetry, cancellation/pacing, and poison recovery. Windows CI also

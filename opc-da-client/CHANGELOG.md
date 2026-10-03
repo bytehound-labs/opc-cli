@@ -51,6 +51,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Scan all active production sources without temporary inventory/browse/debug
   exclusions, including safety-comment tail-expression rule cases.
 - Verify model-only features and packaged sources/documentation in CI.
+- Build the RPC/NDR probe with AMD64 stubs, matching routine prefixes, and
+  RPC-only generated sources.
 
 ## [0.3.0] - 2026-09-16
 

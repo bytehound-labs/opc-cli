@@ -65,11 +65,20 @@ finally {
 $serverExecutable = Join-Path $buildDirectory 'browse_property_array_probe_server.exe'
 $clientExecutable = Join-Path $buildDirectory 'browse_property_array_probe_client.exe'
 $endpoint = 'opccli_browse_ndr_' + [Guid]::NewGuid().ToString('N')
-$server = Start-Process -FilePath $serverExecutable -ArgumentList @('server', $endpoint) -PassThru -NoNewWindow
+
+function Start-ProbeProcess([string]$executable, [string]$arguments) {
+    $startInfo = [Diagnostics.ProcessStartInfo]::new($executable, $arguments)
+    $startInfo.UseShellExecute = $false
+    $startInfo.CreateNoWindow = $true
+    # Retain the startup handle so PowerShell 5.1 can read ExitCode after a fast exit.
+    [Diagnostics.Process]::Start($startInfo)
+}
+
+$server = Start-ProbeProcess $serverExecutable "server $endpoint"
 
 try {
     Start-Sleep -Milliseconds 100
-    $client = Start-Process -FilePath $clientExecutable -ArgumentList @('client', $endpoint) -PassThru -NoNewWindow
+    $client = Start-ProbeProcess $clientExecutable "client $endpoint"
     if (-not $client.WaitForExit(15000)) {
         Stop-Process -Id $client.Id -Force
         throw 'RPC/NDR fixture client exceeded the 15-second timeout'

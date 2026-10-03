@@ -84,7 +84,10 @@ inventory stream cleanup without contacting a live OPC server. Tracing assertion
 event collector locks before validating captured metadata.
 Windows verification also checks zero-property Browse marshalling through an
 out-of-process RPC/NDR probe. It requires the Windows SDK and Visual Studio C++
-build tools, but no OPC server.
+build tools, but no OPC server. A zero property count must reject a null
+property-ID pointer and accept a valid non-null pointer. The verifier retains
+child process handles for exit-status checks on Windows PowerShell 5.1. See the library's
+[verification instructions](./opc-da-client/README.md#platform-and-package-verification).
 
 The native implementation separates lifecycle/orchestration from connection,
 read/write, DA2/DA3 navigation, continuation, and pacing/telemetry modules.

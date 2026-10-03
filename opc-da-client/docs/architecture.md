@@ -181,8 +181,13 @@ The Windows RPC/NDR fixture requires the Windows SDK MIDL compiler and Visual
 Studio C++ build tools. It selects AMD64 with MIDL's
 [`/env amd64`](https://learn.microsoft.com/en-us/windows/win32/midl/-env),
 matches the client/server routine prefixes, and links the generated RPC stubs
-directly; a plain RPC interface has no COM IID source file. It uses a local RPC
-endpoint and does not require OPC Core Components or a live OPC server.
+directly; registration uses the prefixed RPC server interface handle declared
+in the generated header. A plain RPC interface has no COM IID source file. It
+uses a local RPC endpoint and does not require OPC Core Components or a live
+OPC server. Both processes launch through `System.Diagnostics.Process`, retaining
+their startup handles for exit-status checks on Windows PowerShell 5.1. The
+client completion and server shutdown waits remain bounded to 15 and 10 seconds,
+respectively.
 
 Linux tests cover real public models, provider defaults and mocks, stream cleanup,
 thread-local telemetry, cancellation/pacing, and poison recovery. Windows CI also

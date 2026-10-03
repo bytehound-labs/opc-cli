@@ -59,7 +59,7 @@ int main(int argc, char **argv)
     }
 
     status = RpcServerRegisterIf(
-        BrowsePropertyArrayProbe_v1_0_s_ifspec,
+        BrowsePropertyArrayProbe_BrowsePropertyArrayProbe_v1_0_s_ifspec,
         NULL,
         NULL);
     if (status != RPC_S_OK) {
@@ -72,7 +72,7 @@ int main(int argc, char **argv)
     }
 
     status = RpcServerUnregisterIf(
-        BrowsePropertyArrayProbe_v1_0_s_ifspec,
+        BrowsePropertyArrayProbe_BrowsePropertyArrayProbe_v1_0_s_ifspec,
         NULL,
         TRUE);
     if (status != RPC_S_OK) {

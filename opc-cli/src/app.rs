@@ -943,7 +943,7 @@ mod tests {
         app.poll_fetch_result();
 
         assert_eq!(app.current_screen, CurrentScreen::ServerList);
-        assert!(app.servers.is_empty());
+        assert_eq!(app.servers, Vec::<String>::new());
         assert_eq!(app.selected_index, None);
         assert!(app.messages.last().unwrap().contains("Found 0 servers"));
     }
@@ -1059,13 +1059,13 @@ mod tests {
         // TagList -> ServerList
         app.go_back();
         assert!(matches!(app.current_screen, CurrentScreen::ServerList));
-        assert!(app.tags.is_empty());
+        assert_eq!(app.tags, Vec::<String>::new());
         assert_eq!(app.selected_index, Some(0));
 
         // ServerList -> Home
         app.go_back();
         assert!(matches!(app.current_screen, CurrentScreen::Home));
-        assert!(app.servers.is_empty());
+        assert_eq!(app.servers, Vec::<String>::new());
         assert_eq!(app.selected_index, None);
     }
 
@@ -1105,7 +1105,7 @@ mod tests {
         // 4. User goes back to Home
         app.go_back();
         assert!(matches!(app.current_screen, CurrentScreen::Home));
-        assert!(app.servers.is_empty());
+        assert_eq!(app.servers, Vec::<String>::new());
         assert_eq!(app.selected_index, None);
         assert_eq!(app.list_state.selected(), None);
     }
@@ -1165,7 +1165,7 @@ mod tests {
         app.poll_browse_result();
 
         assert_eq!(app.current_screen, CurrentScreen::TagList);
-        assert!(app.tags.is_empty());
+        assert_eq!(app.tags, Vec::<String>::new());
         assert_eq!(app.selected_index, None);
         assert_eq!(app.list_state.selected(), None);
         assert!(app.messages.last().unwrap().contains("Found 0 tags"));
@@ -1424,7 +1424,7 @@ mod tests {
         app.go_back();
 
         assert_eq!(app.current_screen, CurrentScreen::TagList);
-        assert!(app.tag_values.is_empty());
+        assert_eq!(app.tag_values, Vec::<TagValue>::new());
         assert_eq!(app.tags.len(), 1); // Tags preserved
     }
 

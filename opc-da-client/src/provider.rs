@@ -1,4 +1,4 @@
-use crate::opc_da::errors::{OpcError, OpcResult};
+use crate::{OpcError, OpcResult};
 use async_trait::async_trait;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
@@ -121,6 +121,7 @@ macro_rules! opaque_browse_token {
         pub struct $name(Uuid);
 
         impl $name {
+            #[cfg(any(all(windows, feature = "opc-da-backend"), test))]
             pub(crate) fn new() -> Self {
                 Self(Uuid::new_v4())
             }
@@ -545,6 +546,7 @@ pub struct InventoryControl {
 }
 
 impl InventoryControl {
+    #[cfg(any(all(windows, feature = "opc-da-backend"), test))]
     pub(crate) fn new() -> Self {
         Self {
             state: Arc::new(InventoryControlState {
@@ -557,6 +559,7 @@ impl InventoryControl {
         }
     }
 
+    #[cfg(any(all(windows, feature = "opc-da-backend"), test))]
     pub(crate) fn new_with_batch_size(batch_size: u32) -> Self {
         debug_assert!((1..=MAX_INVENTORY_BATCH_SIZE).contains(&batch_size));
         let control = Self::new();
@@ -642,6 +645,7 @@ impl InventoryControl {
         Ok(())
     }
 
+    #[cfg(any(all(windows, feature = "opc-da-backend"), test))]
     pub(crate) fn batch_size(&self) -> Option<u32> {
         let batch_size = self.state.batch_size.load(Ordering::Acquire);
         u32::try_from(batch_size).ok().filter(|value| *value != 0)
@@ -652,6 +656,7 @@ impl InventoryControl {
         self.state.cancelled.load(Ordering::Acquire)
     }
 
+    #[cfg(any(all(windows, feature = "opc-da-backend"), test))]
     pub(crate) fn is_paused(&self) -> bool {
         self.state.paused.load(Ordering::Acquire)
     }
@@ -666,6 +671,7 @@ pub struct InventoryStream {
 }
 
 impl InventoryStream {
+    #[cfg(any(all(windows, feature = "opc-da-backend"), test))]
     pub(crate) fn new(
         receiver: mpsc::Receiver<OpcResult<InventoryEvent>>,
         control: InventoryControl,
@@ -740,6 +746,37 @@ impl Drop for InventoryStream {
 #[cfg(test)]
 mod inventory_stream_tests {
     use super::*;
+
+    #[test]
+    fn dropping_inventory_stream_releases_a_worker_blocked_by_backpressure() {
+        let control = InventoryControl::new();
+        let (sender, receiver) = mpsc::channel(1);
+        let (ready_sender, ready_receiver) = std::sync::mpsc::channel();
+        let released = Arc::new(AtomicBool::new(false));
+        let worker_released = Arc::clone(&released);
+        let worker = std::thread::spawn(move || {
+            let event = || {
+                Ok(InventoryEvent::Progress(InventoryProgress {
+                    branches_visited: 0,
+                    entries_seen: 0,
+                    unique_items: 0,
+                    active_time_ms: 0,
+                    paused_time_ms: 0,
+                    items_per_second: 0.0,
+                    estimated_remaining_ms: None,
+                }))
+            };
+            sender.blocking_send(event()).unwrap();
+            ready_sender.send(()).unwrap();
+            worker_released.store(sender.blocking_send(event()).is_err(), Ordering::Release);
+        });
+        ready_receiver.recv().unwrap();
+
+        drop(InventoryStream::new(receiver, control.clone(), worker));
+
+        assert!(released.load(Ordering::Acquire));
+        assert!(control.is_cancelled());
+    }
 
     #[test]
     fn dropping_inventory_stream_cancels_and_joins_worker() {
@@ -914,6 +951,10 @@ mod read_display_fallback_tests {
 /// This is the stable public API. Backend implementations provide
 /// the actual COM/DCOM interaction.
 #[cfg_attr(feature = "test-support", automock)]
+#[allow(
+    clippy::double_must_use,
+    reason = "async_trait generates must_use boxed futures whose type is already must-use"
+)]
 #[async_trait]
 pub trait OpcProvider: Send + Sync {
     /// List available OPC DA servers on the given host.
@@ -1065,4 +1106,89 @@ pub trait OpcProvider: Send + Sync {
         tag_id: &str,
         value: OpcValue,
     ) -> OpcResult<WriteResult>;
+}
+
+#[cfg(test)]
+mod portable_model_tests {
+    use super::*;
+
+    #[test]
+    fn all_browse_token_types_round_trip_and_reject_malformed_input() {
+        let node = BrowseNodeToken::new();
+        assert_eq!(BrowseNodeToken::parse(&node.to_string()).unwrap(), node);
+        assert!(BrowseNodeToken::parse("raw.branch!PV").is_err());
+
+        let page = BrowsePageToken::new();
+        assert_eq!(BrowsePageToken::parse(&page.to_string()).unwrap(), page);
+        assert!(BrowsePageToken::parse("raw-native-continuation").is_err());
+    }
+
+    #[test]
+    fn inventory_pacing_saturates_duration_and_normalizes_zero_item_rate() {
+        let control = InventoryControl::new();
+        control.set_pacing(InventoryPacing {
+            min_interval: Duration::MAX,
+            item_rate_per_second: Some(0),
+        });
+        assert_eq!(
+            control.pacing(),
+            InventoryPacing {
+                min_interval: Duration::from_nanos(u64::MAX),
+                item_rate_per_second: None,
+            }
+        );
+    }
+
+    #[test]
+    fn browse_tokens_round_trip_without_exposing_their_representation() {
+        let token = BrowseSessionToken::new();
+        let encoded = token.to_string();
+
+        assert_eq!(BrowseSessionToken::parse(&encoded).unwrap(), token);
+        assert!(BrowseSessionToken::parse("not-a-token").is_err());
+    }
+
+    #[test]
+    fn browse_node_kinds_preserve_item_and_child_identity() {
+        assert!(BrowseNodeKind::Branch.has_children());
+        assert!(!BrowseNodeKind::Branch.is_item());
+        assert!(!BrowseNodeKind::Item.has_children());
+        assert!(BrowseNodeKind::Item.is_item());
+        assert!(BrowseNodeKind::BranchAndItem.has_children());
+        assert!(BrowseNodeKind::BranchAndItem.is_item());
+    }
+
+    #[test]
+    fn inventory_control_updates_pacing_pause_and_batch_size() {
+        let control = InventoryControl::new_with_batch_size(100);
+        assert_eq!(control.batch_size(), Some(100));
+        assert_eq!(control.pacing(), InventoryPacing::default());
+
+        let pacing = InventoryPacing {
+            min_interval: Duration::from_millis(25),
+            item_rate_per_second: Some(50),
+        };
+        control.set_pacing(pacing);
+        assert_eq!(control.pacing(), pacing);
+
+        assert!(control.set_batch_size(0).is_err());
+        assert!(
+            control
+                .set_batch_size(MAX_INVENTORY_BATCH_SIZE + 1)
+                .is_err()
+        );
+        assert_eq!(control.batch_size(), Some(100));
+        control.set_batch_size(256).unwrap();
+        assert_eq!(control.batch_size(), Some(256));
+
+        assert!(!control.is_paused());
+        control.pause();
+        assert!(control.is_paused());
+        control.resume();
+        assert!(!control.is_paused());
+
+        assert!(!control.is_cancelled());
+        control.cancel();
+        assert!(control.is_cancelled());
+    }
 }

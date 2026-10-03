@@ -31,8 +31,13 @@ Backend-agnostic OPC DA client library for Rust — async, trait-based, with tra
 - **Cancellation Diagnostics**: Inventory cancellation logs identify the requesting source and whether cancellation was already pending, distinguishing explicit cancellation from stream-drop cleanup.
 - **Defensive COM Iterators**: Rejects native enumerator counts that exceed the fixed cache capacity before indexing the returned buffer, bounds null-only batches, and releases every remaining COM-allocated string after failed or early-ended iteration.
 - **Windows COM/DCOM Support**: Native OPC DA backend via `windows-rs` — no external OPC crates needed.
-- **Robust Error Handling**: Leverages `thiserror` for the `OpcError` domain type and `friendly_com_hint()` for human-readable HRESULT explanations.
+- **Robust Error Handling**: Leverages `thiserror` for the `OpcError` domain type and `friendly_com_hint()` for human-readable HRESULT explanations. Converting a native Windows error preserves `OpcError::Com { source }`, its HRESULT, and the original error source.
 - **Test-Friendly**: Built-in `MockOpcProvider` via the `test-support` feature.
+- **Portable Models**: The provider trait, values, errors, opaque browse tokens,
+  inventory controls, streams, and telemetry models compile and have substantive
+  tests on Linux; COM connections and the native worker remain Windows-only.
+- **Resilient Telemetry**: Best-effort numeric inventory collectors recover
+  poisoned locks without discarding available observations or failing traversal.
 
 ## Installation
 
@@ -43,7 +48,7 @@ Add this to your `Cargo.toml`:
 opc-da-client = { package = "bytehound-opc-da-client", version = "0.2.8" }
 ```
 
-## Prerequisites
+## Native Backend Prerequisites
 
 - **Operating System**: Windows (COM/DCOM is a Windows-only technology).
 - **Rust**: 1.88 or newer.
@@ -52,21 +57,25 @@ opc-da-client = { package = "bytehound-opc-da-client", version = "0.2.8" }
 
 ## Platform and Package Verification
 
-The concrete `opc_da_client` API and the `opc-da-backend` implementation are Windows-only. The
-Windows dependencies and native library code are excluded from non-Windows targets so package
-metadata, packaging, and target-specific compilation can be checked on Linux without compiling
-`windows-future`.
+The `OpcProvider` trait, public data models, and `MockOpcProvider` are portable.
+`OpcDaClient`, `ComWorker`, and the `opc-da-backend` implementation require Windows.
+Native Windows dependencies and code are excluded from Linux targets; the library
+itself is compiled rather than replaced by an empty crate. Disabling default
+features selects the model/provider layer without the native backend.
 
 From the workspace root, use package-scoped commands for non-Windows verification:
 
 ```bash
 cargo test -p bytehound-opc-da-client --all-features
 cargo clippy -p bytehound-opc-da-client --all-targets --all-features -- -D warnings
+cargo test -p bytehound-opc-da-client --no-default-features
+cargo clippy -p bytehound-opc-da-client --all-targets --no-default-features -- -D warnings
 cargo package -p bytehound-opc-da-client
 cargo publish -p bytehound-opc-da-client --dry-run
 ```
 
-Non-Windows package checks do not validate COM behavior and may run zero library tests. Run the
+Non-Windows tests cover real model, control, stream cleanup, telemetry, and mock-provider
+behavior, including public API paths. They do not validate COM behavior. Run the
 Windows verification gate before publishing or relying on the OPC DA backend:
 
 ```powershell
@@ -75,11 +84,21 @@ cargo clippy -p bytehound-opc-da-client --all-targets --all-features -- -D warni
 cargo publish -p bytehound-opc-da-client --dry-run
 ```
 
+`OpcError` and `OpcResult` keep their crate-root paths on every platform.
+`OpcError::Com { source }`, HRESULT formatting, and COM-specific types are available
+on Windows. Native read, write, browse, and inventory signatures are unchanged.
+Internal helpers stay in private modules; only the documented crate-root items
+form the portable public API.
+Windows CI also checks the model-only feature set, the 32-bit native target, and
+the packaged source/documentation through a publish dry run.
+Portable boundary tests verify that cancellation reaches the same shared control,
+including when no native backend is selected.
+
 ## Usage Examples
 
 ### Connecting & Listing Servers
 
-Enumerate available OPC DA servers on a local or remote host.
+Enumerate OPC DA servers registered on the native Windows client machine.
 
 ```rust,no_run
 use opc_da_client::{OpcDaClient, OpcProvider};
@@ -394,7 +413,20 @@ The library is split into a core trait layer and concrete implementations:
 - **`OpcProvider`**: The primary async trait defining server discovery, recursive tag browsing, native paged browsing, reads, and writes.
 - **`OpcDaClient`**: The default implementation using native `windows-rs` COM calls. Generic over `ServerConnector` for testability; defaults to `ComConnector`.
 
-See [architecture.md](https://github.com/bytehound-labs/opc-cli/blob/main/opc-da-client/architecture.md) for in-depth design details and [spec.md](https://github.com/bytehound-labs/opc-cli/blob/main/opc-da-client/spec.md) for behavioral contracts.
+Worker lifecycle and request delivery stay in `com_worker.rs`; private modules
+own connection retry, reads, writes, and recursive browsing. `native_browse.rs`
+owns session lifecycle with separate state, capability, DA2, and DA3 modules.
+`inventory.rs` orchestrates independent-connection traversal while private modules
+own deferred DA2 expansion, exact navigation, DA3 continuation guards, pacing,
+errors, progress, and thread-local telemetry.
+
+The boundary, error, and telemetry modules have real off-Windows tests.
+Native COM ownership, opaque identity, cancellation and pacing behavior, public
+API paths, and tracing targets are consistent across module boundaries.
+
+See [architecture.md](docs/architecture.md) for in-depth design details and
+[spec.md](docs/spec.md) for behavioral contracts. Both references are included
+in the published crate package.
 
 ### COM Threading Model
 

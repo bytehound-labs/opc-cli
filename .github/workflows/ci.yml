@@ -52,9 +52,37 @@ jobs:
       - name: Run tests
         run: cargo test --workspace --locked
 
+      - name: Lint model-only features
+        run: cargo clippy --locked -p bytehound-opc-da-client --all-targets --no-default-features -- -D warnings
+
+      - name: Test model-only features
+        run: cargo test --locked -p bytehound-opc-da-client --no-default-features
+
       # Check-only (no linking), so no 32-bit linker setup is needed.
       - name: Lint 32-bit target
         run: cargo clippy --workspace --all-targets --all-features --locked --target i686-pc-windows-msvc -- -D warnings
+
+      - name: Verify packaged library references
+        shell: pwsh
+        run: |
+          $packageFiles = @(cargo package --locked -p bytehound-opc-da-client --list)
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          foreach ($required in @(
+            'docs/architecture.md',
+            'docs/spec.md',
+            'src/inventory/boundary.rs',
+            'src/inventory/telemetry.rs',
+            'src/native_browse/state.rs',
+            'src/com_worker/request.rs',
+            'tests/public_models.rs'
+          )) {
+            if ($packageFiles -notcontains $required) {
+              Write-Output "::error::Required packaged file missing: $required"
+              exit 1
+            }
+          }
+          cargo publish --locked -p bytehound-opc-da-client --dry-run
+          exit $LASTEXITCODE
 
       - name: Check PowerShell script syntax
         shell: pwsh
@@ -119,12 +147,10 @@ jobs:
       - name: Install ripgrep
         run: command -v rg >/dev/null || { sudo apt-get update -qq && sudo apt-get install -y -qq ripgrep; }
 
-      # TEMPORARY: backend/connector.rs is excluded until the owner's in-flight
-      # branches land (it has println! in its test module).
       - name: Check for debug macros
         run: |
           set +e
-          rg --color=never -n -g '*.rs' -g '!opc-da-client/src/backend/connector.rs' \
+          rg --color=never -n -g '*.rs' \
             '\b(println!|dbg!|todo!|unimplemented!)' opc-da-client/src opc-cli/src
           status=$?
           set -e
@@ -137,21 +163,20 @@ jobs:
       - name: Test ast-grep rules
         run: npx --yes -p @ast-grep/cli@0.45.3 ast-grep test
 
-      # TEMPORARY ignore list, removed once the owner's in-flight branches land:
-      # - inventory.rs: active file (no-panic-or-unwrap on .lock().unwrap()).
-      # - traits/browse.rs: require-safety-comment false positive on unsafe
-      #   blocks used as tail expressions (follow-up: oc-unsafe-docs).
       - name: Scan with ast-grep
-        run: |
-          npx --yes -p @ast-grep/cli@0.45.3 ast-grep scan \
-            --globs '!opc-da-client/src/inventory.rs' \
-            --globs '!opc-da-client/src/opc_da/client/traits/browse.rs'
+        run: npx --yes -p @ast-grep/cli@0.45.3 ast-grep scan
 
       - name: Lint the library off Windows
         run: cargo clippy --locked -p bytehound-opc-da-client --all-targets --all-features -- -D warnings
 
       - name: Test the library off Windows
         run: cargo test --locked -p bytehound-opc-da-client --all-features
+
+      - name: Lint model-only features
+        run: cargo clippy --locked -p bytehound-opc-da-client --all-targets --no-default-features -- -D warnings
+
+      - name: Test model-only features
+        run: cargo test --locked -p bytehound-opc-da-client --no-default-features
 
   required:
     name: Required validation status

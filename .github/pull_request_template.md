@@ -28,11 +28,17 @@ or `make verify`). It runs formatting, Clippy with -D warnings, doc tests, works
 compat polyfill release builds, ast-grep (skipped when not installed), forbidden-pattern scans,
 and a PowerShell syntax check.
 
-On Linux, only compile and lint checks of the library are meaningful: the `opc-cli` TUI does not
-build there, and the library's COM/DCOM code and tests are Windows-only:
+The compat gate applies only when compat/ exists. CI also validates model-only
+features, the 32-bit Windows target, and packaged library references.
+
+On Linux, compile, lint, unit, integration, and doctest checks exercise the real
+portable provider/model layer. The `opc-cli` TUI and native COM/backend tests
+require Windows:
 
   cargo test --locked -p bytehound-opc-da-client --all-features
   cargo clippy --locked -p bytehound-opc-da-client --all-targets --all-features -- -D warnings
+  cargo test --locked -p bytehound-opc-da-client --no-default-features
+  cargo clippy --locked -p bytehound-opc-da-client --all-targets --no-default-features -- -D warnings
 
 Name any gate you skipped and why.
 -->

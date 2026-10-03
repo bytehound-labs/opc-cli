@@ -14,17 +14,19 @@ categories = ["api-bindings", "network-programming"]
 
 exclude = [
     ".winmd/",
-    "architecture.md",
-    "spec.md",
     "rewrite.py",
 ]
 
 [lib]
 name = "opc_da_client"
 
+[[example]]
+name = "inventory-root"
+required-features = ["opc-da-backend"]
+
 [package.metadata.docs.rs]
 default-target = "x86_64-pc-windows-msvc"
-targets = ["x86_64-pc-windows-msvc"]
+targets = ["x86_64-pc-windows-msvc", "x86_64-unknown-linux-gnu"]
 all-features = true
 
 [lints]
@@ -40,7 +42,6 @@ dev-diagnostics = []
 # Core (always included)
 anyhow = { workspace = true }
 async-trait = "0.1.86"
-chrono = "0.4.43"
 tokio = { workspace = true }
 tracing = { workspace = true }
 thiserror = { workspace = true }
@@ -50,6 +51,7 @@ uuid = { workspace = true }
 mockall = { version = "0.13.1", optional = true }
 
 [target.'cfg(windows)'.dependencies]
+chrono = "0.4.43"
 windows = { workspace = true }
 windows-core = { workspace = true }
 

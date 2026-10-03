@@ -4,22 +4,29 @@
 
 - `opc-da-client/` contains the product library, `bytehound-opc-da-client`.
 - `opc-cli/` is a secondary, Windows-only TUI consumer. The full workspace requires
-  Windows; Linux can check the library only.
+  Windows; Linux compiles and tests the actual portable provider/model layer.
+  Native COM connections and workers remain Windows-only.
 - `scripts/` contains verification and packaging tools. CI is in
   `.github/workflows/ci.yml`.
+- Library architecture and behavioral references are packaged under
+  `opc-da-client/docs/`. Lifecycle roots delegate to private domain modules;
+  boundary/error/telemetry primitives have off-Windows tests.
 
 ## Validation
 
 - On Windows, run `pwsh -File scripts/verify.ps1` or `make verify`.
 - CI requires **Required validation status**. It runs formatting, Clippy with
   `-D warnings`, locked workspace/doc tests, Rust 1.88.0 MSRV checks, cargo-deny,
-  ast-grep rule tests/scans, and a 32-bit Windows-target Clippy check.
+  unsuppressed ast-grep/debug scans, model-only checks, package verification,
+  and a 32-bit Windows-target Clippy check.
 - Linux CI runs cargo-deny, ast-grep, and locked library-only Clippy/tests. It does
   not validate the TUI or full workspace.
 
 ## COM and safety
 
-- Follow the existing COM/DCOM ownership, apartment, and thread-affinity conventions.
+- Preserve the MTA worker, guard-before-resource declaration/drop ordering,
+  isolated inventory/session connections, native ownership, cancellation,
+  pacing, exact ItemIDs, opaque token identity, and tracing targets.
 - Every `unsafe` block needs a `// SAFETY:` comment stating the real invariant for
   that operation. Existing enforcement is in workspace Clippy and ast-grep; do not
   add a new lint solely for this rule.
@@ -31,15 +38,9 @@
 - Do not retire `origin/dev` without Mike's direction.
 - Do not enter or modify these other active worktrees:
   `opccli-unsafe`, `opccli-publish`, `opc-cli-browseto-canary`,
-  `opc-cli-da2-canary`, and `opc-cli-throughput`. The publish worktree owns
-  `.github/workflows/**`.
-- While the canary worktrees are active, do not edit:
-  `Cargo.lock`, `.gitignore`, `opc-da-client/architecture.md`,
-  `opc-da-client/Cargo.toml`, `opc-da-client/CHANGELOG.md`,
-  `opc-da-client/examples/inventory-root.rs`, `opc-da-client/README.md`,
-  `opc-da-client/spec.md`, `opc-da-client/src/backend/connector.rs`,
-  `opc-da-client/src/backend/opc_da.rs`, `opc-da-client/src/com_worker.rs`,
-  `opc-da-client/src/helpers.rs`, `opc-da-client/src/inventory.rs`,
-  `opc-da-client/src/lib.rs`, `opc-da-client/src/native_browse.rs`,
-  `opc-da-client/src/opc_da/client/iterator.rs`,
-  `opc-da-client/src/opc_da/errors.rs`, or `opc-da-client/src/provider.rs`.
+  `opc-cli-da2-canary`, and `opc-cli-throughput`.
+- Preserve user canary branches, dirty files, indexes, and worktrees byte-for-byte.
+  Never rebase, stash, clean, or delete them. Approved reconciled refactors use
+  their own feature worktree; do not take over another task's active ownership.
+- Coordinate workflow changes with any active publishing task. Real publication
+  and live OPC/controller operations require separate explicit authorization.

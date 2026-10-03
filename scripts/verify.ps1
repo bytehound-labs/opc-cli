@@ -1,9 +1,10 @@
 <#
 .SYNOPSIS
-    Universal Quality Gate for opc-cli (8-Gate Pipeline).
+    Universal Quality Gate for opc-cli (10-Gate Pipeline).
 .DESCRIPTION
-    Runs cargo fmt, clippy, doc tests, workspace tests, polyfill compilation,
-    AST-grep scan, forbidden pattern scanner, and PowerShell syntax checks.
+    Runs cargo fmt, the focused zero-property Browse tests, the Browse RPC/NDR
+    fixture, clippy, doc tests, workspace tests, polyfill compilation, AST-grep
+    scan, forbidden pattern scanner, and PowerShell syntax checks.
     Halts execution strictly on any non-zero exit code.
     Reports What/Where/Why on failure for human and AI diagnostics.
 .PARAMETER Verbose
@@ -59,16 +60,27 @@ Write-Host "Running Verification Pipeline..." -ForegroundColor Cyan
 # Gate 1: Formatter Check
 Invoke-Gate -GateName "Formatter Check" -Command { cargo fmt --all -- --check }
 
-# Gate 2: Linter Check
+# Gate 2: Focused zero-property Browse marshalling test
+Invoke-Gate -GateName "Zero-property Browse pointer" -Command {
+    cargo test --locked -p bytehound-opc-da-client --all-features browse_marshals_root_initial_request_with_non_null_empty_property_ids
+}
+
+# Gate 3: Browse RPC/NDR marshalling
+$browseNdrScript = Join-Path $PSScriptRoot "..\opc-da-client\tests\browse_ndr\verify.ps1"
+Invoke-Gate -GateName "Browse RPC/NDR marshalling" -Command {
+    & pwsh -NoProfile -File $browseNdrScript
+}
+
+# Gate 4: Linter Check
 Invoke-Gate -GateName "Linter Check" -Command { cargo clippy --workspace --all-targets --all-features -- -D warnings }
 
-# Gate 3: Doc Compilation Check
+# Gate 5: Doc Compilation Check
 Invoke-Gate -GateName "Doc Compilation Check" -Command { cargo test --doc --workspace }
 
-# Gate 4: Unit & Integration Tests
+# Gate 6: Unit & Integration Tests
 Invoke-Gate -GateName "Unit & Integration Tests" -Command { cargo test --workspace }
 
-# Gate 5: Polyfill Compilation Gate
+# Gate 7: Polyfill Compilation Gate
 $compatDir = Join-Path $PSScriptRoot ".." "compat"
 if (Test-Path $compatDir) {
     $polyfillManifests = @(Get-ChildItem -Path $compatDir -Filter "Cargo.toml" -Recurse -Depth 1)
@@ -78,7 +90,7 @@ if (Test-Path $compatDir) {
     }
 }
 
-# Gate 6: AST-Grep Scan & Rule Tests (Conditional)
+# Gate 8: AST-Grep Scan & Rule Tests (Conditional)
 Write-Host "`n>>> AST-Grep Scan & Rule Tests" -ForegroundColor Yellow
 $hasSg = [bool](Get-Command sg -ErrorAction SilentlyContinue)
 $hasSgConfig = Test-Path (Join-Path $PSScriptRoot ".." "sgconfig.yml")
@@ -92,7 +104,7 @@ if (-not $hasSg) {
     Invoke-Gate -GateName "AST-Grep Scan" -Command { sg scan }
 }
 
-# Gate 7: Forbidden Pattern Scanner (ripgrep)
+# Gate 9: Forbidden Pattern Scanner (ripgrep)
 Write-Host "`n>>> Forbidden Pattern Scanner" -ForegroundColor Yellow
 if (-not (Get-Command rg -ErrorAction SilentlyContinue)) {
     Write-Host "[SKIP] ripgrep ('rg') CLI is not installed in PATH. Skipping forbidden pattern scan." -ForegroundColor DarkYellow
@@ -135,7 +147,7 @@ if (-not (Get-Command rg -ErrorAction SilentlyContinue)) {
     }
 }
 
-# Gate 8: PowerShell Script Syntax & Strict Mode Check
+# Gate 10: PowerShell Script Syntax & Strict Mode Check
 Write-Host "`n>>> PowerShell Script Syntax & Strict Mode Check" -ForegroundColor Yellow
 $scriptDir = $PSScriptRoot
 $scriptFiles = Get-ChildItem -Path $scriptDir -Filter "*.ps1" -File

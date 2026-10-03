@@ -96,6 +96,17 @@ back to DA2 only for `RPC_X_NULL_REF_POINTER` or `E_NOTIMPL` and only when DA2
 is available. A successful interactive root page locks that session to DA3.
 A failed explicitly rooted inventory cannot turn into full-server fallback.
 
+`IOPCBrowse::Browse` declares `pdwPropertyIDs` as a top-level
+`[in, size_is(dwPropertyCount)] DWORD*` parameter. MIDL's
+[`pointer_default(unique)`](https://learn.microsoft.com/en-us/windows/win32/midl/pointer-default)
+does not apply to top-level parameters, so this is a reference pointer and must
+be non-null even at count zero. The empty-property path supplies a live
+placeholder address with a zero count; `size_is(0)` sends no property-ID
+elements. The Windows RPC/NDR fixture compiles a matching MIDL parameter shape
+and checks both null-pointer rejection and successful zero-length marshalling
+over an out-of-process `ncalrpc` call. It does not activate an OPC server or
+use a live gateway.
+
 Interactive DA2 pages classify immediate branches/items, merge same-named
 branch-and-item nodes, and isolate each session's cursor. Hierarchical inventory
 instead defers branch expansion and avoids eager child/classification probes.
@@ -161,9 +172,22 @@ cargo clippy --locked -p bytehound-opc-da-client --all-targets --all-features --
 cargo test --locked -p bytehound-opc-da-client --all-features
 cargo clippy --locked -p bytehound-opc-da-client --all-targets --no-default-features -- -D warnings
 cargo test --locked -p bytehound-opc-da-client --no-default-features
+pwsh -File opc-da-client/tests/browse_ndr/verify.ps1
 npx --yes -p @ast-grep/cli@0.45.3 ast-grep test
 npx --yes -p @ast-grep/cli@0.45.3 ast-grep scan
 ```
+
+The Windows RPC/NDR fixture requires the Windows SDK MIDL compiler and Visual
+Studio C++ build tools. It selects AMD64 with MIDL's
+[`/env amd64`](https://learn.microsoft.com/en-us/windows/win32/midl/-env),
+matches the client/server routine prefixes, and links the generated RPC stubs
+directly; registration uses the prefixed RPC server interface handle declared
+in the generated header. A plain RPC interface has no COM IID source file. It
+uses a local RPC endpoint and does not require OPC Core Components or a live
+OPC server. Both processes launch through `System.Diagnostics.Process`, retaining
+their startup handles for exit-status checks on Windows PowerShell 5.1. The
+client completion and server shutdown waits remain bounded to 15 and 10 seconds,
+respectively.
 
 Linux tests cover real public models, provider defaults and mocks, stream cleanup,
 thread-local telemetry, cancellation/pacing, and poison recovery. Windows CI also
@@ -185,5 +209,5 @@ recorded in the manifests and lockfile.
 Contributions use protected feature-branch PRs and squash merges, not the legacy
 dev-to-main scripts. Publication is a separately authorized workflow documented
 in [publishing.md](https://github.com/bytehound-labs/opc-cli/blob/main/docs/publishing.md).
-Package verification is a dry run;
-it does not authorize uploading a crate or creating a release.
+CI verifies package contents with `cargo package`; this does not upload a crate
+or authorize creating a release.

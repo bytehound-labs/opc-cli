@@ -43,6 +43,13 @@ jobs:
       - name: Check formatting
         run: cargo fmt --all -- --check
 
+      - name: Test zero-property Browse pointer
+        run: cargo test --locked -p bytehound-opc-da-client --all-features browse_marshals_root_initial_request_with_non_null_empty_property_ids
+
+      - name: Test Browse RPC/NDR marshalling
+        shell: pwsh
+        run: pwsh -NoProfile -File opc-da-client/tests/browse_ndr/verify.ps1
+
       - name: Lint with clippy
         run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
 
@@ -74,14 +81,18 @@ jobs:
             'src/inventory/telemetry.rs',
             'src/native_browse/state.rs',
             'src/com_worker/request.rs',
-            'tests/public_models.rs'
+            'tests/public_models.rs',
+            'tests/browse_ndr/browse_property_array_probe.idl',
+            'tests/browse_ndr/browse_property_array_probe_client.c',
+            'tests/browse_ndr/browse_property_array_probe_server.c',
+            'tests/browse_ndr/verify.ps1'
           )) {
             if ($packageFiles -notcontains $required) {
               Write-Output "::error::Required packaged file missing: $required"
               exit 1
             }
           }
-          cargo publish --locked -p bytehound-opc-da-client --dry-run
+          cargo package --locked -p bytehound-opc-da-client
           exit $LASTEXITCODE
 
       - name: Check PowerShell script syntax

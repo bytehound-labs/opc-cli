@@ -1,0 +1,19 @@
+/*
+ * Mirrors the property-count and property-ID array parameters of OPC DA
+ * IOPCBrowse::Browse, including the interface's pointer_default(unique).
+ */
+[
+    uuid(882B1FE4-AD8B-4B51-9161-614B0F4C9D2E),
+    version(1.0),
+    pointer_default(unique)
+]
+interface BrowsePropertyArrayProbe
+{
+    long Browse(
+        handle_t binding,
+        [in] unsigned long dwPropertyCount,
+        [in, size_is(dwPropertyCount)] unsigned long *pdwPropertyIDs
+    );
+
+    void Shutdown(handle_t binding);
+}

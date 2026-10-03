@@ -45,7 +45,7 @@ Add this to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-opc-da-client = { package = "bytehound-opc-da-client", version = "0.2.8" }
+opc-da-client = { package = "bytehound-opc-da-client", version = "0.3.1" }
 ```
 
 ## Native Backend Prerequisites
@@ -81,7 +81,23 @@ Windows verification gate before publishing or relying on the OPC DA backend:
 ```powershell
 cargo test -p bytehound-opc-da-client --all-features
 cargo clippy -p bytehound-opc-da-client --all-targets --all-features -- -D warnings
+pwsh -File opc-da-client/tests/browse_ndr/verify.ps1
 cargo publish -p bytehound-opc-da-client --dry-run
+```
+
+The RPC/NDR probe requires the Windows SDK MIDL compiler and Visual Studio C++
+build tools. It builds AMD64 client/server stubs, registers the MIDL-prefixed
+server interface handle, and tests a local RPC endpoint in separate processes
+without activating an OPC server. With a zero property count, a null property-ID
+pointer must raise `RPC_X_NULL_REF_POINTER` and a valid non-null pointer must
+succeed.
+
+The verifier also runs with Windows PowerShell 5.1, retaining the child process
+handles for exit-status checks. If local script policy blocks the fixture, use
+a process-scoped override without changing the machine policy:
+
+```powershell
+powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File opc-da-client/tests/browse_ndr/verify.ps1
 ```
 
 `OpcError` and `OpcResult` keep their crate-root paths on every platform.
@@ -268,7 +284,11 @@ child navigation inside the session and return `item_id: None` to callers.
 The first root page is also the DA 3.0 compatibility check. Required root and
 unused-filter arguments are sent as non-null empty UTF-16 strings, as specified
 by OPC DA. The initial continuation is a non-null outer pointer containing a
-null inner pointer, and an empty property-ID list is sent as a null pointer.
+null inner pointer. An empty property-ID list uses a non-null reference pointer
+with a zero element count: the OPC DA IDL declares the top-level array pointer
+with `size_is(dwPropertyCount)`, and the zero count means no property IDs are
+marshaled. A Windows MIDL/NDR probe verifies that a null reference pointer is
+rejected and a non-null zero-length array crosses the local RPC boundary.
 If that first call still returns `RPC_X_NULL_REF_POINTER` or
 `E_NOTIMPL` and the server exposes DA 2.x browsing, the session logs the
 compatibility failure and continues through DA 2.x. Access, transport,

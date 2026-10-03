@@ -81,9 +81,12 @@ or already consumed tokens return errors.
   server-supplied ItemID private when the branch is not selectable.
 - Root/filter strings are non-null empty UTF-16 strings. Initial continuation
   storage is non-null and contains a null value.
-- The zero-property path preserves the established null property-ID pointer;
-  nonempty property lists use the generated binding. ABI changes require their
-  own native compatibility validation.
+- `pdwPropertyIDs` is a top-level reference pointer under the OPC DA IDL even
+  when `dwPropertyCount` is zero. The zero-property path supplies a valid
+  non-null address with count zero; `size_is(0)` marshals no property IDs.
+  Nonempty property lists use the generated binding.
+- Windows validation runs an out-of-process MIDL/NDR probe that rejects the
+  null pointer at zero count and accepts the non-null zero-length array.
 - Only the first actual server-root page may fall back to DA2, for
   `RPC_X_NULL_REF_POINTER` or `E_NOTIMPL`, when DA2 is available.
   Other errors stay terminal. A successful root page locks the session to DA3.

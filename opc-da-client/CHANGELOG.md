@@ -34,6 +34,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   inventory fail or discarding available observations.
 - Give mock COM allocations precise safety comments and null checks before
   initialization; the live-server cursor probe remains ignored.
+- Keep `IOPCBrowse::Browse`'s `pdwPropertyIDs` pointer non-null when its count is
+  zero, while preserving an empty property array. Add an out-of-process Windows
+  RPC/NDR regression probe for the zero-property contract.
 
 ### Build
 
@@ -48,6 +51,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Scan all active production sources without temporary inventory/browse/debug
   exclusions, including safety-comment tail-expression rule cases.
 - Verify model-only features and packaged sources/documentation in CI.
+- Build the RPC/NDR probe with AMD64 stubs, matching routine prefixes, and
+  RPC-only generated sources.
 
 ## [0.3.0] - 2026-09-16
 
@@ -97,9 +102,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   affected branch while independent item enumeration continues, and same-named
   branch/item entries are preserved as expandable `BranchAndItem` entries with
   their exact ItemIDs instead of being duplicated or dropped.
-- DA 3.0 `IOPCBrowse::Browse` sends a true null property-ID pointer when
-  `dwPropertyCount` is zero, while retaining the generated binding path for
-  non-empty property-ID lists.
 - Native and compatibility browse iterators terminate after 64 consecutive
   identical successful values with a contextual `BrowseNonProgress` error
   instead of allowing a non-progressing OPC enumerator to run indefinitely.

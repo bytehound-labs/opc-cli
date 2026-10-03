@@ -22,6 +22,7 @@ if (-not (Test-Path $developerCommand)) {
 
 $windowsKitsBin = Join-Path $programFilesX86 'Windows Kits\10\bin'
 $midl = Get-ChildItem -Path $windowsKitsBin -Directory |
+    Where-Object { $_.Name -match '^\d+(\.\d+){1,3}$' } |
     Sort-Object { [version]$_.Name } -Descending |
     ForEach-Object { Join-Path $_.FullName 'x64\midl.exe' } |
     Where-Object { Test-Path $_ } |
